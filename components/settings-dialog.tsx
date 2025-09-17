@@ -185,7 +185,20 @@ export function SettingsDialog({ open, onOpenChange, allTags, allUsers, current,
 
   useEffect(() => {
     if (open) {
-      setLocal(JSON.parse(JSON.stringify(current)))
+      const localCopy = JSON.parse(JSON.stringify(current))
+
+      // Add default criteria for Actions if none exist
+      if (!localCopy.actions.criteria || localCopy.actions.criteria.length === 0) {
+        localCopy.actions.criteria = [{
+          id: Date.now().toString(),
+          conjunction: 'WHERE',
+          field: 'Purpose',
+          operator: 'is',
+          value: 'Quote',
+        }]
+      }
+
+      setLocal(localCopy)
       setSelectedTags([])
       setSelectedUsers([])
       setTagSearch('')
@@ -335,11 +348,6 @@ export function SettingsDialog({ open, onOpenChange, allTags, allUsers, current,
               <DialogDescription className="text-lg text-slate-600">
                 Configure automation rules for user assignment, price discovery, and workflow actions
               </DialogDescription>
-            </div>
-            <div className="text-right">
-              <Badge variant="outline" className="text-sm px-4 py-2 font-medium">
-                Profile: {local.name}
-              </Badge>
             </div>
           </div>
         </DialogHeader>
@@ -889,7 +897,20 @@ export function SettingsPanel({
 
   useEffect(() => {
     // Reset content whenever current changes
-    setLocal(JSON.parse(JSON.stringify(current)))
+    const localCopy = JSON.parse(JSON.stringify(current))
+
+    // Add default criteria for Actions if none exist
+    if (!localCopy.actions.criteria || localCopy.actions.criteria.length === 0) {
+      localCopy.actions.criteria = [{
+        id: Date.now().toString(),
+        conjunction: 'WHERE',
+        field: 'Purpose',
+        operator: 'is',
+        value: 'Quote',
+      }]
+    }
+
+    setLocal(localCopy)
     setSelectedTags([])
     setSelectedUsers([])
     setTagSearch('')
@@ -992,7 +1013,6 @@ export function SettingsPanel({
             </div>
             <div className="text-slate-600">Configure users, price sources, and action rules</div>
           </div>
-          <Badge variant="outline" className="text-sm px-4 py-2 font-medium">Profile: {local.name}</Badge>
         </div>
       </div>
 
@@ -1207,7 +1227,7 @@ export function SettingsPanel({
                               }
                             }))}
                           >
-                            <SelectTrigger className="w-20"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="w-20 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="AND">AND</SelectItem>
                               <SelectItem value="OR">OR</SelectItem>
@@ -1223,7 +1243,7 @@ export function SettingsPanel({
                             actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, field: v as any, operator: 'is', value: '' } : r) }
                           }))}
                         >
-                          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="Purpose">Purpose</SelectItem>
                             <SelectItem value="Item ID Type">Item ID Type</SelectItem>
@@ -1243,7 +1263,7 @@ export function SettingsPanel({
                             actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, operator: v as any } : r) }
                           }))}
                         >
-                          <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="w-24 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             {/* Operators vary by field */}
                             {(['Purpose','Item ID Type','Source','Vendor'].includes(row.field) ? (
@@ -1260,7 +1280,7 @@ export function SettingsPanel({
                               <>
                                 <SelectItem value=">=">≥</SelectItem>
                                 <SelectItem value="<=">≤</SelectItem>
-                                <SelectItem value=">">></SelectItem>
+                                <SelectItem value=">">{'>'}</SelectItem>
                                 <SelectItem value="<">{'<'}</SelectItem>
                                 <SelectItem value="=">=</SelectItem>
                               </>
@@ -1271,7 +1291,7 @@ export function SettingsPanel({
                         {/* Value editor */}
                         {row.field === 'Purpose' && (
                           <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
-                            <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="w-28 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="Quote">Quote</SelectItem>
                               <SelectItem value="PO">PO</SelectItem>
@@ -1281,7 +1301,7 @@ export function SettingsPanel({
                         )}
                         {row.field === 'Item ID Type' && (
                           <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
-                            <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="w-24 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="MPN">MPN</SelectItem>
                               <SelectItem value="CPN">CPN</SelectItem>
@@ -1291,26 +1311,26 @@ export function SettingsPanel({
                         )}
                         {row.field === 'Source' && (
                           <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
-                            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               {DEFAULT_PRICE_SOURCES.map(s => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
                             </SelectContent>
                           </Select>
                         )}
                         {row.field === 'Date' && (
-                          <Input type="date" className="w-40" value={row.value} onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))} />
+                          <Input type="date" className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500" value={row.value} onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))} />
                         )}
                         {(row.field === 'Price' || row.field === 'Quantity' || row.field === 'Vendor') && (
                           <>
                             <Input
-                              className="w-40"
+                              className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"
                               placeholder={row.field === 'Vendor' ? 'Enter vendor' : '0'}
                               value={row.value}
                               onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))}
                             />
                             {row.field === 'Price' && (
                               <Select value={row.unit || 'USD'} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, unit: v } : r) } }))}>
-                                <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                                <SelectTrigger className="w-36 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="USD">USD</SelectItem>
                                   <SelectItem value="INR">INR</SelectItem>

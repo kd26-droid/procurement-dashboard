@@ -837,9 +837,9 @@ export default function ProcurementDashboard() {
               <Label value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
             <Tooltip formatter={commonTooltip} />
-            <Bar isAnimationActive={false} yAxisId="left" dataKey={dataKey1} fill={color1} barSize={10} radius={[3,3,0,0]} />
+            <Bar isAnimationActive={false} yAxisId="left" dataKey={dataKey1} fill={color1} barSize={35} radius={[3,3,0,0]} />
             {hasSecondSeries && (
-              <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={10} radius={[3,3,0,0]} />
+              <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={35} radius={[3,3,0,0]} />
             )}
           </ComposedChart>
           </ResponsiveContainer>
@@ -879,7 +879,7 @@ export default function ProcurementDashboard() {
                 <Label value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
               </YAxis>
               <Tooltip formatter={commonTooltip} />
-              <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={10} radius={[3,3,0,0]} />
+              <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={35} radius={[3,3,0,0]} />
               <Line isAnimationActive={false} yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={1.75} dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
