@@ -44,7 +44,7 @@ const projectData = {
   id: "PROJ-2024-001",
   status: "Active",
   created: "2024-01-15",
-  deadline: "2026-10-31",
+  deadline: "2026-11-31",
 }
 
 
