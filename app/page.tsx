@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
+import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { initialLineItems } from '../data/lineItems'
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
@@ -679,13 +679,13 @@ export default function ProcurementDashboard() {
 
     const basePrice = item.unitPrice || 100 + random(50, 300)
 
-    // Use consistent chart types for all items
+    // Professional, simple chart types
     const chartTypes = {
-      po: 'composed',      // Always bars + line
-      contract: 'bar',     // Always bars
-      exim: 'area',        // Always area + line
-      quote: 'line',       // Always dual lines
-      online: 'composed'   // Always bars + line
+      po: 'line',        // Date vs Price/Quantity: two lines
+      contract: 'bar',   // Vendor vs Price/Quantity: grouped bars
+      exim: 'line',      // Date of Purchase vs Price/Quantity: two lines
+      quote: 'line',     // Date vs Price/Quantity: two lines
+      online: 'bar'      // Vendor vs Price/Quantity: grouped bars
     }
 
     // PO Module - Date vs Price/Quantity (More varied data)
@@ -760,60 +760,129 @@ export default function ProcurementDashboard() {
   }
 
   // Helper function to render different chart types
-  const renderChart = (data: any[], type: string, dataKey1: string, dataKey2: string, color1: string, color2: string, xAxisKey: string) => {
+  const renderChart = (
+    data: any[],
+    type: string,
+    dataKey1: string,
+    dataKey2: string,
+    color1: string,
+    color2: string,
+    xAxisKey: string,
+    xAxisLabel: string,
+    yLeftLabel: string,
+    yRightLabel: string,
+  ) => {
     const commonTooltip = (value: any, name: string) => [
       name === dataKey1 ? `$${Number(value).toFixed(2)}` : `${value} pcs`,
       name === dataKey1 ? 'Price' : 'Quantity'
     ]
 
+    const xLabel = xAxisLabel
+    const isCurrencyLeft = /price|rate/i.test(yLeftLabel) || /price|rate/i.test(dataKey1)
+    const isCurrencyRight = /price|rate/i.test(yRightLabel) || /price|rate/i.test(dataKey2)
+    const fmtCurrency = (n: number) => `$${Number(n).toFixed(0)}`
+    const leftTickFormatter = (v: any) => (isCurrencyLeft ? fmtCurrency(v) : v)
+    const rightTickFormatter = (v: any) => (isCurrencyRight ? fmtCurrency(v) : v)
+    const hasSecondSeries = Boolean(dataKey2) && data.some((d) => d[dataKey2 as keyof typeof d] !== undefined)
+    const xAxisProps = {
+      dataKey: xAxisKey,
+      tick: { fontSize: 12, fill: '#475569' },
+    } as const
+    const yLeftProps = {
+      yAxisId: 'left',
+      orientation: 'left' as const,
+      tick: { fontSize: 12, fill: '#475569' },
+      tickFormatter: leftTickFormatter,
+    }
+    const yRightProps = {
+      yAxisId: 'right',
+      orientation: 'right' as const,
+      tick: { fontSize: 12, fill: '#475569' },
+      tickFormatter: rightTickFormatter,
+    }
+
     switch (type) {
       case 'line':
         return (
-          <ComposedChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={xAxisKey} />
-            <YAxis yAxisId="left" orientation="left" />
-            <YAxis yAxisId="right" orientation="right" />
+          <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 18, left: 18 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis {...xAxisProps} tickLine={false} axisLine={false}>
+              <Label value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+            </XAxis>
+            <YAxis {...yLeftProps} tickLine={false} axisLine={false}>
+              <Label value={yLeftLabel} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+            </YAxis>
+            <YAxis {...yRightProps} tickLine={false} axisLine={false}>
+              <Label value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+            </YAxis>
             <Tooltip formatter={commonTooltip} />
-            <Line yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={3} dot={{ fill: color1, strokeWidth: 2, r: 4 }} />
-            <Line yAxisId="right" type="monotone" dataKey={dataKey2} stroke={color2} strokeWidth={2} dot={{ fill: color2, strokeWidth: 2, r: 3 }} />
+            <Line isAnimationActive={false} yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={1.75} dot={false} />
+            <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey={dataKey2} stroke={color2} strokeWidth={1.5} dot={false} />
           </ComposedChart>
+          </ResponsiveContainer>
         )
       case 'bar':
         return (
-          <ComposedChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={xAxisKey} />
-            <YAxis yAxisId="left" orientation="left" />
-            <YAxis yAxisId="right" orientation="right" />
+          <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 18, left: 18 }} barCategoryGap={"20%"} barGap={4}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis {...xAxisProps} tickLine={false} axisLine={false}>
+              <Label value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+            </XAxis>
+            <YAxis {...yLeftProps} tickLine={false} axisLine={false}>
+              <Label value={yLeftLabel} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+            </YAxis>
+            <YAxis {...yRightProps} tickLine={false} axisLine={false}>
+              <Label value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+            </YAxis>
             <Tooltip formatter={commonTooltip} />
-            <Bar yAxisId="left" dataKey={dataKey1} fill={color1} />
-            <Bar yAxisId="right" dataKey={dataKey2} fill={color2} />
+            <Bar isAnimationActive={false} yAxisId="left" dataKey={dataKey1} fill={color1} barSize={10} radius={[3,3,0,0]} />
+            {hasSecondSeries && (
+              <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={10} radius={[3,3,0,0]} />
+            )}
           </ComposedChart>
+          </ResponsiveContainer>
         )
       case 'area':
         return (
+          <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={data}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={xAxisKey} />
-            <YAxis yAxisId="left" orientation="left" />
-            <YAxis yAxisId="right" orientation="right" />
+            <XAxis {...xAxisProps}>
+              <Label value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+            </XAxis>
+            <YAxis {...yLeftProps}>
+              <Label value="Price ($)" angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+            </YAxis>
+            <YAxis {...yRightProps}>
+              <Label value="Quantity (pcs)" angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+            </YAxis>
             <Tooltip formatter={commonTooltip} />
             <Area yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} fill={color1} fillOpacity={0.6} />
             <Line yAxisId="right" type="monotone" dataKey={dataKey2} stroke={color2} strokeWidth={2} />
           </ComposedChart>
+          </ResponsiveContainer>
         )
-      default: // composed
+      default: // composed (bars + line) — used for all 5 modules
         return (
-          <ComposedChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={xAxisKey} />
-            <YAxis yAxisId="left" orientation="left" />
-            <YAxis yAxisId="right" orientation="right" />
-            <Tooltip formatter={commonTooltip} />
-            <Bar yAxisId="right" dataKey={dataKey2} fill={color2} />
-            <Line yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={3} dot={{ fill: color1, strokeWidth: 2, r: 4 }} />
-          </ComposedChart>
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 18, left: 18 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis {...xAxisProps}>
+                <Label value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              </XAxis>
+              <YAxis {...yLeftProps}>
+                <Label value={yLeftLabel} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              </YAxis>
+              <YAxis {...yRightProps}>
+                <Label value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              </YAxis>
+              <Tooltip formatter={commonTooltip} />
+              <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={10} radius={[3,3,0,0]} />
+              <Line isAnimationActive={false} yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={1.75} dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
         )
     }
   }
@@ -1902,10 +1971,10 @@ export default function ProcurementDashboard() {
                   <BarChart3 className="h-5 w-5 text-blue-600" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold text-gray-900">
+                  <h3 className="text-base font-medium text-gray-800">
                     Analytics for {selectedItemForAnalytics.itemId}
                   </h3>
-                  <p className="text-sm text-gray-500">{selectedItemForAnalytics.description}</p>
+                  <p className="text-xs text-gray-500">{selectedItemForAnalytics.description}</p>
                 </div>
               </div>
               <Button
@@ -1920,132 +1989,46 @@ export default function ProcurementDashboard() {
 
             {/* Module Cards */}
             {analyticsData && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* PO Module */}
-                  <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-lg border border-blue-200">
-                    <h4 className="font-semibold text-blue-900 mb-3 flex items-center gap-2">
-                      <FileText className="h-4 w-4" />
-                      Purchase Orders
-                    </h4>
-                    <div className="space-y-2">
-                      <div className="h-48 bg-white rounded border p-2">
-                        <ResponsiveContainer width="100%" height="100%">
-                          {renderChart(analyticsData.poData, analyticsData.chartTypes.po, 'price', 'quantity', '#2563eb', '#93c5fd', 'date')}
-                        </ResponsiveContainer>
-                      </div>
-                      <div className="text-xs text-blue-700">
-                        X-axis: Date of PO | Y1-axis: Price ($) | Y2-axis: Quantity (pcs)
-                      </div>
-                    </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* PO */}
+                <div className="bg-white p-4 rounded-lg border">
+                  <h4 className="text-sm font-medium text-gray-800 mb-2">PO</h4>
+                  <div className="h-56">
+                    {renderChart(analyticsData.poData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'date', 'Date of PO', 'Price', 'Quantity')}
                   </div>
+                </div>
 
-                  {/* Contract Module */}
-                  <div className="bg-gradient-to-br from-green-50 to-green-100 p-4 rounded-lg border border-green-200">
-                    <h4 className="font-semibold text-green-900 mb-3 flex items-center gap-2">
-                      <FileSignature className="h-4 w-4" />
-                      Contracts
-                    </h4>
-                    <div className="space-y-2">
-                      <div className="h-48 bg-white rounded border p-2">
-                        <ResponsiveContainer width="100%" height="100%">
-                          {renderChart(analyticsData.contractData, analyticsData.chartTypes.contract, 'price', 'quantity', '#16a34a', '#86efac', 'vendor')}
-                        </ResponsiveContainer>
-                      </div>
-                      <div className="text-xs text-green-700">
-                        X-axis: Vendor Name | Y1-axis: Price ($) | Y2-axis: Quantity (pcs)
-                      </div>
-                    </div>
+                {/* Contract */}
+                <div className="bg-white p-4 rounded-lg border">
+                  <h4 className="text-sm font-medium text-gray-800 mb-2">Contract</h4>
+                  <div className="h-56">
+                    {renderChart(analyticsData.contractData, 'bar', 'price', '', '#f472b6', '#fca5a5', 'vendor', 'Vendor name', 'Price', '')}
                   </div>
+                </div>
 
-                  {/* EXIM Module */}
-                  <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-4 rounded-lg border border-purple-200">
-                    <h4 className="font-semibold text-purple-900 mb-3 flex items-center gap-2">
-                      <Package className="h-4 w-4" />
-                      Export/Import
-                    </h4>
-                    <div className="space-y-2">
-                      <div className="h-48 bg-white rounded border p-2">
-                        <ResponsiveContainer width="100%" height="100%">
-                          {renderChart(analyticsData.eximData, analyticsData.chartTypes.exim, 'price', 'quantity', '#9333ea', '#c084fc', 'date')}
-                        </ResponsiveContainer>
-                      </div>
-                      <div className="text-xs text-purple-700">
-                        X-axis: Date of Purchase | Y1-axis: Price ($) | Y2-axis: Quantity (pcs)
-                      </div>
-                    </div>
+                {/* EXIM */}
+                <div className="bg-white p-4 rounded-lg border">
+                  <h4 className="text-sm font-medium text-gray-800 mb-2">EXIM</h4>
+                  <div className="h-56">
+                    {renderChart(analyticsData.eximData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'date', 'Date of Purchase', 'Price', 'Quantity')}
                   </div>
+                </div>
 
-                  {/* Quote Module */}
-                  <div className="bg-gradient-to-br from-orange-50 to-orange-100 p-4 rounded-lg border border-orange-200">
-                    <h4 className="font-semibold text-orange-900 mb-3 flex items-center gap-2">
-                      <FileText className="h-4 w-4" />
-                      Quotes
-                    </h4>
-                    <div className="space-y-2">
-                      <div className="h-48 bg-white rounded border p-2">
-                        <ResponsiveContainer width="100%" height="100%">
-                          {renderChart(analyticsData.quoteData, analyticsData.chartTypes.quote, 'price', 'quantity', '#ea580c', '#fed7aa', 'date')}
-                        </ResponsiveContainer>
-                      </div>
-                      <div className="text-xs text-orange-700">
-                        X-axis: Date | Y1-axis: Price ($) | Y2-axis: Quantity (pcs)
-                      </div>
-                    </div>
+                {/* Quote */}
+                <div className="bg-white p-4 rounded-lg border">
+                  <h4 className="text-sm font-medium text-gray-800 mb-2">Quote</h4>
+                  <div className="h-56">
+                    {renderChart(analyticsData.quoteData, 'line', 'price', 'quantity', '#334155', '#94a3b8', 'date', 'Date', 'Price', 'Quantity')}
                   </div>
+                </div>
 
-                  {/* Online Pricing Module */}
-                  <div className="bg-gradient-to-br from-teal-50 to-teal-100 p-4 rounded-lg border border-teal-200">
-                    <h4 className="font-semibold text-teal-900 mb-3 flex items-center gap-2">
-                      <Globe className="h-4 w-4" />
-                      Online Pricing
-                    </h4>
-                    <div className="space-y-2">
-                      <div className="h-48 bg-white rounded border p-2">
-                        <ResponsiveContainer width="100%" height="100%">
-                          {renderChart(analyticsData.onlineData, analyticsData.chartTypes.online, 'price', 'quantity', '#0d9488', '#99f6e4', 'vendor')}
-                        </ResponsiveContainer>
-                      </div>
-                      <div className="text-xs text-teal-700">
-                        X-axis: Digikey, Mouser, LCSC, Farnell | Y1-axis: Price ($) | Y2-axis: Quantity (pcs)
-                      </div>
-                    </div>
+                {/* Online Pricing (full width) */}
+                <div className="bg-white p-4 rounded-lg border lg:col-span-2">
+                  <h4 className="text-sm font-medium text-gray-800 mb-2">Online Pricing</h4>
+                  <div className="h-56">
+                    {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Digikey, Mouser, LCSC, Farnell', 'Price', 'Quantity')}
                   </div>
-
-                  {/* Summary Statistics */}
-                  <div className="bg-gradient-to-br from-gray-50 to-gray-100 p-4 rounded-lg border border-gray-200 md:col-span-2">
-                    <h4 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                      <BarChart3 className="h-4 w-4" />
-                      Cross-Platform Summary for {selectedItemForAnalytics.itemId}
-                    </h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-3">
-                        <div className="bg-white p-3 rounded border">
-                          <div className="text-sm font-medium text-gray-600">Purchase Orders</div>
-                          <div className="text-2xl font-bold text-blue-600">{analyticsData.poData.length}</div>
-                          <div className="text-xs text-gray-500">Historical PO data points</div>
-                        </div>
-                        <div className="bg-white p-3 rounded border">
-                          <div className="text-sm font-medium text-gray-600">Contracts</div>
-                          <div className="text-2xl font-bold text-green-600">{analyticsData.contractData.length}</div>
-                          <div className="text-xs text-gray-500">Vendor options</div>
-                        </div>
-                      </div>
-                      <div className="space-y-3">
-                        <div className="bg-white p-3 rounded border">
-                          <div className="text-sm font-medium text-gray-600">Total Value</div>
-                          <div className="text-2xl font-bold text-gray-800">${selectedItemForAnalytics.totalPrice.toLocaleString()}</div>
-                          <div className="text-xs text-gray-500">Current total value</div>
-                        </div>
-                        <div className="bg-white p-3 rounded border">
-                          <div className="text-sm font-medium text-gray-600">Best Price</div>
-                          <div className="text-2xl font-bold text-teal-600">
-                            ${Math.min(...analyticsData.onlineData.map((d: any) => d.price)).toFixed(2)}
-                          </div>
-                          <div className="text-xs text-gray-500">Lowest available price</div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                </div>
               </div>
             )}
 

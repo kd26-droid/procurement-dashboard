@@ -69,6 +69,7 @@ export type ActionsSettings = {
   itemIdType: ItemIdType
   sources: PriceSource[]
   maxAgeDays: number
+  criteria?: ActionCriterion[]
 }
 
 export type AppSettings = {
@@ -119,6 +120,7 @@ export const buildDefaultSettings = (name = 'Default'): AppSettings => ({
     itemIdType: 'MPN',
     sources: ['PO', 'Contract', 'Quote'],
     maxAgeDays: 365,
+    criteria: [],
   },
 })
 
@@ -146,6 +148,18 @@ type ActionFormula = {
   dateOperator: 'before' | 'after' | 'range'
   dateValue: string
   action: string
+}
+
+// Criteria builder types
+type CriteriaField = 'Purpose' | 'Item ID Type' | 'Source' | 'Date' | 'Price' | 'Quantity' | 'Vendor'
+type CriteriaOperator = 'is' | 'is not' | 'before' | 'after' | '=' | '>' | '<' | '>=' | '<='
+export type ActionCriterion = {
+  id: string
+  conjunction: 'WHERE' | 'AND' | 'OR'
+  field: CriteriaField
+  operator: CriteriaOperator
+  value: string
+  unit?: string
 }
 
 // --- MAIN COMPONENT ---
@@ -1094,7 +1108,9 @@ export function SettingsPanel({
               <Card>
                 <CardHeader>
                   <CardTitle>Item ID Mapping</CardTitle>
-                  <CardDescription>Define which Item ID to use for each mapping type</CardDescription>
+                  <CardDescription className="text-gray-600">
+                    Define which Item ID to use for each mapping type
+                  </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {DEFAULT_MAPPING_IDS.map(mapping => (
@@ -1127,7 +1143,7 @@ export function SettingsPanel({
               <Card className="lg:col-span-1">
                 <CardHeader>
                   <CardTitle>Price Sources</CardTitle>
-                  <CardDescription>Select sources for price comparison</CardDescription>
+                  <CardDescription className="text-gray-600">Select sources for price comparison</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="rounded-lg border bg-white overflow-hidden">
@@ -1169,88 +1185,177 @@ export function SettingsPanel({
             <div className="space-y-6">
               <Card>
                 <CardHeader>
-                  <CardTitle>Action Formula Builder</CardTitle>
-                  <CardDescription>Create rules to automatically assign actions to items</CardDescription>
+                  <CardTitle>Event Criteria</CardTitle>
+                  <CardDescription>Build simple WHERE…AND… conditions for assigning actions</CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-6">
-                  <div className="p-4 border rounded-lg bg-gray-50">
-                    <Label className="text-sm font-medium mb-4 block">Build Rule</Label>
-                    <div className="space-y-4">
-                      <div className="flex flex-wrap items-center gap-2 text-sm">
-                        <span className="font-medium">IF</span>
-                        <span className="text-gray-600">purpose is</span>
-                        <Select value={currentFormula.purpose} onValueChange={(value) => updateCurrentFormula('purpose', value)}>
-                          <SelectTrigger className="w-24 font-bold"><SelectValue /></SelectTrigger>
+                <CardContent>
+                  {/* Criteria rows */}
+                  <div className="space-y-3">
+                    {(local.actions.criteria || []).map((row, idx) => (
+                      <div key={row.id} className="flex flex-wrap items-center gap-2 p-2 rounded border">
+                        {/* Conjunction */}
+                        {idx === 0 ? (
+                          <span className="text-sm text-gray-600 font-semibold mr-2">WHERE</span>
+                        ) : (
+                          <Select
+                            value={row.conjunction}
+                            onValueChange={(v) => setLocal(prev => ({
+                              ...prev,
+                              actions: {
+                                ...prev.actions,
+                                criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, conjunction: v as 'AND' | 'OR' } : r)
+                              }
+                            }))}
+                          >
+                            <SelectTrigger className="w-20"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="AND">AND</SelectItem>
+                              <SelectItem value="OR">OR</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        )}
+
+                        {/* Field */}
+                        <Select
+                          value={row.field}
+                          onValueChange={(v) => setLocal(prev => ({
+                            ...prev,
+                            actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, field: v as any, operator: 'is', value: '' } : r) }
+                          }))}
+                        >
+                          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="Quote">Quote</SelectItem>
-                            <SelectItem value="PO">PO</SelectItem>
-                            <SelectItem value="Contract">Contract</SelectItem>
+                            <SelectItem value="Purpose">Purpose</SelectItem>
+                            <SelectItem value="Item ID Type">Item ID Type</SelectItem>
+                            <SelectItem value="Source">Source</SelectItem>
+                            <SelectItem value="Date">Date</SelectItem>
+                            <SelectItem value="Price">Price</SelectItem>
+                            <SelectItem value="Quantity">Quantity</SelectItem>
+                            <SelectItem value="Vendor">Vendor</SelectItem>
                           </SelectContent>
                         </Select>
-                        <span className="font-medium">AND</span>
-                        <span className="text-gray-600">item ID is</span>
-                        <Select value={currentFormula.itemIdType} onValueChange={(value) => updateCurrentFormula('itemIdType', value)}>
-                          <SelectTrigger className="w-20 font-bold"><SelectValue /></SelectTrigger>
+
+                        {/* Operator */}
+                        <Select
+                          value={row.operator}
+                          onValueChange={(v) => setLocal(prev => ({
+                            ...prev,
+                            actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, operator: v as any } : r) }
+                          }))}
+                        >
+                          <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="MPN">MPN</SelectItem>
-                            <SelectItem value="CPN">CPN</SelectItem>
-                            <SelectItem value="HSN">HSN</SelectItem>
+                            {/* Operators vary by field */}
+                            {(['Purpose','Item ID Type','Source','Vendor'].includes(row.field) ? (
+                              <>
+                                <SelectItem value="is">is</SelectItem>
+                                <SelectItem value="is not">is not</SelectItem>
+                              </>
+                            ) : row.field === 'Date' ? (
+                              <>
+                                <SelectItem value="before">before</SelectItem>
+                                <SelectItem value="after">after</SelectItem>
+                              </>
+                            ) : (
+                              <>
+                                <SelectItem value=">=">≥</SelectItem>
+                                <SelectItem value="<=">≤</SelectItem>
+                                <SelectItem value=">">></SelectItem>
+                                <SelectItem value="<">{'<'}</SelectItem>
+                                <SelectItem value="=">=</SelectItem>
+                              </>
+                            ))}
                           </SelectContent>
                         </Select>
-                        <span className="font-medium">AND</span>
-                        <span className="text-gray-600">source is</span>
-                        <Select value={currentFormula.source} onValueChange={(value) => updateCurrentFormula('source', value)}>
-                          <SelectTrigger className="w-32 font-bold"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="PO">PO</SelectItem>
-                            <SelectItem value="Contract">Contract</SelectItem>
-                            <SelectItem value="Quote">Quote</SelectItem>
-                            <SelectItem value="Online - Digikey">Digikey</SelectItem>
-                            <SelectItem value="Online - Mouser">Mouser</SelectItem>
-                            <SelectItem value="Online - LCSC">LCSC</SelectItem>
-                            <SelectItem value="Online - Farnell">Farnell</SelectItem>
-                            <SelectItem value="EXIM">EXIM</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <span className="font-medium">AND</span>
-                        <span className="text-gray-600">date is</span>
-                        <Select value={currentFormula.dateOperator} onValueChange={(value) => updateCurrentFormula('dateOperator', value)}>
-                          <SelectTrigger className="w-24 font-bold"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="before">before</SelectItem>
-                            <SelectItem value="after">after</SelectItem>
-                            <SelectItem value="range">range</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <Input type="date" value={currentFormula.dateValue} onChange={(e) => updateCurrentFormula('dateValue', e.target.value)} className="w-32 font-bold" />
+
+                        {/* Value editor */}
+                        {row.field === 'Purpose' && (
+                          <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
+                            <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Quote">Quote</SelectItem>
+                              <SelectItem value="PO">PO</SelectItem>
+                              <SelectItem value="Contract">Contract</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        )}
+                        {row.field === 'Item ID Type' && (
+                          <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
+                            <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="MPN">MPN</SelectItem>
+                              <SelectItem value="CPN">CPN</SelectItem>
+                              <SelectItem value="HSN">HSN</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        )}
+                        {row.field === 'Source' && (
+                          <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
+                            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {DEFAULT_PRICE_SOURCES.map(s => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                        {row.field === 'Date' && (
+                          <Input type="date" className="w-40" value={row.value} onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))} />
+                        )}
+                        {(row.field === 'Price' || row.field === 'Quantity' || row.field === 'Vendor') && (
+                          <>
+                            <Input
+                              className="w-40"
+                              placeholder={row.field === 'Vendor' ? 'Enter vendor' : '0'}
+                              value={row.value}
+                              onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))}
+                            />
+                            {row.field === 'Price' && (
+                              <Select value={row.unit || 'USD'} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, unit: v } : r) } }))}>
+                                <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="USD">USD</SelectItem>
+                                  <SelectItem value="INR">INR</SelectItem>
+                                  <SelectItem value="EUR">EUR</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            )}
+                          </>
+                        )}
+
+                        {/* Remove */}
+                        {idx > 0 && (
+                          <Button variant="ghost" size="icon" onClick={() => setLocal(prev => ({
+                            ...prev,
+                            actions: { ...prev.actions, criteria: (prev.actions.criteria || []).filter(r => r.id !== row.id) }
+                          }))}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        )}
                       </div>
-                      <div className="flex flex-wrap items-center gap-2 text-sm">
-                        <span className="font-medium">THEN</span>
-                        <span className="text-gray-600">action is</span>
-                        <span className="font-bold">{currentFormula.action}</span>
-                      </div>
-                    </div>
-                    <div className="mt-4 flex justify-end">
-                      <Button onClick={addFormula}><Plus className="mr-2 h-4 w-4" />Add Rule</Button>
-                    </div>
+                    ))}
                   </div>
-                  {actionFormulas.length > 0 && (
-                    <div className="mt-6 space-y-2">
-                      <Label className="text-sm font-medium">Created Rules</Label>
-                      {actionFormulas.map((formula) => (
-                        <div key={formula.id} className="p-3 border rounded-lg bg-gray-50">
-                          <div className="flex items-center justify-between">
-                            <div className="text-sm">
-                              IF purpose = <strong>{formula.purpose}</strong> AND item ID is <strong>{formula.itemIdType}</strong> AND source is <strong>{formula.source}</strong> AND date is {formula.dateOperator} <strong>{new Date(formula.dateValue).toLocaleDateString()}</strong>, THEN action is <strong>{formula.action}</strong>
-                            </div>
-                            <Button variant="ghost" size="sm" onClick={() => removeFormula(formula.id)}>
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+
+                  {/* Add Section */}
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      className="text-blue-600 text-sm font-medium hover:underline"
+                      onClick={() => setLocal(prev => ({
+                        ...prev,
+                        actions: {
+                          ...prev.actions,
+                          criteria: [...(prev.actions.criteria || []), {
+                            id: Date.now().toString(),
+                            conjunction: (prev.actions.criteria || []).length === 0 ? 'WHERE' : 'AND',
+                            field: 'Purpose',
+                            operator: 'is',
+                            value: 'Quote',
+                          }],
+                        },
+                      }))}
+                    >
+                      + Add Section
+                    </button>
+                  </div>
                 </CardContent>
               </Card>
             </div>
