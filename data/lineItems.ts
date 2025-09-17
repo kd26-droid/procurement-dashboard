@@ -17,7 +17,7 @@ export const initialLineItems = [
   },
   {
     id: 2,
-    customer: "Nidec",
+    customer: "Schneider Electric",
     itemId: "DRV-002",
     description: "DRV8825 Stepper Motor Driver Carrier, High Current",
     quantity: 50,
@@ -33,7 +33,7 @@ export const initialLineItems = [
   },
   {
     id: 3,
-    customer: "IPEL",
+    customer: "Schneider Electric",
     itemId: "RES-003",
     description: "10K 1% 0.125W 0805 Moisture Resistant Thick Film Chip Resistor - RC0805FR-0710KL",
     quantity: 1000,
@@ -49,7 +49,7 @@ export const initialLineItems = [
   },
   {
     id: 4,
-    customer: "Franklin Electric",
+    customer: "Schneider Electric",
     itemId: "CAP-004",
     description: "Multilayer Ceramic Capacitors MLCC - SMD/SMT .1uF 25volts 5%",
     quantity: 500,
@@ -65,7 +65,7 @@ export const initialLineItems = [
   },
   {
     id: 5,
-    customer: "Havells",
+    customer: "Schneider Electric",
     itemId: "DIO-005",
     description: "1N4007 - 1A General Purpose rectifier Diode",
     quantity: 200,
@@ -81,7 +81,7 @@ export const initialLineItems = [
   },
   {
     id: 6,
-    customer: "Minda Corporation",
+    customer: "Schneider Electric",
     itemId: "BJT-006",
     description: "2N2907 - PNP - Bipolar Transistor, 40V, 0.8A - TO92",
     quantity: 150,
@@ -97,7 +97,7 @@ export const initialLineItems = [
   },
   {
     id: 7,
-    customer: "PSG Dover",
+    customer: "Schneider Electric",
     itemId: "CON-007",
     description: "3.96mm 2pin Wafer Male Connector DIP Right Angle (Molex Compatible)",
     quantity: 75,
@@ -113,7 +113,7 @@ export const initialLineItems = [
   },
   {
     id: 8,
-    customer: "Invertek",
+    customer: "Schneider Electric",
     itemId: "HDR-008",
     description: "CONN HEADER R/A 4POS 3.96MM",
     quantity: 25,
@@ -145,7 +145,7 @@ export const initialLineItems = [
   },
   {
     id: 10,
-    customer: "Franklin Electric",
+    customer: "Schneider Electric",
     itemId: "CAP-010",
     description: "Multilayer Ceramic Capacitors MLCC - SMD/SMT 10V 1uF X5R 0603 10% HI CV",
     quantity: 300,
@@ -161,7 +161,7 @@ export const initialLineItems = [
   },
   {
     id: 11,
-    customer: "IPEL",
+    customer: "Schneider Electric",
     itemId: "CAP-011",
     description: "Multilayer Ceramic Capacitors MLCC - SMD/SMT 6.3V 47uF X5R 1206 20%",
     quantity: 60,
@@ -177,7 +177,7 @@ export const initialLineItems = [
   },
   {
     id: 12,
-    customer: "Nidec",
+    customer: "Schneider Electric",
     itemId: "IND-012",
     description: "Power Inductors - SMD 1.67A 6.8uH 185mOhm 3x3x1.5mm",
     quantity: 40,
@@ -193,7 +193,7 @@ export const initialLineItems = [
   },
   {
     id: 13,
-    customer: "Havells",
+    customer: "Schneider Electric",
     itemId: "ENC-013",
     description: "Rotary Quadrature Encoder 600PPR/2400CPR",
     quantity: 5,
@@ -209,7 +209,7 @@ export const initialLineItems = [
   },
   {
     id: 14,
-    customer: "Minda Corporation",
+    customer: "Schneider Electric",
     itemId: "SW-014",
     description: "MAGNETIC SWITCH UNIPOLAR SOT23W",
     quantity: 30,
@@ -225,7 +225,7 @@ export const initialLineItems = [
   },
   {
     id: 15,
-    customer: "PSG Dover",
+    customer: "Schneider Electric",
     itemId: "RES-015",
     description: "4.7K 1% 0402 Moisture Resistant Thick Film Chip Resistor - RC0402FR-074K7L",
     quantity: 2000,
@@ -241,7 +241,7 @@ export const initialLineItems = [
   },
   {
     id: 16,
-    customer: "Invertek",
+    customer: "Schneider Electric",
     itemId: "CAP-016",
     description: "Multilayer Ceramic Capacitors MLCC - SMD/SMT 0.01 uF 50 VDC 5% 0805 C0G (NP0) AEC-Q200",
     quantity: 120,
@@ -257,7 +257,7 @@ export const initialLineItems = [
   },
   {
     id: 17,
-    customer: "Franklin Electric",
+    customer: "Schneider Electric",
     itemId: "CON-017",
     description: "3.96mm 2pin Wafer Male Connector DIP Right Angle (Molex Compatible)",
     quantity: 100,

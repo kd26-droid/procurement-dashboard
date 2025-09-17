@@ -39,7 +39,7 @@ import {
 
 // Sample data based on the specification
 const projectData = {
-  name: "Q4 Office Supplies Procurement",
+  name: "Wireless Multisensor",
   id: "PROJ-2024-001",
   status: "Active",
   created: "2024-01-15",
@@ -83,6 +83,7 @@ export default function ProcurementDashboard() {
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null)
 
   const [columnWidths, setColumnWidths] = useState({
+    description: 280,
     category: 128,
     quantity: 80,
     vendor: 144,
@@ -172,15 +173,17 @@ export default function ProcurementDashboard() {
 
   const handleMouseDown = (columnKey: string, e: React.MouseEvent) => {
     e.preventDefault()
+    e.stopPropagation()
     setIsResizing(true)
     setResizeColumn(columnKey)
 
     const startX = e.clientX
-    const startWidth = columnWidths[columnKey as keyof typeof columnWidths]
+    const startWidth = columnWidths[columnKey as keyof typeof columnWidths] || 280 // default to 280 if not set
 
     const handleMouseMove = (e: MouseEvent) => {
       const diff = e.clientX - startX
-      const newWidth = Math.max(startWidth + diff, 80) // minimum 80px
+      const minWidth = columnKey === 'description' ? 200 : 80 // minimum 200px for description, 80px for others
+      const newWidth = Math.max(startWidth + diff, minWidth)
       setColumnWidths((prev) => ({
         ...prev,
         [columnKey]: newWidth,
@@ -254,6 +257,27 @@ export default function ProcurementDashboard() {
     ]
   }, [lineItems])
 
+  const filterMetrics = useMemo(() => {
+    return {
+      prices: {
+        pending: lineItems.filter((item) => item.unitPrice === 0).length,
+        identified: lineItems.filter((item) => item.unitPrice > 0).length
+      },
+      actions: {
+        pending: lineItems.filter((item) => !item.action || item.action.trim() === "").length,
+        defined: lineItems.filter((item) => item.action && item.action.trim() !== "").length
+      },
+      users: {
+        pending: lineItems.filter((item) => !item.assignedTo || item.assignedTo.trim() === "").length,
+        assigned: lineItems.filter((item) => item.assignedTo && item.assignedTo.trim() !== "").length
+      },
+      vendors: {
+        missing: lineItems.filter((item) => !item.vendor || item.vendor.trim() === "").length,
+        assigned: lineItems.filter((item) => item.vendor && item.vendor.trim() !== "").length
+      }
+    }
+  }, [lineItems])
+
   const handleFilterClick = (filterType: string) => {
     if (activeFilter === filterType) {
       setActiveFilter(null)
@@ -294,8 +318,8 @@ export default function ProcurementDashboard() {
         case "actions":
           filtered = filtered.filter((item) =>
             reverseFilter
-              ? item.assignedTo && item.assignedTo.trim() !== ""
-              : !item.assignedTo || item.assignedTo.trim() === "",
+              ? item.action && item.action.trim() !== ""
+              : !item.action || item.action.trim() === "",
           )
           break
         case "users":
@@ -700,8 +724,7 @@ export default function ProcurementDashboard() {
                 <div className="min-w-0 flex-1">
                   <h3 className="font-semibold text-red-900 text-sm">Prices</h3>
                   <p className="text-xs text-red-700">
-                    Pending: {lineItems.filter((item) => item.unitPrice === 0).length} / Identified:{" "}
-                    {lineItems.filter((item) => item.unitPrice > 0).length}
+                    Pending: {filterMetrics.prices.pending} / Identified: {filterMetrics.prices.identified}
                   </p>
                 </div>
                 <DollarSign className="h-4 w-4 text-red-600 flex-shrink-0" />
@@ -732,8 +755,7 @@ export default function ProcurementDashboard() {
                 <div className="min-w-0 flex-1">
                   <h3 className="font-semibold text-indigo-900 text-sm">Next Action</h3>
                   <p className="text-xs text-indigo-700">
-                    Pending: {lineItems.filter((item) => !item.action || item.action.trim() === "").length} /
-                    Defined: {lineItems.filter((item) => item.action && item.action.trim() !== "").length}
+                    Pending: {filterMetrics.actions.pending} / Defined: {filterMetrics.actions.defined}
                   </p>
                 </div>
                 <FileText className="h-4 w-4 text-indigo-600 flex-shrink-0" />
@@ -764,8 +786,7 @@ export default function ProcurementDashboard() {
                 <div className="min-w-0 flex-1">
                   <h3 className="font-semibold text-cyan-900 text-sm">Users</h3>
                   <p className="text-xs text-cyan-700">
-                    Pending: {lineItems.filter((item) => !item.assignedTo || item.assignedTo.trim() === "").length} /
-                    Assigned: {lineItems.filter((item) => item.assignedTo && item.assignedTo.trim() !== "").length}
+                    Pending: {filterMetrics.users.pending} / Assigned: {filterMetrics.users.assigned}
                   </p>
                 </div>
                 <Users className="h-4 w-4 text-cyan-600 flex-shrink-0" />
@@ -796,8 +817,7 @@ export default function ProcurementDashboard() {
                 <div className="min-w-0 flex-1">
                   <h3 className="font-semibold text-amber-900 text-sm">Vendors</h3>
                   <p className="text-xs text-amber-700">
-                    Missing: {lineItems.filter((item) => !item.vendor || item.vendor.trim() === "").length} / Assigned:{" "}
-                    {lineItems.filter((item) => item.vendor && item.vendor.trim() !== "").length}
+                    Missing: {filterMetrics.vendors.missing} / Assigned: {filterMetrics.vendors.assigned}
                   </p>
                 </div>
                 <Building2 className="h-4 w-4 text-amber-600 flex-shrink-0" />
@@ -1193,34 +1213,6 @@ export default function ProcurementDashboard() {
                 </SelectContent>
               </Select>
 
-              {/* Reset Selections Button */}
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 w-8 p-0 bg-transparent"
-                onClick={() => {
-                  console.log('Reset selections clicked')
-                  setSelectedItems([])
-                }}
-                title="Reset Selections"
-                disabled={selectedItems.length === 0}
-              >
-                <RotateCcw className="h-3 w-3 text-gray-600" />
-              </Button>
-
-              {/* Execute Action Button */}
-              <Button
-                size="sm"
-                className="h-8 bg-blue-600 hover:bg-blue-700 text-white"
-                onClick={() => {
-                  console.log('Execute action clicked, selected items:', selectedItems)
-                  // Add your execute action logic here
-                }}
-                title="Execute Action"
-                disabled={selectedItems.length === 0}
-              >
-                Execute Action
-              </Button>
             </div>
           </div>
 
@@ -1249,7 +1241,9 @@ export default function ProcurementDashboard() {
                         style={{
                           width: columnWidths[columnKey as keyof typeof columnWidths] || "auto",
                           minWidth:
-                            columnKey === "category"
+                            columnKey === "description"
+                              ? "200px"
+                              : columnKey === "category"
                               ? "128px"
                               : columnKey === "quantity"
                                 ? "80px"
@@ -1260,7 +1254,13 @@ export default function ProcurementDashboard() {
                                     : "auto",
                         }}
                         draggable
-                        onDragStart={() => setDraggedColumn(columnKey)}
+                        onDragStart={(e) => {
+                          if (isResizing) {
+                            e.preventDefault()
+                            return
+                          }
+                          setDraggedColumn(columnKey)
+                        }}
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={() => {
                           if (draggedColumn && draggedColumn !== columnKey) {
@@ -1281,11 +1281,13 @@ export default function ProcurementDashboard() {
                           </button>
                           <GripVertical className="h-3 w-3 text-gray-400 opacity-0 group-hover:opacity-100 cursor-grab flex-shrink-0 ml-2" />
                         </div>
-                        <div
-                  className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 group-hover:opacity-100"
-                  onMouseDown={(e) => handleMouseDown(columnKey, e)}
-                  style={{ zIndex: 10 }}
-                ></div>
+                        {(columnKey === "description" || columnKey === "category" || columnKey === "quantity" || columnKey === "vendor" || columnKey === "assignedTo" || columnKey === "unitPrice" || columnKey === "totalPrice") && (
+                          <div
+                            className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 group-hover:opacity-100"
+                            onMouseDown={(e) => handleMouseDown(columnKey, e)}
+                            style={{ zIndex: 10 }}
+                          ></div>
+                        )}
               </th>
             )
           })}
@@ -1335,7 +1337,7 @@ export default function ProcurementDashboard() {
 
                       if (columnKey === "description") {
                         return (
-                          <td key={columnKey} className="p-2 text-left max-w-28">
+                          <td key={columnKey} className="p-2 text-left" style={{ width: columnWidths.description }}>
                             {editingItem === item.id ? (
                               <Input
                                 value={item.description}
@@ -1564,25 +1566,34 @@ export default function ProcurementDashboard() {
                   <span>{/* Empty space when no selection */}</span>
                 )}
               </div>
-              {selectedItems.length > 0 && (
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-gray-600 hover:text-gray-800 bg-transparent"
-                    disabled={selectedItems.length === 0}
-                  >
-                    Revert Changes
-                  </Button>
-                  <Button
-                    size="sm"
-                    className="bg-blue-600 hover:bg-blue-700 text-white"
-                    disabled={selectedItems.length === 0}
-                  >
-                    Execute
-                  </Button>
-                </div>
-              )}
+
+              {/* Action Buttons */}
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 w-8 p-0"
+                  onClick={() => {
+                    console.log('Reset selections clicked')
+                    setSelectedItems([])
+                  }}
+                  title="Reset Selections"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                </Button>
+
+                <Button
+                  size="sm"
+                  className="bg-blue-600 hover:bg-blue-700 text-white h-8"
+                  onClick={() => {
+                    console.log('Execute action clicked, selected items:', selectedItems)
+                    // Add your execute action logic here
+                  }}
+                  title="Execute Action"
+                >
+                  Execute Action
+                </Button>
+              </div>
             </div>
             <div className="flex items-center gap-4">
               <span className="text-sm text-gray-700">
