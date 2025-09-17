@@ -8,9 +8,10 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
+import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { initialLineItems } from '../data/lineItems'
-import { SettingsDialog, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
+import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
 import {
   Settings,
@@ -43,7 +44,7 @@ const projectData = {
   id: "PROJ-2024-001",
   status: "Active",
   created: "2024-01-15",
-  deadline: "2024-03-31",
+  deadline: "2026-10-31",
 }
 
 
@@ -166,6 +167,40 @@ export default function ProcurementDashboard() {
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean)
+      people.forEach((p) => set.add(p))
+    }
+    return Array.from(set).sort()
+  }, [lineItems])
+
+  // Dynamic filter options from table data
+  const vendorOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const it of lineItems) {
+      const v = String(it.vendor || '').trim()
+      set.add(v === '' ? 'TBD' : v)
+    }
+    return Array.from(set).sort()
+  }, [lineItems])
+
+  const actionOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const it of lineItems) {
+      const a = String(it.action || '').trim()
+      if (a) set.add(a)
+    }
+    return Array.from(set).sort()
+  }, [lineItems])
+
+  const assignedOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const it of lineItems) {
+      const people = Array.isArray(it.assignedTo)
+        ? (it.assignedTo as string[])
+        : String(it.assignedTo || '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+      if (people.length === 0) set.add('Unassigned')
       people.forEach((p) => set.add(p))
     }
     return Array.from(set).sort()
@@ -603,6 +638,17 @@ export default function ProcurementDashboard() {
     return <Globe className="h-3 w-3 text-teal-600" />
   }
 
+  // Icon for current Action (for tooltips next to price)
+  const actionIcon = (action?: string) => {
+    if (!action || !action.trim()) return null
+    const a = action.trim().toLowerCase()
+    if (a === 'direct po') return <DollarSign className="h-3 w-3 text-green-600" />
+    if (a === 'contract') return <FileSignature className="h-3 w-3 text-emerald-600" />
+    if (a === 'quote') return <FileText className="h-3 w-3 text-indigo-600" />
+    if (a === 'rfq') return <FileText className="h-3 w-3 text-gray-600" />
+    return <FileText className="h-3 w-3 text-gray-500" />
+  }
+
   function mockPriceForSource(item: any, source: PriceSource): number {
     // Deterministic pseudo-price based on itemId and source
     const key = String(item.itemId || '') + '|' + source
@@ -623,6 +669,161 @@ export default function ProcurementDashboard() {
     return Math.max(1, base + (adj[source] || 0))
   }
 
+  // Generate realistic analytics data for each item
+  const generateAnalyticsData = (item: any) => {
+    const seed = item.id
+    const random = (min: number, max: number) => {
+      const x = Math.sin(seed * 9999) * 10000
+      return Math.floor((x - Math.floor(x)) * (max - min + 1)) + min
+    }
+
+    const basePrice = item.unitPrice || 100 + random(50, 300)
+
+    // Use consistent chart types for all items
+    const chartTypes = {
+      po: 'composed',      // Always bars + line
+      contract: 'bar',     // Always bars
+      exim: 'area',        // Always area + line
+      quote: 'line',       // Always dual lines
+      online: 'composed'   // Always bars + line
+    }
+
+    // PO Module - Date vs Price/Quantity (More varied data)
+    const poData = Array.from({ length: 6 }, (_, i) => {
+      const monthsAgo = 5 - i
+      const date = new Date()
+      date.setMonth(date.getMonth() - monthsAgo)
+      const priceVariation = 0.7 + (random(0, 60) / 100) // 70% to 130% of base price
+      const quantityBase = 50 + random(0, 450) // 50-500 base
+      return {
+        date: date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
+        price: Math.max(basePrice * priceVariation + random(-20, 20), 1),
+        quantity: quantityBase + random(-30, 30)
+      }
+    })
+
+    // Contract Module - Vendor vs Price/Quantity (More varied data)
+    const vendors = ['Vendor A', 'Vendor B', 'Vendor C', 'Vendor D', 'Vendor E']
+    const contractData = vendors.map((vendor, index) => {
+      const priceMultiplier = 0.6 + (random(0, 80) / 100) // 60% to 140% variation
+      const quantityRange = [100, 300, 500, 800, 1200][index] + random(-50, 50)
+      return {
+        vendor,
+        price: Math.max(basePrice * priceMultiplier + random(-15, 25), 1),
+        quantity: Math.max(quantityRange, 50)
+      }
+    })
+
+    // EXIM Module - Date vs Price/Quantity (More varied data)
+    const eximData = Array.from({ length: 5 }, (_, i) => {
+      const weeksAgo = 4 - i
+      const date = new Date()
+      date.setDate(date.getDate() - (weeksAgo * 7))
+      const priceFluctuation = 0.65 + (random(0, 70) / 100) // 65% to 135%
+      const quantityBase = 25 + random(0, 175) // 25-200 base
+      return {
+        date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        price: Math.max(basePrice * priceFluctuation + random(-10, 15), 1),
+        quantity: quantityBase + random(-15, 25)
+      }
+    })
+
+    // Quote Module - Date vs Price/Quantity (More varied data)
+    const quoteData = Array.from({ length: 7 }, (_, i) => {
+      const daysAgo = 6 - i
+      const date = new Date()
+      date.setDate(date.getDate() - daysAgo)
+      const priceRange = 0.8 + (random(0, 40) / 100) // 80% to 120%
+      const quantitySpread = 10 + random(0, 90) // 10-100 base
+      return {
+        date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        price: Math.max(basePrice * priceRange + random(-5, 10), 1),
+        quantity: quantitySpread + random(-5, 15)
+      }
+    })
+
+    // Online Pricing Module - Vendors vs Price/Quantity (More varied data)
+    const onlineVendors = ['Digikey', 'Mouser', 'LCSC', 'Farnell']
+    const onlineData = onlineVendors.map((vendor, index) => {
+      const priceFactors = [0.95, 0.92, 0.88, 0.90] // Different base prices per vendor
+      const quantityBases = [50, 75, 100, 60] // Different quantity patterns
+      const priceFactor = priceFactors[index] + (random(-10, 15) / 100)
+      const quantityBase = quantityBases[index] + random(-20, 30)
+      return {
+        vendor,
+        price: Math.max(basePrice * priceFactor + random(-8, 12), 1),
+        quantity: Math.max(quantityBase, 5)
+      }
+    })
+
+    return { poData, contractData, eximData, quoteData, onlineData, chartTypes }
+  }
+
+  // Helper function to render different chart types
+  const renderChart = (data: any[], type: string, dataKey1: string, dataKey2: string, color1: string, color2: string, xAxisKey: string) => {
+    const commonTooltip = (value: any, name: string) => [
+      name === dataKey1 ? `$${Number(value).toFixed(2)}` : `${value} pcs`,
+      name === dataKey1 ? 'Price' : 'Quantity'
+    ]
+
+    switch (type) {
+      case 'line':
+        return (
+          <ComposedChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey={xAxisKey} />
+            <YAxis yAxisId="left" orientation="left" />
+            <YAxis yAxisId="right" orientation="right" />
+            <Tooltip formatter={commonTooltip} />
+            <Line yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={3} dot={{ fill: color1, strokeWidth: 2, r: 4 }} />
+            <Line yAxisId="right" type="monotone" dataKey={dataKey2} stroke={color2} strokeWidth={2} dot={{ fill: color2, strokeWidth: 2, r: 3 }} />
+          </ComposedChart>
+        )
+      case 'bar':
+        return (
+          <ComposedChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey={xAxisKey} />
+            <YAxis yAxisId="left" orientation="left" />
+            <YAxis yAxisId="right" orientation="right" />
+            <Tooltip formatter={commonTooltip} />
+            <Bar yAxisId="left" dataKey={dataKey1} fill={color1} />
+            <Bar yAxisId="right" dataKey={dataKey2} fill={color2} />
+          </ComposedChart>
+        )
+      case 'area':
+        return (
+          <ComposedChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey={xAxisKey} />
+            <YAxis yAxisId="left" orientation="left" />
+            <YAxis yAxisId="right" orientation="right" />
+            <Tooltip formatter={commonTooltip} />
+            <Area yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} fill={color1} fillOpacity={0.6} />
+            <Line yAxisId="right" type="monotone" dataKey={dataKey2} stroke={color2} strokeWidth={2} />
+          </ComposedChart>
+        )
+      default: // composed
+        return (
+          <ComposedChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey={xAxisKey} />
+            <YAxis yAxisId="left" orientation="left" />
+            <YAxis yAxisId="right" orientation="right" />
+            <Tooltip formatter={commonTooltip} />
+            <Bar yAxisId="right" dataKey={dataKey2} fill={color2} />
+            <Line yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={3} dot={{ fill: color1, strokeWidth: 2, r: 4 }} />
+          </ComposedChart>
+        )
+    }
+  }
+
+  // Generate analytics data for the selected item
+  const analyticsData = useMemo(() => {
+    if (!selectedItemForAnalytics) return null
+    return generateAnalyticsData(selectedItemForAnalytics)
+  }, [selectedItemForAnalytics])
+
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-7xl mx-auto p-6 space-y-4">
@@ -632,19 +833,6 @@ export default function ProcurementDashboard() {
             <div className="flex items-center justify-between">
               <h1 className="text-2xl font-bold text-gray-900 mb-2">Procurement Strategy</h1>
               <div className="flex items-center gap-2">
-                <Select value={currentSettingsKey} onValueChange={(v) => {
-                  setCurrentSettingsKey(v)
-                  if (typeof window !== 'undefined') localStorage.setItem('currentSettingsProfile', v)
-                }}>
-                  <SelectTrigger className="w-40 h-8 text-xs" title="Select Settings Profile">
-                    <SelectValue placeholder="Settings profile" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Object.keys(settingsProfiles).map((k) => (
-                      <SelectItem key={k} value={k}>{k}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
                 <Button
                   variant="outline"
                   className="flex items-center gap-2 bg-transparent"
@@ -859,14 +1047,15 @@ export default function ProcurementDashboard() {
               <Popover>
                 <PopoverTrigger asChild>
                   <Button
+                    type="button"
                     variant="outline"
                     className={`w-40 justify-between ${
-                      vendorFilter.length > 0 && vendorFilter.length < 5
+                      vendorFilter.length > 0 && vendorFilter.length < vendorOptions.length
                         ? "bg-blue-50 border-blue-300 text-blue-700"
                         : ""
                     }`}
                   >
-                    {vendorFilter.length === 0 || vendorFilter.length === 5
+                    {vendorFilter.length === 0 || vendorFilter.length === vendorOptions.length
                       ? "All Vendors"
                       : vendorFilter.length === 1
                         ? vendorFilter[0] === "tbd"
@@ -876,15 +1065,15 @@ export default function ProcurementDashboard() {
                     <ChevronDown className="h-4 w-4" />
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent className="w-40 p-0">
+                <PopoverContent side="bottom" align="start" className="w-40 p-0">
                   <div className="p-2 space-y-1">
                     <label className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-1 rounded border-b border-gray-200">
                       <input
                         type="checkbox"
-                        checked={vendorFilter.length === 5}
+                        checked={vendorFilter.length === vendorOptions.length}
                         onChange={(e) => {
                           if (e.target.checked) {
-                            setVendorFilter(["Office Plus", "Dell Business", "Paper World", "Monitor Pro", "tbd"])
+                            setVendorFilter(vendorOptions.map((v) => (v === 'TBD' ? 'tbd' : v)))
                           } else {
                             setVendorFilter([])
                           }
@@ -893,7 +1082,7 @@ export default function ProcurementDashboard() {
                       />
                       <span className="text-sm font-medium">Select All</span>
                     </label>
-                    {["Office Plus", "Dell Business", "Paper World", "Monitor Pro", "TBD"].map((vendor) => (
+                    {vendorOptions.map((vendor) => (
                       <label
                         key={vendor}
                         className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-1 rounded"
@@ -921,14 +1110,15 @@ export default function ProcurementDashboard() {
               <Popover>
                 <PopoverTrigger asChild>
                   <Button
+                    type="button"
                     variant="outline"
                     className={`w-40 justify-between ${
-                      actionFilter.length > 0 && actionFilter.length < 3
+                      actionFilter.length > 0 && actionFilter.length < actionOptions.length
                         ? "bg-blue-50 border-blue-300 text-blue-700"
                         : ""
                     }`}
                   >
-                    {actionFilter.length === 0 || actionFilter.length === 3
+                    {actionFilter.length === 0 || actionFilter.length === actionOptions.length
                       ? "All Actions"
                       : actionFilter.length === 1
                         ? actionFilter[0]
@@ -936,15 +1126,15 @@ export default function ProcurementDashboard() {
                     <ChevronDown className="h-4 w-4" />
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent className="w-40 p-0">
+                <PopoverContent side="bottom" align="start" className="w-40 p-0">
                   <div className="p-2 space-y-1">
                     <label className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-1 rounded border-b border-gray-200">
                       <input
                         type="checkbox"
-                        checked={actionFilter.length === 4}
+                        checked={actionFilter.length === actionOptions.length}
                         onChange={(e) => {
                           if (e.target.checked) {
-                            setActionFilter(["RFQ", "Direct PO", "Quote", "Contract"])
+                            setActionFilter(actionOptions)
                           } else {
                             setActionFilter([])
                           }
@@ -953,7 +1143,7 @@ export default function ProcurementDashboard() {
                       />
                       <span className="text-sm font-medium">Select All</span>
                     </label>
-                    {["RFQ", "Direct PO", "Quote", "Contract"].map((action) => (
+                    {actionOptions.map((action) => (
                       <label
                         key={action}
                         className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-1 rounded"
@@ -980,14 +1170,15 @@ export default function ProcurementDashboard() {
               <Popover>
                 <PopoverTrigger asChild>
                   <Button
+                    type="button"
                     variant="outline"
                     className={`w-40 justify-between ${
-                      assignedFilter.length > 0 && assignedFilter.length < 4
+                      assignedFilter.length > 0 && assignedFilter.length < assignedOptions.length
                         ? "bg-blue-50 border-blue-300 text-blue-700"
                         : ""
                     }`}
                   >
-                    {assignedFilter.length === 0 || assignedFilter.length === 4
+                    {assignedFilter.length === 0 || assignedFilter.length === assignedOptions.length
                       ? "All Assigned"
                       : assignedFilter.length === 1
                         ? assignedFilter[0] === "unassigned"
@@ -997,15 +1188,15 @@ export default function ProcurementDashboard() {
                     <ChevronDown className="h-4 w-4" />
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent className="w-40 p-0">
+                <PopoverContent side="bottom" align="start" className="w-40 p-0">
                   <div className="p-2 space-y-1">
                     <label className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-1 rounded border-b border-gray-200">
                       <input
                         type="checkbox"
-                        checked={assignedFilter.length === 4}
+                        checked={assignedFilter.length === assignedOptions.length}
                         onChange={(e) => {
                           if (e.target.checked) {
-                            setAssignedFilter(["John Smith", "Sarah Johnson", "Mike Wilson", "unassigned"])
+                            setAssignedFilter(assignedOptions.map((x) => (x === 'Unassigned' ? 'unassigned' : x)))
                           } else {
                             setAssignedFilter([])
                           }
@@ -1014,7 +1205,7 @@ export default function ProcurementDashboard() {
                       />
                       <span className="text-sm font-medium">Select All</span>
                     </label>
-                    {["John Smith", "Sarah Johnson", "Mike Wilson", "Unassigned"].map((assigned) => (
+                    {assignedOptions.map((assigned) => (
                       <label
                         key={assigned}
                         className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-1 rounded"
@@ -1042,14 +1233,15 @@ export default function ProcurementDashboard() {
               <Popover>
                 <PopoverTrigger asChild>
                   <Button
+                    type="button"
                     variant="outline"
                     className={`w-40 justify-between ${
-                      categoryFilter.length > 0 && categoryFilter.length < 4
+                      categoryFilter.length > 0 && categoryFilter.length < allTags.length
                         ? "bg-blue-50 border-blue-300 text-blue-700"
                         : ""
                     }`}
                   >
-                    {categoryFilter.length === 0 || categoryFilter.length === 4
+                    {categoryFilter.length === 0 || categoryFilter.length === allTags.length
                       ? "All Categories"
                       : categoryFilter.length === 1
                         ? categoryFilter[0]
@@ -1057,15 +1249,15 @@ export default function ProcurementDashboard() {
                     <ChevronDown className="h-4 w-4" />
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent className="w-40 p-0">
+                <PopoverContent side="bottom" align="start" className="w-40 p-0">
                   <div className="p-2 space-y-1">
                     <label className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-1 rounded border-b border-gray-200">
                       <input
                         type="checkbox"
-                        checked={categoryFilter.length === 4}
+                        checked={categoryFilter.length === allTags.length}
                         onChange={(e) => {
                           if (e.target.checked) {
-                            setCategoryFilter(["Office Supplies", "Electronics", "Furniture", "Software"])
+                            setCategoryFilter(allTags)
                           } else {
                             setCategoryFilter([])
                           }
@@ -1074,7 +1266,7 @@ export default function ProcurementDashboard() {
                       />
                       <span className="text-sm font-medium">Select All</span>
                     </label>
-                    {["Office Supplies", "Electronics", "Furniture", "Software"].map((category) => (
+                    {allTags.map((category) => (
                       <label
                         key={category}
                         className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-1 rounded"
@@ -1481,7 +1673,18 @@ export default function ProcurementDashboard() {
                               >
                                 {hasPrice ? `$${item.unitPrice.toFixed(2)}` : "N/A"}
                               </span>
-                              {hasPrice && priceSourceIcon((item as any).priceSource)}
+                              {hasPrice && (
+                                <UiTooltip>
+                                  <UiTooltipTrigger asChild>
+                                    <span className="inline-flex items-center">
+                                      {actionIcon((item as any).action as string)}
+                                    </span>
+                                  </UiTooltipTrigger>
+                                  <UiTooltipContent side="top">
+                                    {`Action: ${(item as any).action || 'Not set'}`}
+                                  </UiTooltipContent>
+                                </UiTooltip>
+                              )}
                             </div>
                           </td>
                         )
@@ -1555,46 +1758,7 @@ export default function ProcurementDashboard() {
           </div>
 
           <div className="flex items-center justify-between px-4 py-3 bg-white border-t border-gray-200">
-            <div className="flex items-center gap-4">
-              <div className="text-sm text-gray-700">
-                {selectedItems.length > 0 ? (
-                  <span className="text-blue-600 font-medium">
-                    {selectedItems.length} of {filteredAndSortedItems.length} item
-                    {selectedItems.length !== 1 ? "s" : ""} selected
-                  </span>
-                ) : (
-                  <span>{/* Empty space when no selection */}</span>
-                )}
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 w-8 p-0"
-                  onClick={() => {
-                    console.log('Reset selections clicked')
-                    setSelectedItems([])
-                  }}
-                  title="Reset Selections"
-                >
-                  <RotateCcw className="h-3 w-3" />
-                </Button>
-
-                <Button
-                  size="sm"
-                  className="bg-blue-600 hover:bg-blue-700 text-white h-8"
-                  onClick={() => {
-                    console.log('Execute action clicked, selected items:', selectedItems)
-                    // Add your execute action logic here
-                  }}
-                  title="Execute Action"
-                >
-                  Execute Action
-                </Button>
-              </div>
-            </div>
+            {/* Pagination (left) */}
             <div className="flex items-center gap-4">
               <span className="text-sm text-gray-700">
                 Showing {Math.min((currentPage - 1) * itemsPerPage + 1, filteredAndSortedItems.length)} to{" "}
@@ -1644,6 +1808,50 @@ export default function ProcurementDashboard() {
                 >
                   Next
                 </button>
+              </div>
+            </div>
+            {/* Selection + Actions (right) */}
+            <div className="flex items-center gap-4">
+              <div className="text-sm text-gray-700">
+                {selectedItems.length > 0 ? (
+                  <span className="text-blue-600 font-medium">
+                    {selectedItems.length} of {filteredAndSortedItems.length} item
+                    {selectedItems.length !== 1 ? "s" : ""} selected
+                  </span>
+                ) : (
+                  <span>{/* Empty space when no selection */}</span>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => {
+                    console.log('Reset selections clicked')
+                    setSelectedItems([])
+                  }}
+                  title="Reset Selection"
+                  disabled={selectedItems.length === 0}
+                >
+                  <RotateCcw className="h-3 w-3 mr-2" />
+                  Reset Selection
+                </Button>
+
+                <Button
+                  size="sm"
+                  className="bg-blue-600 hover:bg-blue-700 text-white h-8"
+                  onClick={() => {
+                    console.log('Execute action clicked, selected items:', selectedItems)
+                    // Add your execute action logic here
+                  }}
+                  title="Execute Action"
+                  disabled={selectedItems.length === 0}
+                >
+                  Execute Action
+                </Button>
               </div>
             </div>
           </div>
@@ -1711,194 +1919,135 @@ export default function ProcurementDashboard() {
             </div>
 
             {/* Module Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* PO Module */}
-              <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-lg border border-blue-200">
-                <h4 className="font-semibold text-blue-900 mb-3 flex items-center gap-2">
-                  <FileText className="h-4 w-4" />
-                  Purchase Orders
-                </h4>
-                <div className="space-y-2">
-                  <div className="h-48 bg-white rounded border p-2">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={[
-                        { month: 'Jan', count: 8 },
-                        { month: 'Feb', count: 12 },
-                        { month: 'Mar', count: 15 },
-                        { month: 'Apr', count: 10 },
-                        { month: 'May', count: 18 },
-                        { month: 'Jun', count: 22 }
-                      ]}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="month" />
-                        <YAxis />
-                        <Tooltip />
-                        <Line type="monotone" dataKey="count" stroke="#2563eb" strokeWidth={2} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="text-xs text-blue-700">
-                    X-axis: Time (Months), Y-axis: PO Count
-                  </div>
-                </div>
-              </div>
-
-              {/* Contract Module */}
-              <div className="bg-gradient-to-br from-green-50 to-green-100 p-4 rounded-lg border border-green-200">
-                <h4 className="font-semibold text-green-900 mb-3 flex items-center gap-2">
-                  <FileText className="h-4 w-4" />
-                  Contracts
-                </h4>
-                <div className="space-y-2">
-                  <div className="h-48 bg-white rounded border p-2">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={[
-                        { duration: '6m', value: 50000 },
-                        { duration: '1y', value: 120000 },
-                        { duration: '2y', value: 250000 },
-                        { duration: '3y', value: 180000 },
-                        { duration: '5y', value: 450000 }
-                      ]}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="duration" />
-                        <YAxis />
-                        <Tooltip />
-                        <Bar dataKey="value" fill="#16a34a" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="text-xs text-green-700">
-                    X-axis: Contract Duration, Y-axis: Value ($)
-                  </div>
-                </div>
-              </div>
-
-              {/* EXIM Module */}
-              <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-4 rounded-lg border border-purple-200">
-                <h4 className="font-semibold text-purple-900 mb-3 flex items-center gap-2">
-                  <Package className="h-4 w-4" />
-                  Export/Import
-                </h4>
-                <div className="space-y-2">
-                  <div className="h-48 bg-white rounded border p-2">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={[
-                        { country: 'USA', volume: 1200 },
-                        { country: 'Germany', volume: 800 },
-                        { country: 'China', volume: 1500 },
-                        { country: 'Japan', volume: 600 },
-                        { country: 'UK', volume: 400 }
-                      ]}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="country" />
-                        <YAxis />
-                        <Tooltip />
-                        <Bar dataKey="volume" fill="#9333ea" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="text-xs text-purple-700">
-                    X-axis: Country, Y-axis: Shipment Volume
-                  </div>
-                </div>
-              </div>
-
-              {/* Quote Module */}
-              <div className="bg-gradient-to-br from-orange-50 to-orange-100 p-4 rounded-lg border border-orange-200">
-                <h4 className="font-semibold text-orange-900 mb-3 flex items-center gap-2">
-                  <DollarSign className="h-4 w-4" />
-                  Quotes
-                </h4>
-                <div className="space-y-2">
-                  <div className="h-48 bg-white rounded border p-2">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={[
-                        { vendor: 'Supplier A', price: 299 },
-                        { vendor: 'Supplier B', price: 350 },
-                        { vendor: 'Supplier C', price: 275 },
-                        { vendor: 'Supplier D', price: 425 },
-                        { vendor: 'Supplier E', price: 320 }
-                      ]}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="vendor" />
-                        <YAxis />
-                        <Tooltip />
-                        <Bar dataKey="price" fill="#ea580c" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="text-xs text-orange-700">
-                    X-axis: Vendor, Y-axis: Quote Price ($)
-                  </div>
-                </div>
-              </div>
-
-              {/* Online Pricing Module */}
-              <div className="bg-gradient-to-br from-teal-50 to-teal-100 p-4 rounded-lg border border-teal-200">
-                <h4 className="font-semibold text-teal-900 mb-3 flex items-center gap-2">
-                  <TrendingUp className="h-4 w-4" />
-                  Online Pricing
-                </h4>
-                <div className="space-y-2">
-                  <div className="h-48 bg-white rounded border p-2">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={[
-                        { day: '1', price: 295 },
-                        { day: '2', price: 299 },
-                        { day: '3', price: 285 },
-                        { day: '4', price: 305 },
-                        { day: '5', price: 299 },
-                        { day: '6', price: 310 },
-                        { day: '7', price: 295 }
-                      ]}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="day" />
-                        <YAxis />
-                        <Tooltip />
-                        <Line type="monotone" dataKey="price" stroke="#0d9488" strokeWidth={2} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="text-xs text-teal-700">
-                    X-axis: Time (Days), Y-axis: Price Trend ($)
-                  </div>
-                </div>
-              </div>
-
-              {/* Summary Statistics */}
-              <div className="bg-gradient-to-br from-gray-50 to-gray-100 p-4 rounded-lg border border-gray-200 md:col-span-2">
-                <h4 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                  <BarChart3 className="h-4 w-4" />
-                  Cross-Platform Summary for {selectedItemForAnalytics.itemId}
-                </h4>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-3">
-                    <div className="bg-white p-3 rounded border">
-                      <div className="text-sm font-medium text-gray-600">Purchase Orders</div>
-                      <div className="text-2xl font-bold text-blue-600">22</div>
-                      <div className="text-xs text-gray-500">Active POs for this item</div>
-                    </div>
-                    <div className="bg-white p-3 rounded border">
-                      <div className="text-sm font-medium text-gray-600">Contracts</div>
-                      <div className="text-2xl font-bold text-green-600">3</div>
-                      <div className="text-xs text-gray-500">Long-term agreements</div>
+            {analyticsData && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* PO Module */}
+                  <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-lg border border-blue-200">
+                    <h4 className="font-semibold text-blue-900 mb-3 flex items-center gap-2">
+                      <FileText className="h-4 w-4" />
+                      Purchase Orders
+                    </h4>
+                    <div className="space-y-2">
+                      <div className="h-48 bg-white rounded border p-2">
+                        <ResponsiveContainer width="100%" height="100%">
+                          {renderChart(analyticsData.poData, analyticsData.chartTypes.po, 'price', 'quantity', '#2563eb', '#93c5fd', 'date')}
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="text-xs text-blue-700">
+                        X-axis: Date of PO | Y1-axis: Price ($) | Y2-axis: Quantity (pcs)
+                      </div>
                     </div>
                   </div>
-                  <div className="space-y-3">
-                    <div className="bg-white p-3 rounded border">
-                      <div className="text-sm font-medium text-gray-600">Total Value</div>
-                      <div className="text-2xl font-bold text-gray-800">${selectedItemForAnalytics.totalPrice.toLocaleString()}</div>
-                      <div className="text-xs text-gray-500">Across all modules</div>
-                    </div>
-                    <div className="bg-white p-3 rounded border">
-                      <div className="text-sm font-medium text-gray-600">Current Price</div>
-                      <div className="text-2xl font-bold text-teal-600">$299</div>
-                      <div className="text-xs text-gray-500">Real-time market price</div>
+
+                  {/* Contract Module */}
+                  <div className="bg-gradient-to-br from-green-50 to-green-100 p-4 rounded-lg border border-green-200">
+                    <h4 className="font-semibold text-green-900 mb-3 flex items-center gap-2">
+                      <FileSignature className="h-4 w-4" />
+                      Contracts
+                    </h4>
+                    <div className="space-y-2">
+                      <div className="h-48 bg-white rounded border p-2">
+                        <ResponsiveContainer width="100%" height="100%">
+                          {renderChart(analyticsData.contractData, analyticsData.chartTypes.contract, 'price', 'quantity', '#16a34a', '#86efac', 'vendor')}
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="text-xs text-green-700">
+                        X-axis: Vendor Name | Y1-axis: Price ($) | Y2-axis: Quantity (pcs)
+                      </div>
                     </div>
                   </div>
-                </div>
+
+                  {/* EXIM Module */}
+                  <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-4 rounded-lg border border-purple-200">
+                    <h4 className="font-semibold text-purple-900 mb-3 flex items-center gap-2">
+                      <Package className="h-4 w-4" />
+                      Export/Import
+                    </h4>
+                    <div className="space-y-2">
+                      <div className="h-48 bg-white rounded border p-2">
+                        <ResponsiveContainer width="100%" height="100%">
+                          {renderChart(analyticsData.eximData, analyticsData.chartTypes.exim, 'price', 'quantity', '#9333ea', '#c084fc', 'date')}
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="text-xs text-purple-700">
+                        X-axis: Date of Purchase | Y1-axis: Price ($) | Y2-axis: Quantity (pcs)
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Quote Module */}
+                  <div className="bg-gradient-to-br from-orange-50 to-orange-100 p-4 rounded-lg border border-orange-200">
+                    <h4 className="font-semibold text-orange-900 mb-3 flex items-center gap-2">
+                      <FileText className="h-4 w-4" />
+                      Quotes
+                    </h4>
+                    <div className="space-y-2">
+                      <div className="h-48 bg-white rounded border p-2">
+                        <ResponsiveContainer width="100%" height="100%">
+                          {renderChart(analyticsData.quoteData, analyticsData.chartTypes.quote, 'price', 'quantity', '#ea580c', '#fed7aa', 'date')}
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="text-xs text-orange-700">
+                        X-axis: Date | Y1-axis: Price ($) | Y2-axis: Quantity (pcs)
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Online Pricing Module */}
+                  <div className="bg-gradient-to-br from-teal-50 to-teal-100 p-4 rounded-lg border border-teal-200">
+                    <h4 className="font-semibold text-teal-900 mb-3 flex items-center gap-2">
+                      <Globe className="h-4 w-4" />
+                      Online Pricing
+                    </h4>
+                    <div className="space-y-2">
+                      <div className="h-48 bg-white rounded border p-2">
+                        <ResponsiveContainer width="100%" height="100%">
+                          {renderChart(analyticsData.onlineData, analyticsData.chartTypes.online, 'price', 'quantity', '#0d9488', '#99f6e4', 'vendor')}
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="text-xs text-teal-700">
+                        X-axis: Digikey, Mouser, LCSC, Farnell | Y1-axis: Price ($) | Y2-axis: Quantity (pcs)
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Summary Statistics */}
+                  <div className="bg-gradient-to-br from-gray-50 to-gray-100 p-4 rounded-lg border border-gray-200 md:col-span-2">
+                    <h4 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                      <BarChart3 className="h-4 w-4" />
+                      Cross-Platform Summary for {selectedItemForAnalytics.itemId}
+                    </h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-3">
+                        <div className="bg-white p-3 rounded border">
+                          <div className="text-sm font-medium text-gray-600">Purchase Orders</div>
+                          <div className="text-2xl font-bold text-blue-600">{analyticsData.poData.length}</div>
+                          <div className="text-xs text-gray-500">Historical PO data points</div>
+                        </div>
+                        <div className="bg-white p-3 rounded border">
+                          <div className="text-sm font-medium text-gray-600">Contracts</div>
+                          <div className="text-2xl font-bold text-green-600">{analyticsData.contractData.length}</div>
+                          <div className="text-xs text-gray-500">Vendor options</div>
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <div className="bg-white p-3 rounded border">
+                          <div className="text-sm font-medium text-gray-600">Total Value</div>
+                          <div className="text-2xl font-bold text-gray-800">${selectedItemForAnalytics.totalPrice.toLocaleString()}</div>
+                          <div className="text-xs text-gray-500">Current total value</div>
+                        </div>
+                        <div className="bg-white p-3 rounded border">
+                          <div className="text-sm font-medium text-gray-600">Best Price</div>
+                          <div className="text-2xl font-bold text-teal-600">
+                            ${Math.min(...analyticsData.onlineData.map((d: any) => d.price)).toFixed(2)}
+                          </div>
+                          <div className="text-xs text-gray-500">Lowest available price</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
               </div>
-            </div>
+            )}
 
             <div className="flex justify-end mt-6">
               <Button
@@ -1913,23 +2062,47 @@ export default function ProcurementDashboard() {
         </div>
       )}
 
-      {/* Settings Dialog */}
-      <SettingsDialog
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        allTags={allTags}
-        allUsers={allUsers}
-        current={currentSettings}
-        onSave={(s) => {
-          setSettingsProfiles((prev) => {
-            const next = { ...prev, [s.name]: s }
-            if (typeof window !== 'undefined') localStorage.setItem('appSettingsProfiles', JSON.stringify(next))
-            return next
-          })
-          setCurrentSettingsKey(s.name)
-          if (typeof window !== 'undefined') localStorage.setItem('currentSettingsProfile', s.name)
-        }}
-      />
+      {/* Simple wide white popup for Settings */}
+      {settingsOpen && (
+        <div
+          className="fixed inset-0 z-[9999] bg-black/30"
+          onClick={() => setSettingsOpen(false)}
+        >
+          <div
+            className="absolute inset-0 m-2 md:m-8 bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="absolute top-3 right-3 z-10">
+              <button
+                type="button"
+                aria-label="Close"
+                className="text-gray-500 hover:text-gray-700 text-xl"
+                onClick={() => setSettingsOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex-1 min-h-0">
+              <SettingsPanel
+                allTags={allTags}
+                allUsers={allUsers}
+                current={currentSettings}
+                onSave={(s) => {
+                  setSettingsProfiles((prev) => {
+                    const next = { ...prev, [s.name]: s }
+                    if (typeof window !== 'undefined') localStorage.setItem('appSettingsProfiles', JSON.stringify(next))
+                    return next
+                  })
+                  setCurrentSettingsKey(s.name)
+                  if (typeof window !== 'undefined') localStorage.setItem('currentSettingsProfile', s.name)
+                  setSettingsOpen(false)
+                }}
+                onCancel={() => setSettingsOpen(false)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
