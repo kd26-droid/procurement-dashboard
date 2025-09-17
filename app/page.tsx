@@ -672,12 +672,27 @@ export default function ProcurementDashboard() {
   // Generate realistic analytics data for each item
   const generateAnalyticsData = (item: any) => {
     const seed = item.id
+    let randomSeed = seed * 9999
+
+    // Better random number generator with varying seeds
     const random = (min: number, max: number) => {
-      const x = Math.sin(seed * 9999) * 10000
-      return Math.floor((x - Math.floor(x)) * (max - min + 1)) + min
+      randomSeed = (randomSeed * 1103515245 + 12345) % (Math.pow(2, 31))
+      const normalized = (randomSeed / Math.pow(2, 31))
+      return Math.floor(normalized * (max - min + 1)) + min
     }
 
     const basePrice = item.unitPrice || 100 + random(50, 300)
+
+    // Create consistent date ranges for all charts (last 6 months)
+    const createDateRange = () => {
+      return Array.from({ length: 6 }, (_, i) => {
+        const monthsAgo = 5 - i
+        const date = new Date()
+        date.setMonth(date.getMonth() - monthsAgo)
+        return date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
+      })
+    }
+    const commonDates = createDateRange()
 
     // Professional, simple chart types
     const chartTypes = {
@@ -689,70 +704,59 @@ export default function ProcurementDashboard() {
     }
 
     // PO Module - Date vs Price/Quantity (More varied data)
-    const poData = Array.from({ length: 6 }, (_, i) => {
-      const monthsAgo = 5 - i
-      const date = new Date()
-      date.setMonth(date.getMonth() - monthsAgo)
-      const priceVariation = 0.7 + (random(0, 60) / 100) // 70% to 130% of base price
-      const quantityBase = 50 + random(0, 450) // 50-500 base
+    const poData = commonDates.map((date, i) => {
+      const priceVariation = 0.5 + (random(0, 100) / 100) // 50% to 150% of base price
+      const quantityBase = 20 + random(0, 600) // 20-620 base
       return {
-        date: date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
-        price: Math.max(basePrice * priceVariation + random(-20, 20), 1),
-        quantity: quantityBase + random(-30, 30)
+        date,
+        price: Math.max(basePrice * priceVariation + random(-50, 50), 1),
+        quantity: quantityBase + random(-50, 100)
       }
     })
 
     // Contract Module - Vendor vs Price/Quantity (More varied data)
     const vendors = ['Vendor A', 'Vendor B', 'Vendor C', 'Vendor D', 'Vendor E']
     const contractData = vendors.map((vendor, index) => {
-      const priceMultiplier = 0.6 + (random(0, 80) / 100) // 60% to 140% variation
-      const quantityRange = [100, 300, 500, 800, 1200][index] + random(-50, 50)
+      const priceMultiplier = 0.3 + (random(0, 150) / 100) // 30% to 180% variation
+      const quantityBase = 50 + random(0, 800) // Highly varied quantities
       return {
         vendor,
-        price: Math.max(basePrice * priceMultiplier + random(-15, 25), 1),
-        quantity: Math.max(quantityRange, 50)
+        price: Math.max(basePrice * priceMultiplier + random(-80, 80), 1),
+        quantity: Math.max(quantityBase + random(-30, 200), 10)
       }
     })
 
     // EXIM Module - Date vs Price/Quantity (More varied data)
-    const eximData = Array.from({ length: 5 }, (_, i) => {
-      const weeksAgo = 4 - i
-      const date = new Date()
-      date.setDate(date.getDate() - (weeksAgo * 7))
-      const priceFluctuation = 0.65 + (random(0, 70) / 100) // 65% to 135%
-      const quantityBase = 25 + random(0, 175) // 25-200 base
+    const eximData = commonDates.map((date, i) => {
+      const priceFluctuation = 0.4 + (random(0, 120) / 100) // 40% to 160%
+      const quantityBase = 10 + random(0, 400) // 10-410 base
       return {
-        date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        price: Math.max(basePrice * priceFluctuation + random(-10, 15), 1),
-        quantity: quantityBase + random(-15, 25)
+        date,
+        price: Math.max(basePrice * priceFluctuation + random(-60, 60), 1),
+        quantity: quantityBase + random(-20, 150)
       }
     })
 
     // Quote Module - Date vs Price/Quantity (More varied data)
-    const quoteData = Array.from({ length: 7 }, (_, i) => {
-      const daysAgo = 6 - i
-      const date = new Date()
-      date.setDate(date.getDate() - daysAgo)
-      const priceRange = 0.8 + (random(0, 40) / 100) // 80% to 120%
-      const quantitySpread = 10 + random(0, 90) // 10-100 base
+    const quoteData = commonDates.map((date) => {
+      const priceRange = 0.2 + (random(0, 160) / 100) // 20% to 180%
+      const quantitySpread = 5 + random(0, 500) // 5-505 base
       return {
-        date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        price: Math.max(basePrice * priceRange + random(-5, 10), 1),
-        quantity: quantitySpread + random(-5, 15)
+        date,
+        price: Math.max(basePrice * priceRange + random(-70, 70), 1),
+        quantity: quantitySpread + random(-10, 200)
       }
     })
 
     // Online Pricing Module - Vendors vs Price/Quantity (More varied data)
     const onlineVendors = ['Digikey', 'Mouser', 'LCSC', 'Farnell']
     const onlineData = onlineVendors.map((vendor, index) => {
-      const priceFactors = [0.95, 0.92, 0.88, 0.90] // Different base prices per vendor
-      const quantityBases = [50, 75, 100, 60] // Different quantity patterns
-      const priceFactor = priceFactors[index] + (random(-10, 15) / 100)
-      const quantityBase = quantityBases[index] + random(-20, 30)
+      const priceFactor = 0.25 + (random(0, 200) / 100) // 25% to 225% variation
+      const quantityBase = 15 + random(0, 700) // Highly varied quantities
       return {
         vendor,
-        price: Math.max(basePrice * priceFactor + random(-8, 12), 1),
-        quantity: Math.max(quantityBase, 5)
+        price: Math.max(basePrice * priceFactor + random(-100, 100), 1),
+        quantity: Math.max(quantityBase + random(-15, 300), 5)
       }
     })
 
