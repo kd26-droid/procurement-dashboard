@@ -650,23 +650,28 @@ export default function ProcurementDashboard() {
   }
 
   function mockPriceForSource(item: any, source: PriceSource): number {
-    // Deterministic pseudo-price based on itemId and source
+    // Deterministic pseudo-price based on itemId and source for realistic electronic component pricing
     const key = String(item.itemId || '') + '|' + source
     let h = 0
     for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
-    const base = 50 + (h % 500) // 50..549
-    // Mild source-based adjustment
+
+    // Generate realistic electronic component prices ($0.01 - $2.00)
+    const basePrice = 0.01 + ((h % 200) / 100) // 0.01 to 2.01
+
+    // Source-based price adjustments (percentage)
     const adj: Record<PriceSource, number> = {
-      'PO': -10,
-      'Contract': -20,
-      'Quote': 0,
-      'Online - Digikey': 15,
-      'Online - Mouser': 12,
-      'Online - LCSC': -5,
-      'Online - Farnell': 18,
-      'EXIM': -8,
+      'PO': 0.95,          // 5% discount
+      'Contract': 0.90,    // 10% discount
+      'Quote': 1.00,       // No adjustment
+      'Online - Digikey': 1.15,  // 15% premium
+      'Online - Mouser': 1.12,   // 12% premium
+      'Online - LCSC': 0.85,     // 15% discount
+      'Online - Farnell': 1.18,  // 18% premium
+      'EXIM': 0.88,        // 12% discount
     }
-    return Math.max(1, base + (adj[source] || 0))
+
+    const finalPrice = basePrice * (adj[source] || 1.00)
+    return Math.max(0.01, Math.round(finalPrice * 1000) / 1000) // Round to 3 decimal places, min $0.01
   }
 
   // Generate realistic analytics data for each item
@@ -704,59 +709,59 @@ export default function ProcurementDashboard() {
     }
 
     // PO Module - Date vs Price/Quantity (More varied data)
-    const poData = commonDates.map((date, i) => {
-      const priceVariation = 0.5 + (random(0, 100) / 100) // 50% to 150% of base price
-      const quantityBase = 20 + random(0, 600) // 20-620 base
+    const poData = commonDates.map((date) => {
+      const price = 3 + (random(0, 1200) / 100) // 3-15 USD range
+      const quantityBase = random(10, 200) // 10-200 base quantity
       return {
         date,
-        price: Math.max(basePrice * priceVariation + random(-50, 50), 1),
-        quantity: quantityBase + random(-50, 100)
+        price: Math.round(price * 100) / 100, // Round to 2 decimal places
+        quantity: quantityBase
       }
     })
 
     // Contract Module - Vendor vs Price/Quantity (More varied data)
     const vendors = ['Vendor A', 'Vendor B', 'Vendor C', 'Vendor D', 'Vendor E']
-    const contractData = vendors.map((vendor, index) => {
-      const priceMultiplier = 0.3 + (random(0, 150) / 100) // 30% to 180% variation
-      const quantityBase = 50 + random(0, 800) // Highly varied quantities
+    const contractData = vendors.map((vendor) => {
+      const price = 3 + (random(0, 1200) / 100) // 3-15 USD range
+      const quantityBase = random(5, 150) // 5-150 base quantity
       return {
         vendor,
-        price: Math.max(basePrice * priceMultiplier + random(-80, 80), 1),
-        quantity: Math.max(quantityBase + random(-30, 200), 10)
+        price: Math.round(price * 100) / 100, // Round to 2 decimal places
+        quantity: quantityBase
       }
     })
 
     // EXIM Module - Date vs Price/Quantity (More varied data)
-    const eximData = commonDates.map((date, i) => {
-      const priceFluctuation = 0.4 + (random(0, 120) / 100) // 40% to 160%
-      const quantityBase = 10 + random(0, 400) // 10-410 base
+    const eximData = commonDates.map((date) => {
+      const price = 3 + (random(0, 1200) / 100) // 3-15 USD range
+      const quantityBase = random(8, 180) // 8-180 base quantity
       return {
         date,
-        price: Math.max(basePrice * priceFluctuation + random(-60, 60), 1),
-        quantity: quantityBase + random(-20, 150)
+        price: Math.round(price * 100) / 100, // Round to 2 decimal places
+        quantity: quantityBase
       }
     })
 
     // Quote Module - Date vs Price/Quantity (More varied data)
     const quoteData = commonDates.map((date) => {
-      const priceRange = 0.2 + (random(0, 160) / 100) // 20% to 180%
-      const quantitySpread = 5 + random(0, 500) // 5-505 base
+      const price = 3 + (random(0, 1200) / 100) // 3-15 USD range
+      const quantityBase = random(12, 220) // 12-220 base quantity
       return {
         date,
-        price: Math.max(basePrice * priceRange + random(-70, 70), 1),
-        quantity: quantitySpread + random(-10, 200)
+        price: Math.round(price * 100) / 100, // Round to 2 decimal places
+        quantity: quantityBase
       }
     })
 
     // Online Pricing Module - Vendors vs Price/Quantity (More varied data)
     const onlineVendors = ['Digikey', 'Mouser', 'LCSC', 'Farnell']
-    const onlineData = onlineVendors.map((vendor, index) => {
-      const priceFactor = 0.25 + (random(0, 200) / 100) // 25% to 225% variation
-      const quantityBase = 15 + random(0, 700) // Highly varied quantities
+    const onlineData = onlineVendors.map((vendor) => {
+      const price = 3 + (random(0, 1200) / 100) // 3-15 USD range
+      const quantityBase = random(15, 250) // 15-250 base quantity
       return {
         vendor,
-        price: Math.max(basePrice * priceFactor + random(-100, 100), 1),
-        quantity: Math.max(quantityBase + random(-15, 300), 5)
+        price: Math.round(price * 100) / 100, // Round to 2 decimal places
+        quantity: quantityBase
       }
     })
 
@@ -820,7 +825,7 @@ export default function ProcurementDashboard() {
             <YAxis {...yRightProps} tickLine={false} axisLine={false}>
               <Label value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
-            <Tooltip formatter={commonTooltip} />
+            <Tooltip formatter={commonTooltip} contentStyle={{ fontSize: '11px', padding: '6px 8px' }} />
             <Line isAnimationActive={false} yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={1.75} dot={false} />
             <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey={dataKey2} stroke={color2} strokeWidth={1.5} dot={false} />
           </ComposedChart>
@@ -840,7 +845,7 @@ export default function ProcurementDashboard() {
             <YAxis {...yRightProps} tickLine={false} axisLine={false}>
               <Label value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
-            <Tooltip formatter={commonTooltip} />
+            <Tooltip formatter={commonTooltip} contentStyle={{ fontSize: '11px', padding: '6px 8px' }} />
             <Bar isAnimationActive={false} yAxisId="left" dataKey={dataKey1} fill={color1} barSize={35} radius={[3,3,0,0]} />
             {hasSecondSeries && (
               <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={35} radius={[3,3,0,0]} />
@@ -862,7 +867,7 @@ export default function ProcurementDashboard() {
             <YAxis {...yRightProps}>
               <Label value="Quantity (pcs)" angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
-            <Tooltip formatter={commonTooltip} />
+            <Tooltip formatter={commonTooltip} contentStyle={{ fontSize: '11px', padding: '6px 8px' }} />
             <Area yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} fill={color1} fillOpacity={0.6} />
             <Line yAxisId="right" type="monotone" dataKey={dataKey2} stroke={color2} strokeWidth={2} />
           </ComposedChart>
@@ -882,7 +887,7 @@ export default function ProcurementDashboard() {
               <YAxis {...yRightProps}>
                 <Label value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
               </YAxis>
-              <Tooltip formatter={commonTooltip} />
+              <Tooltip formatter={commonTooltip} contentStyle={{ fontSize: '11px', padding: '6px 8px' }} />
               <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={35} radius={[3,3,0,0]} />
               <Line isAnimationActive={false} yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={1.75} dot={false} />
             </ComposedChart>
@@ -2006,7 +2011,7 @@ export default function ProcurementDashboard() {
                 <div className="bg-white p-4 rounded-lg border">
                   <h4 className="text-sm font-medium text-gray-800 mb-2">Contract</h4>
                   <div className="h-56">
-                    {renderChart(analyticsData.contractData, 'bar', 'price', '', '#f472b6', '#fca5a5', 'vendor', 'Vendor name', 'Price', '')}
+                    {renderChart(analyticsData.contractData, 'composed', 'price', 'quantity', '#f472b6', '#93c5fd', 'vendor', 'Vendor name', 'Price', 'Quantity')}
                   </div>
                 </div>
 
@@ -2030,7 +2035,7 @@ export default function ProcurementDashboard() {
                 <div className="bg-white p-4 rounded-lg border lg:col-span-2">
                   <h4 className="text-sm font-medium text-gray-800 mb-2">Online Pricing</h4>
                   <div className="h-56">
-                    {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Digikey, Mouser, LCSC, Farnell', 'Price', 'Quantity')}
+                    {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Distributors', 'Price', 'Quantity')}
                   </div>
                 </div>
               </div>
