@@ -1205,7 +1205,7 @@ export function SettingsPanel({
             <div className="space-y-6">
               <Card>
                 <CardHeader>
-                  <CardTitle>Event Criteria</CardTitle>
+                  <CardTitle>Action Criteria</CardTitle>
                   <CardDescription>Build simple WHERE…AND… conditions for assigning actions</CardDescription>
                 </CardHeader>
                 <CardContent>
