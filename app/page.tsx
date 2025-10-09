@@ -388,16 +388,23 @@ export default function ProcurementDashboard() {
 
     if (sortField) {
       filtered.sort((a, b) => {
-        let aValue = a[sortField as keyof typeof a]
-        let bValue = b[sortField as keyof typeof b]
+        const rawA = (a as any)[sortField as keyof typeof a]
+        const rawB = (b as any)[sortField as keyof typeof b]
 
-        if (typeof aValue === "string") {
-          aValue = aValue.toLowerCase()
-          bValue = (bValue as string).toLowerCase()
+        // Normalize values for safe comparison
+        const norm = (v: unknown) => {
+          if (v === undefined || v === null) return ''
+          if (typeof v === 'string') return v.toLowerCase()
+          if (typeof v === 'number') return v
+          const s = String(v)
+          return s.toLowerCase()
         }
 
-        if (aValue < bValue) return sortDirection === "asc" ? -1 : 1
-        if (aValue > bValue) return sortDirection === "asc" ? 1 : -1
+        const aValue = norm(rawA)
+        const bValue = norm(rawB)
+
+        if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1
+        if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1
         return 0
       })
     }
