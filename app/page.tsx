@@ -8,7 +8,9 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label } from 'recharts'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
+import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { initialLineItems } from '../data/lineItems'
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
@@ -58,7 +60,6 @@ export default function ProcurementDashboard() {
   const [categoryFilter, setCategoryFilter] = useState<string[]>([])
   const [sortField, setSortField] = useState<string>("")
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc")
-  const [editingItem, setEditingItem] = useState<number | null>(null)
   const [activeFilter, setActiveFilter] = useState<string | null>(null)
   const [reverseFilter, setReverseFilter] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
@@ -75,8 +76,13 @@ export default function ProcurementDashboard() {
     "assignedTo",
     "dueDate",
     "vendor",
-    "unitPrice",
     "totalPrice",
+    "source",
+    "pricePO",
+    "priceContract",
+    "priceQuote",
+    "priceDigikey",
+    "priceEXIM",
   ])
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([])
   const [savedViews, setSavedViews] = useState<{ [key: string]: { order: string[]; hidden: string[] } }>({})
@@ -89,7 +95,12 @@ export default function ProcurementDashboard() {
     quantity: 80,
     vendor: 144,
     assignedTo: 144,
-    unitPrice: 112,
+    pricePO: 88,
+    priceContract: 88,
+    priceQuote: 88,
+    priceDigikey: 88,
+    priceEXIM: 88,
+    source: 96,
     totalPrice: 128,
   })
 
@@ -102,9 +113,12 @@ export default function ProcurementDashboard() {
   const [showAssignActionsPopup, setShowAssignActionsPopup] = useState(false)
   const [showAnalyticsPopup, setShowAnalyticsPopup] = useState(false)
   const [selectedItemForAnalytics, setSelectedItemForAnalytics] = useState<any>(null)
+  const [showEditDialog, setShowEditDialog] = useState(false)
+  const [editFormData, setEditFormData] = useState<any>({})
 
   // Settings state
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'users' | 'prices' | 'actions'>('users')
   const [settingsProfiles, setSettingsProfiles] = useState<Record<string, AppSettings>>({})
   const [currentSettingsKey, setCurrentSettingsKey] = useState<string>('Default')
 
@@ -431,23 +445,11 @@ export default function ProcurementDashboard() {
     }
   }
 
-  const handleEditItem = (id: number, field: string, value: string) => {
-    setLineItems((prev) =>
-      prev.map((item) =>
-        item.id === id
-          ? { ...item, [field]: field === "unitPrice" || field === "quantity" ? Number.parseFloat(value) || 0 : value }
-          : item,
-      ),
-    )
-
-    if (field === "quantity" || field === "unitPrice") {
-      setLineItems((prev) =>
-        prev.map((item) => (item.id === id ? { ...item, totalPrice: item.quantity * item.unitPrice } : item)),
-      )
-    }
-  }
-
   const toggleColumnVisibility = (columnKey: string) => {
+    // Prevent totalPrice and source columns from being hidden
+    if (columnKey === 'totalPrice' || columnKey === 'source') {
+      return
+    }
     setHiddenColumns((prev) =>
       prev.includes(columnKey) ? prev.filter((col) => col !== columnKey) : [...prev, columnKey],
     )
@@ -489,7 +491,8 @@ export default function ProcurementDashboard() {
       setCurrentView("default")
     } else if (savedViews[viewName]) {
       setColumnOrder(savedViews[viewName].order)
-      setHiddenColumns(savedViews[viewName].hidden)
+      // Filter out totalPrice and source from hidden columns - they must always be visible
+      setHiddenColumns(savedViews[viewName].hidden.filter((col) => col !== 'totalPrice' && col !== 'source'))
       setCurrentView(viewName)
     }
   }
@@ -558,10 +561,20 @@ export default function ProcurementDashboard() {
       if (excludedItemIds.includes(item.id)) return item
 
       const mapping = pickMappingId()
-      const { price, source } = pickCheapest(item, mapping)
-      const unitPrice = Math.round(price * 100) / 100
+
+      // Generate prices for all sources
+      const pricePO = Math.round(mockPriceForSource(item, 'PO') * 100) / 100
+      const priceContract = Math.round(mockPriceForSource(item, 'Contract') * 100) / 100
+      const priceQuote = Math.round(mockPriceForSource(item, 'Quote') * 100) / 100
+      const priceDigikey = Math.round(mockPriceForSource(item, 'Online - Digikey') * 100) / 100
+      const priceEXIM = Math.round(mockPriceForSource(item, 'EXIM') * 100) / 100
+
+      // Find cheapest for unitPrice and totalPrice
+      const allPrices = [pricePO, priceContract, priceQuote, priceDigikey, priceEXIM].filter(p => p > 0)
+      const unitPrice = allPrices.length > 0 ? Math.min(...allPrices) : 0
       const totalPrice = Math.round(unitPrice * item.quantity * 100) / 100
-      return { ...item, unitPrice, totalPrice, priceSource: source }
+
+      return { ...item, pricePO, priceContract, priceQuote, priceDigikey, priceEXIM, unitPrice, totalPrice }
     })
 
     setLineItems(updatedItems)
@@ -600,6 +613,77 @@ export default function ProcurementDashboard() {
     document.body.click()
   }
 
+  // Manual Edit Handlers
+  const handleOpenEdit = () => {
+    if (selectedItems.length === 0) return
+
+    // Get the selected line items
+    const itemsToEdit = lineItems.filter(item => selectedItems.includes(item.id))
+
+    // For bulk edit, use common values or empty strings
+    if (selectedItems.length === 1) {
+      // Single item edit - populate all fields
+      const item = itemsToEdit[0]
+      setEditFormData({
+        isBulk: false,
+        itemCount: 1,
+        category: item.category || '',
+        vendor: item.vendor || '',
+        assignedTo: item.assignedTo || '',
+        action: item.action || '',
+        unitPrice: item.unitPrice || 0,
+      })
+    } else {
+      // Bulk edit - leave fields empty or use common values
+      setEditFormData({
+        isBulk: true,
+        itemCount: selectedItems.length,
+        category: '',
+        vendor: '',
+        assignedTo: '',
+        action: '',
+        unitPrice: 0,
+      })
+    }
+
+    setShowEditDialog(true)
+  }
+
+  const handleSaveEdit = () => {
+    if (selectedItems.length === 0) return
+
+    const updatedItems = lineItems.map(item => {
+      if (!selectedItems.includes(item.id)) return item
+
+      // Create updated item with manual change flag
+      const updates: any = { manuallyEdited: true }
+
+      // Only update fields that have values in the form
+      if (editFormData.category && editFormData.category.trim()) {
+        updates.category = editFormData.category
+      }
+      if (editFormData.vendor && editFormData.vendor.trim()) {
+        updates.vendor = editFormData.vendor
+      }
+      if (editFormData.assignedTo && editFormData.assignedTo.trim()) {
+        updates.assignedTo = editFormData.assignedTo
+      }
+      if (editFormData.action && editFormData.action.trim()) {
+        updates.action = editFormData.action
+      }
+      if (editFormData.unitPrice && editFormData.unitPrice > 0) {
+        updates.unitPrice = editFormData.unitPrice
+        updates.totalPrice = editFormData.unitPrice * item.quantity
+      }
+
+      return { ...item, ...updates }
+    })
+
+    setLineItems(updatedItems)
+    setShowEditDialog(false)
+    setEditFormData({})
+  }
+
   const handleColumnDrag = (draggedCol: string, targetCol: string) => {
     const draggedIndex = columnOrder.indexOf(draggedCol)
     const targetIndex = columnOrder.indexOf(targetCol)
@@ -624,8 +708,13 @@ export default function ProcurementDashboard() {
     assignedTo: "Assigned",
     dueDate: "Due Date",
     vendor: "Vendor",
-    unitPrice: "Price",
-    totalPrice: "Total Amount",
+    pricePO: "PO Price",
+    priceContract: "Contract",
+    priceQuote: "Quote",
+    priceDigikey: "Digi-Key",
+    priceEXIM: "EXIM",
+    source: "Source",
+    totalPrice: "Price",
   }
 
   // Helpers for price icons
@@ -817,13 +906,13 @@ export default function ProcurementDashboard() {
           <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 18, left: 18 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
             <XAxis {...xAxisProps} tickLine={false} axisLine={false}>
-              <Label value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              <RechartsLabel value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </XAxis>
             <YAxis {...yLeftProps} tickLine={false} axisLine={false}>
-              <Label value={yLeftLabel} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              <RechartsLabel value={yLeftLabel} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
             <YAxis {...yRightProps} tickLine={false} axisLine={false}>
-              <Label value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              <RechartsLabel value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
             <Tooltip formatter={commonTooltip} contentStyle={{ fontSize: '11px', padding: '6px 8px' }} />
             <Line isAnimationActive={false} yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={1.75} dot={false} />
@@ -837,13 +926,13 @@ export default function ProcurementDashboard() {
           <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 18, left: 18 }} barCategoryGap={"20%"} barGap={4}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
             <XAxis {...xAxisProps} tickLine={false} axisLine={false}>
-              <Label value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              <RechartsLabel value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </XAxis>
             <YAxis {...yLeftProps} tickLine={false} axisLine={false}>
-              <Label value={yLeftLabel} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              <RechartsLabel value={yLeftLabel} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
             <YAxis {...yRightProps} tickLine={false} axisLine={false}>
-              <Label value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              <RechartsLabel value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
             <Tooltip formatter={commonTooltip} contentStyle={{ fontSize: '11px', padding: '6px 8px' }} />
             <Bar isAnimationActive={false} yAxisId="left" dataKey={dataKey1} fill={color1} barSize={35} radius={[3,3,0,0]} />
@@ -859,13 +948,13 @@ export default function ProcurementDashboard() {
           <ComposedChart data={data}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis {...xAxisProps}>
-              <Label value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              <RechartsLabel value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </XAxis>
             <YAxis {...yLeftProps}>
-              <Label value="Price ($)" angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              <RechartsLabel value="Price ($)" angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
             <YAxis {...yRightProps}>
-              <Label value="Quantity (pcs)" angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              <RechartsLabel value="Quantity (pcs)" angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
             <Tooltip formatter={commonTooltip} contentStyle={{ fontSize: '11px', padding: '6px 8px' }} />
             <Area yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} fill={color1} fillOpacity={0.6} />
@@ -879,13 +968,13 @@ export default function ProcurementDashboard() {
             <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 18, left: 18 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
               <XAxis {...xAxisProps}>
-                <Label value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+                <RechartsLabel value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
               </XAxis>
               <YAxis {...yLeftProps}>
-                <Label value={yLeftLabel} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+                <RechartsLabel value={yLeftLabel} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
               </YAxis>
               <YAxis {...yRightProps}>
-                <Label value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+                <RechartsLabel value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
               </YAxis>
               <Tooltip formatter={commonTooltip} contentStyle={{ fontSize: '11px', padding: '6px 8px' }} />
               <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={35} radius={[3,3,0,0]} />
@@ -1410,6 +1499,18 @@ export default function ProcurementDashboard() {
                 <CheckSquare className="h-4 w-4" />
                 Assign Actions
               </Button>
+
+              {/* Edit Selected Items */}
+              <Button
+                size="sm"
+                className="bg-green-600 hover:bg-green-700 text-white h-8 flex items-center gap-2"
+                onClick={handleOpenEdit}
+                title="Edit Selected Items"
+                disabled={selectedItems.length === 0}
+              >
+                <Edit className="h-3 w-3" />
+                Edit {selectedItems.length > 0 ? `(${selectedItems.length})` : ''}
+              </Button>
             </div>
             <div className="flex items-center gap-2">
               {/* Eye Button - Column Visibility Toggle */}
@@ -1434,25 +1535,32 @@ export default function ProcurementDashboard() {
                   className="hidden absolute right-0 top-full mt-2 w-48 bg-white border border-gray-200 rounded-md shadow-lg z-50"
                 >
                   <div className="p-2 space-y-1">
-                    {Object.entries(columnLabels).map(([columnKey, label]) => (
-                      <div
-                        key={columnKey}
-                        className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-1 rounded"
-                        onClick={() => {
-                          console.log('Column clicked:', columnKey)
-                          toggleColumnVisibility(columnKey)
-                        }}
-                      >
-                        {hiddenColumns.includes(columnKey) ? (
-                          <EyeOff className="h-3 w-3 text-gray-400" />
-                        ) : (
-                          <Eye className="h-3 w-3 text-blue-600" />
-                        )}
-                        <span className={`text-xs ${hiddenColumns.includes(columnKey) ? 'text-gray-400' : 'text-gray-900'}`}>
-                          {label}
-                        </span>
-                      </div>
-                    ))}
+                    {Object.entries(columnLabels).map(([columnKey, label]) => {
+                      const isAlwaysVisible = columnKey === 'totalPrice' || columnKey === 'source'
+                      return (
+                        <div
+                          key={columnKey}
+                          className={`flex items-center space-x-2 p-1 rounded ${
+                            isAlwaysVisible ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-100'
+                          }`}
+                          onClick={() => {
+                            if (!isAlwaysVisible) {
+                              console.log('Column clicked:', columnKey)
+                              toggleColumnVisibility(columnKey)
+                            }
+                          }}
+                        >
+                          {hiddenColumns.includes(columnKey) ? (
+                            <EyeOff className="h-3 w-3 text-gray-400" />
+                          ) : (
+                            <Eye className="h-3 w-3 text-blue-600" />
+                          )}
+                          <span className={`text-xs ${hiddenColumns.includes(columnKey) ? 'text-gray-400' : 'text-gray-900'}`}>
+                            {label}
+                          </span>
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
               </div>
@@ -1551,7 +1659,7 @@ export default function ProcurementDashboard() {
                           </button>
                           <GripVertical className="h-3 w-3 text-gray-400 opacity-0 group-hover:opacity-100 cursor-grab flex-shrink-0 ml-2" />
                         </div>
-                        {(columnKey === "description" || columnKey === "category" || columnKey === "quantity" || columnKey === "vendor" || columnKey === "assignedTo" || columnKey === "unitPrice" || columnKey === "totalPrice") && (
+                        {(columnKey === "description" || columnKey === "category" || columnKey === "quantity" || columnKey === "vendor" || columnKey === "assignedTo" || columnKey === "pricePO" || columnKey === "priceContract" || columnKey === "priceQuote" || columnKey === "priceDigikey" || columnKey === "priceEXIM" || columnKey === "source" || columnKey === "totalPrice") && (
                           <div
                             className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 group-hover:opacity-100"
                             onMouseDown={(e) => handleMouseDown(columnKey, e)}
@@ -1608,22 +1716,12 @@ export default function ProcurementDashboard() {
                       if (columnKey === "description") {
                         return (
                           <td key={columnKey} className="p-2 text-left" style={{ width: columnWidths.description }}>
-                            {editingItem === item.id ? (
-                              <Input
-                                value={item.description}
-                                onChange={(e) => handleEditItem(item.id, "description", e.target.value)}
-                                onBlur={() => setEditingItem(null)}
-                                onKeyDown={(e) => e.key === "Enter" && setEditingItem(null)}
-                                className="w-full text-xs h-6"
-                              />
-                            ) : (
-                              <span
-                                className="text-gray-900 font-medium text-xs truncate block"
-                                title={item.description}
-                              >
-                                {item.description}
-                              </span>
-                            )}
+                            <span
+                              className="text-gray-900 font-medium text-xs truncate block"
+                              title={item.description}
+                            >
+                              {item.description}
+                            </span>
                           </td>
                         )
                       }
@@ -1740,30 +1838,59 @@ export default function ProcurementDashboard() {
                         )
                       }
 
-                      if (columnKey === "unitPrice") {
-                        const hasPrice = item.unitPrice && item.unitPrice > 0
+                      if (columnKey === "pricePO" || columnKey === "priceContract" || columnKey === "priceQuote" || columnKey === "priceDigikey" || columnKey === "priceEXIM") {
+                        const priceValue = (item as any)[columnKey] as number | undefined
+                        const hasPrice = priceValue !== undefined && priceValue > 0
+
+                        // Calculate cheapest price
+                        const allPrices = [
+                          (item as any).pricePO,
+                          (item as any).priceContract,
+                          (item as any).priceQuote,
+                          (item as any).priceDigikey,
+                          (item as any).priceEXIM,
+                        ].filter((p): p is number => p !== undefined && p > 0)
+
+                        const cheapestPrice = allPrices.length > 0 ? Math.min(...allPrices) : null
+                        const isCheapest = hasPrice && cheapestPrice !== null && priceValue === cheapestPrice
+
                         return (
-                          <td key={columnKey} className="p-2 text-right" style={{ width: columnWidths.unitPrice }}>
-                            <div className="flex items-center justify-end gap-1">
-                              <span
-                                className={`text-xs ${hasPrice ? "text-gray-900" : "text-red-700"}`}
-                                title={hasPrice ? `$${item.unitPrice.toFixed(2)}` : "N/A"}
-                              >
-                                {hasPrice ? `$${item.unitPrice.toFixed(2)}` : "N/A"}
-                              </span>
-                              {hasPrice && (
-                                <UiTooltip>
-                                  <UiTooltipTrigger asChild>
-                                    <span className="inline-flex items-center">
-                                      {actionIcon((item as any).action as string)}
-                                    </span>
-                                  </UiTooltipTrigger>
-                                  <UiTooltipContent side="top">
-                                    {`Action: ${(item as any).action || 'Not set'}`}
-                                  </UiTooltipContent>
-                                </UiTooltip>
-                              )}
-                            </div>
+                          <td key={columnKey} className="p-2 text-right" style={{ width: (columnWidths as any)[columnKey] }}>
+                            <span
+                              className={`text-xs font-medium ${
+                                !hasPrice
+                                  ? "text-gray-400"
+                                  : isCheapest
+                                    ? "text-green-700 bg-green-50 px-2 py-1 rounded"
+                                    : "text-gray-900"
+                              }`}
+                              title={hasPrice ? `$${priceValue.toFixed(2)}` : "N/A"}
+                            >
+                              {hasPrice ? `$${priceValue.toFixed(2)}` : "-"}
+                            </span>
+                          </td>
+                        )
+                      }
+
+                      if (columnKey === "source") {
+                        // Find cheapest price source
+                        const prices = [
+                          { source: 'PO', value: (item as any).pricePO },
+                          { source: 'Contract', value: (item as any).priceContract },
+                          { source: 'Quote', value: (item as any).priceQuote },
+                          { source: 'Digi-Key', value: (item as any).priceDigikey },
+                          { source: 'EXIM', value: (item as any).priceEXIM },
+                        ].filter(p => p.value !== undefined && p.value > 0)
+
+                        const cheapest = prices.length > 0
+                          ? prices.reduce((min, p) => p.value < min.value ? p : min)
+                          : null
+
+                        return (
+                          <td key={columnKey} className="p-2 text-center" style={{ width: columnWidths.source }}>
+                            <span className="text-xs font-medium text-gray-900">
+                              {cheapest ? cheapest.source : '-'}
+                            </span>
                           </td>
                         )
                       }
@@ -1807,14 +1934,6 @@ export default function ProcurementDashboard() {
                     })}
                     <td className="p-2 text-left">
                       <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setEditingItem(editingItem === item.id ? null : item.id)}
-                          className="h-5 w-5 p-0"
-                        >
-                          <Edit className="h-3 w-3" />
-                        </Button>
                         <Button
                           variant="ghost"
                           size="sm"
@@ -1943,7 +2062,10 @@ export default function ProcurementDashboard() {
         selectedItemsCount={selectedItems.length}
         currentSettings={currentSettings}
         onExecute={handleAutoAssignUsers}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => {
+          setSettingsInitialTab('users')
+          setSettingsOpen(true)
+        }}
       />
 
       <AutoFillPricesPopover
@@ -1952,7 +2074,10 @@ export default function ProcurementDashboard() {
         selectedItemsCount={selectedItems.length}
         currentSettings={currentSettings}
         onExecute={handleAutoFillPrices}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => {
+          setSettingsInitialTab('prices')
+          setSettingsOpen(true)
+        }}
       />
 
       <AutoAssignActionsPopover
@@ -1961,7 +2086,10 @@ export default function ProcurementDashboard() {
         selectedItemsCount={selectedItems.length}
         currentSettings={currentSettings}
         onExecute={handleAssignActions}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => {
+          setSettingsInitialTab('actions')
+          setSettingsOpen(true)
+        }}
       />
 
       {/* Analytics Popup */}
@@ -2054,6 +2182,170 @@ export default function ProcurementDashboard() {
         </div>
       )}
 
+      {/* Manual Edit Dialog */}
+      <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-2xl flex items-center gap-2">
+              <Edit className="h-6 w-6" />
+              {editFormData.isBulk ? 'Bulk Edit Items' : 'Edit Item'}
+            </DialogTitle>
+            <DialogDescription>
+              {editFormData.isBulk
+                ? `Edit ${editFormData.itemCount} selected items. Only filled fields will be updated.`
+                : 'Edit the selected item. Item ID and Description cannot be changed.'
+              }
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-6 py-4">
+            {/* Show selected items info */}
+            {editFormData.isBulk && (
+              <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-md">
+                <p className="text-sm text-yellow-800 font-medium">
+                  Bulk Edit Mode: Changes will apply to all {editFormData.itemCount} selected items
+                </p>
+                <p className="text-xs text-yellow-700 mt-1">
+                  Leave fields empty to keep existing values for each item
+                </p>
+              </div>
+            )}
+
+            {/* Read-only fields for single edit */}
+            {!editFormData.isBulk && (
+              <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-md">
+                <div>
+                  <Label className="text-xs text-gray-500">Item ID (Read-only)</Label>
+                  <Input
+                    value={lineItems.find(item => selectedItems.includes(item.id))?.itemId || ''}
+                    disabled
+                    className="mt-1 bg-gray-100"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs text-gray-500">Description (Read-only)</Label>
+                  <Input
+                    value={lineItems.find(item => selectedItems.includes(item.id))?.description || ''}
+                    disabled
+                    className="mt-1 bg-gray-100"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Editable fields */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="edit-category">Tag / Category</Label>
+                <Input
+                  id="edit-category"
+                  placeholder={editFormData.isBulk ? "Leave empty to keep existing" : "Enter category"}
+                  value={editFormData.category || ''}
+                  onChange={(e) => setEditFormData({ ...editFormData, category: e.target.value })}
+                  className="mt-1"
+                />
+              </div>
+
+              <div>
+                <Label htmlFor="edit-vendor">Vendor</Label>
+                <Input
+                  id="edit-vendor"
+                  placeholder={editFormData.isBulk ? "Leave empty to keep existing" : "Enter vendor"}
+                  value={editFormData.vendor || ''}
+                  onChange={(e) => setEditFormData({ ...editFormData, vendor: e.target.value })}
+                  className="mt-1"
+                />
+              </div>
+
+              <div>
+                <Label htmlFor="edit-user">Assigned User</Label>
+                <Select
+                  value={editFormData.assignedTo || 'none'}
+                  onValueChange={(value) => setEditFormData({ ...editFormData, assignedTo: value === 'none' ? '' : value })}
+                >
+                  <SelectTrigger id="edit-user" className="mt-1">
+                    <SelectValue placeholder={editFormData.isBulk ? "Leave empty to keep existing" : "Select user"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">-- None --</SelectItem>
+                    {allUsers.map((user) => (
+                      <SelectItem key={user} value={user}>
+                        {user}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <Label htmlFor="edit-action">Next Action</Label>
+                <Select
+                  value={editFormData.action || 'none'}
+                  onValueChange={(value) => setEditFormData({ ...editFormData, action: value === 'none' ? '' : value })}
+                >
+                  <SelectTrigger id="edit-action" className="mt-1">
+                    <SelectValue placeholder={editFormData.isBulk ? "Leave empty to keep existing" : "Select action"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">-- None --</SelectItem>
+                    <SelectItem value="RFQ">RFQ</SelectItem>
+                    <SelectItem value="Quote">Quote</SelectItem>
+                    <SelectItem value="Direct PO">Direct PO</SelectItem>
+                    <SelectItem value="Contract">Contract</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="col-span-2">
+                <Label htmlFor="edit-price">Unit Price ($)</Label>
+                <Input
+                  id="edit-price"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder={editFormData.isBulk ? "Leave 0 to keep existing" : "Enter price"}
+                  value={editFormData.unitPrice || ''}
+                  onChange={(e) => setEditFormData({ ...editFormData, unitPrice: parseFloat(e.target.value) || 0 })}
+                  className="mt-1"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Total price will be calculated automatically based on quantity
+                </p>
+              </div>
+            </div>
+
+            {/* Manual change indicator */}
+            <div className="p-4 bg-blue-50 border border-blue-200 rounded-md">
+              <p className="text-sm text-blue-800 font-medium flex items-center gap-2">
+                <FileSignature className="h-4 w-4" />
+                Manual Change Tracking
+              </p>
+              <p className="text-xs text-blue-700 mt-1">
+                Items edited manually will be marked with a flag to distinguish them from automated changes
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowEditDialog(false)
+                setEditFormData({})
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveEdit}
+              className="bg-green-600 hover:bg-green-700"
+            >
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Simple wide white popup for Settings */}
       {settingsOpen && (
         <div
@@ -2079,6 +2371,7 @@ export default function ProcurementDashboard() {
                 allTags={allTags}
                 allUsers={allUsers}
                 current={currentSettings}
+                initialTab={settingsInitialTab}
                 onSave={(s) => {
                   setSettingsProfiles((prev) => {
                     const next = { ...prev, [s.name]: s }

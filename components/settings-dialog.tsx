@@ -137,6 +137,7 @@ type Props = {
   allUsers: string[]
   current: AppSettings
   onSave: (settings: AppSettings) => void
+  initialTab?: 'users' | 'prices' | 'actions'
 }
 
 // Action Formula Types
@@ -163,7 +164,7 @@ export type ActionCriterion = {
 }
 
 // --- MAIN COMPONENT ---
-export function SettingsDialog({ open, onOpenChange, allTags, allUsers, current, onSave }: Props) {
+export function SettingsDialog({ open, onOpenChange, allTags, allUsers, current, onSave, initialTab = 'users' }: Props) {
   const [local, setLocal] = useState<AppSettings>(current)
   const [newItemId, setNewItemId] = useState('')
   const [tagSearch, setTagSearch] = useState('')
@@ -354,7 +355,7 @@ export function SettingsDialog({ open, onOpenChange, allTags, allUsers, current,
 
         {/* Content */}
         <div className="flex-1 overflow-hidden">
-          <Tabs defaultValue="users" className="h-full flex flex-col">
+          <Tabs defaultValue={initialTab} className="h-full flex flex-col">
             <TabsList className="mx-12 mt-8 grid w-fit grid-cols-3 h-14 bg-slate-100">
               <TabsTrigger value="users" className="flex items-center gap-3 px-8 text-base font-medium">
                 <Users className="h-5 w-5" />
@@ -869,12 +870,14 @@ export function SettingsPanel({
   current,
   onSave,
   onCancel,
+  initialTab = 'users',
 }: {
   allTags: string[]
   allUsers: string[]
   current: AppSettings
   onSave: (s: AppSettings) => void
   onCancel: () => void
+  initialTab?: 'users' | 'prices' | 'actions'
 }) {
   const [local, setLocal] = useState<AppSettings>(current)
   const [newItemId, setNewItemId] = useState('')
@@ -1018,7 +1021,7 @@ export function SettingsPanel({
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">
-        <Tabs defaultValue="users" className="h-full flex flex-col">
+        <Tabs defaultValue={initialTab} className="h-full flex flex-col">
           <TabsList className="mx-10 mt-6 grid w-fit grid-cols-3 h-12 bg-slate-100">
             <TabsTrigger value="users" className="flex items-center gap-2 px-6 text-sm font-medium">
               <Users className="h-4 w-4" /> Users
