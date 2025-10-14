@@ -38,6 +38,7 @@ import {
   CheckSquare,
   Globe,
   FileSignature,
+  X,
 } from "lucide-react"
 
 // Sample data based on the specification
@@ -679,6 +680,7 @@ export default function ProcurementDashboard() {
         updates.action = editFormData.action
       }
       if (editFormData.unitPrice && editFormData.unitPrice > 0) {
+        console.log('unitPrice:', editFormData.unitPrice, 'quantity:', item.quantity);
         updates.unitPrice = editFormData.unitPrice
         updates.totalPrice = editFormData.unitPrice * item.quantity
       }
@@ -997,6 +999,46 @@ export default function ProcurementDashboard() {
     if (!selectedItemForAnalytics) return null
     return generateAnalyticsData(selectedItemForAnalytics)
   }, [selectedItemForAnalytics])
+
+  const renderCategoryInput = () => {
+    return (
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-gray-400 bg-background p-2">
+        {(editFormData.category || '').split(',').filter(c => c.trim()).map((cat, index) => (
+          <Badge key={index} variant="outline" className="flex items-center gap-2 pl-2 pr-1">
+            {cat}
+            <button
+              onClick={() => {
+                const newCategories = (editFormData.category || '').split(',').filter(c => c.trim())
+                newCategories.splice(index, 1)
+                setEditFormData({ ...editFormData, category: newCategories.join(',') })
+              }}
+              className="rounded-full hover:bg-muted"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </Badge>
+        ))}
+        <Input
+          id="category-input"
+          placeholder="Add a tag and press Enter..."
+          className="flex-1 border-0 shadow-none focus-visible:ring-0"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ',') {
+              e.preventDefault()
+              const newTag = e.currentTarget.value.trim()
+              if (newTag) {
+                const currentCategories = (editFormData.category || '').split(',').filter(c => c.trim())
+                if (!currentCategories.includes(newTag)) {
+                  setEditFormData({ ...editFormData, category: [...currentCategories, newTag].join(',') })
+                }
+                e.currentTarget.value = ''
+              }
+            }
+          }}
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -1710,12 +1752,14 @@ export default function ProcurementDashboard() {
                       if (columnKey === "itemId") {
                         return (
                           <td key={columnKey} className="p-2 text-left">
-                            <span
-                              className="font-mono text-xs text-gray-600 bg-gray-100 px-1 py-0.5 rounded"
-                              title={item.itemId}
-                            >
-                              {item.itemId}
-                            </span>
+                            <div className="flex items-center gap-1">
+                              <span
+                                className="font-mono text-xs text-gray-600 bg-gray-100 px-1 py-0.5 rounded"
+                                title={item.itemId}
+                              >
+                                {item.itemId}
+                              </span>
+                            </div>
                           </td>
                         )
                       }
@@ -1723,42 +1767,47 @@ export default function ProcurementDashboard() {
                       if (columnKey === "description") {
                         return (
                           <td key={columnKey} className="p-2 text-left" style={{ width: columnWidths.description }}>
-                            <span
-                              className="text-gray-900 font-medium text-xs truncate block"
-                              title={item.description}
-                            >
-                              {item.description}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="text-gray-900 font-medium text-xs truncate block"
+                                title={item.description}
+                              >
+                                {item.description}
+                              </span>
+                              {item.manuallyEdited && (
+                                <UiTooltip>
+                                  <UiTooltipTrigger>
+                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-yellow-200 text-yellow-800">
+                                      Edited
+                                    </span>
+                                  </UiTooltipTrigger>
+                                  <UiTooltipContent>
+                                    <p>This item has been manually edited.</p>
+                                  </UiTooltipContent>
+                                </UiTooltip>
+                              )}
+                            </div>
                           </td>
                         )
                       }
 
                       if (columnKey === "category") {
-                        const categories = Array.isArray(item.category) ? item.category : [item.category || ""]
-                        const displayCategory = categories[0] || ""
-                        const hasMultiple = categories.length > 1
-                        const isTextTruncated = displayCategory && displayCategory.length > 12
-                        const isMissing = !displayCategory || displayCategory === ""
+                        const categories = (item.category || '').split(',').filter(c => c.trim())
+                        const isMissing = categories.length === 0
 
                         return (
                           <td key={columnKey} className="p-2 text-left" style={{ width: columnWidths.category }}>
-                            <div className="flex items-center gap-1 w-full">
-                              <Badge
-                                variant="outline"
-                                className={`text-xs px-1 py-0 truncate flex-shrink-0 ${
-                                  isMissing ? "border-red-300 text-red-700 bg-red-50" : "border-gray-200 text-gray-700"
-                                }`}
-                                title={hasMultiple ? categories.join(", ") : displayCategory || "No tag"}
-                              >
-                                <span className="truncate max-w-20">{displayCategory || "No tag"}</span>
-                              </Badge>
-                              {(hasMultiple || isTextTruncated) && !isMissing && (
-                                <span
-                                  className="text-blue-600 text-xs font-medium flex-shrink-0"
-                                  title={hasMultiple ? categories.join(", ") : displayCategory}
-                                >
-                                  +{hasMultiple ? categories.length - 1 : "..."}
-                                </span>
+                            <div className="flex flex-wrap gap-1">
+                              {isMissing ? (
+                                <Badge variant="outline" className="border-red-300 text-red-700 bg-red-50">
+                                  No tag
+                                </Badge>
+                              ) : (
+                                categories.map((cat, index) => (
+                                  <Badge key={index} variant="outline" className="border-gray-200 text-gray-700">
+                                    {cat}
+                                  </Badge>
+                                ))
                               )}
                             </div>
                           </td>
@@ -2191,167 +2240,95 @@ export default function ProcurementDashboard() {
 
       {/* Manual Edit Dialog */}
       <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="text-2xl flex items-center gap-2">
-              <Edit className="h-6 w-6" />
-              {editFormData.isBulk ? 'Bulk Edit Items' : 'Edit Item'}
-            </DialogTitle>
-            <DialogDescription>
-              {editFormData.isBulk
-                ? `Edit ${editFormData.itemCount} selected items. Only filled fields will be updated.`
-                : 'Edit the selected item. Item ID and Description cannot be changed.'
-              }
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-6 py-4">
-            {/* Show selected items info */}
-            {editFormData.isBulk && (
-              <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-md">
-                <p className="text-sm text-yellow-800 font-medium">
-                  Bulk Edit Mode: Changes will apply to all {editFormData.itemCount} selected items
-                </p>
-                <p className="text-xs text-yellow-700 mt-1">
-                  Leave fields empty to keep existing values for each item
-                </p>
-              </div>
-            )}
-
-            {/* Read-only fields for single edit */}
-            {!editFormData.isBulk && (
-              <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-md">
-                <div>
-                  <Label className="text-xs text-gray-500">Item ID (Read-only)</Label>
-                  <Input
-                    value={lineItems.find(item => selectedItems.includes(item.id))?.itemId || ''}
-                    disabled
-                    className="mt-1 bg-gray-100"
-                  />
-                </div>
-                <div>
-                  <Label className="text-xs text-gray-500">Description (Read-only)</Label>
-                  <Input
-                    value={lineItems.find(item => selectedItems.includes(item.id))?.description || ''}
-                    disabled
-                    className="mt-1 bg-gray-100"
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Editable fields */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="edit-category">Tag / Category</Label>
-                <Input
-                  id="edit-category"
-                  placeholder={editFormData.isBulk ? "Leave empty to keep existing" : "Enter category"}
-                  value={editFormData.category || ''}
-                  onChange={(e) => setEditFormData({ ...editFormData, category: e.target.value })}
-                  className="mt-1"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="edit-vendor">Vendor</Label>
-                <Input
-                  id="edit-vendor"
-                  placeholder={editFormData.isBulk ? "Leave empty to keep existing" : "Enter vendor"}
-                  value={editFormData.vendor || ''}
-                  onChange={(e) => setEditFormData({ ...editFormData, vendor: e.target.value })}
-                  className="mt-1"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="edit-user">Assigned User</Label>
-                <Select
-                  value={editFormData.assignedTo || 'none'}
-                  onValueChange={(value) => setEditFormData({ ...editFormData, assignedTo: value === 'none' ? '' : value })}
-                >
-                  <SelectTrigger id="edit-user" className="mt-1">
-                    <SelectValue placeholder={editFormData.isBulk ? "Leave empty to keep existing" : "Select user"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">-- None --</SelectItem>
-                    {allUsers.map((user) => (
-                      <SelectItem key={user} value={user}>
-                        {user}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div>
-                <Label htmlFor="edit-action">Next Action</Label>
-                <Select
-                  value={editFormData.action || 'none'}
-                  onValueChange={(value) => setEditFormData({ ...editFormData, action: value === 'none' ? '' : value })}
-                >
-                  <SelectTrigger id="edit-action" className="mt-1">
-                    <SelectValue placeholder={editFormData.isBulk ? "Leave empty to keep existing" : "Select action"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">-- None --</SelectItem>
-                    <SelectItem value="RFQ">RFQ</SelectItem>
-                    <SelectItem value="Quote">Quote</SelectItem>
-                    <SelectItem value="Direct PO">Direct PO</SelectItem>
-                    <SelectItem value="Contract">Contract</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="col-span-2">
-                <Label htmlFor="edit-price">Unit Price ($)</Label>
-                <Input
-                  id="edit-price"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  placeholder={editFormData.isBulk ? "Leave 0 to keep existing" : "Enter price"}
-                  value={editFormData.unitPrice || ''}
-                  onChange={(e) => setEditFormData({ ...editFormData, unitPrice: parseFloat(e.target.value) || 0 })}
-                  className="mt-1"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Total price will be calculated automatically based on quantity
-                </p>
-              </div>
-            </div>
-
-            {/* Manual change indicator */}
-            <div className="p-4 bg-blue-50 border border-blue-200 rounded-md">
-              <p className="text-sm text-blue-800 font-medium flex items-center gap-2">
-                <FileSignature className="h-4 w-4" />
-                Manual Change Tracking
-              </p>
-              <p className="text-xs text-blue-700 mt-1">
-                Items edited manually will be marked with a flag to distinguish them from automated changes
-              </p>
-            </div>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{editFormData.isBulk ? `Bulk Edit (${editFormData.itemCount} items)` : 'Edit Item'}</DialogTitle>
+          <DialogDescription>
+            {editFormData.isBulk
+              ? 'Enter values to update for all selected items. Fields left blank will not be changed.'
+              : 'Make changes to the item details below.'}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 py-4">
+          <div className="space-y-2">
+            <Label htmlFor="category">Tag</Label>
+            {renderCategoryInput()}
           </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setShowEditDialog(false)
-                setEditFormData({})
-              }}
+          <div className="space-y-2">
+            <Label htmlFor="vendor">Vendor</Label>
+            <Select
+              value={editFormData.vendor || ''}
+              onValueChange={(value) => setEditFormData({ ...editFormData, vendor: value })}
             >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSaveEdit}
-              className="bg-green-600 hover:bg-green-700"
+              <SelectTrigger className="border border-gray-400">
+              <SelectValue placeholder="Select a vendor" />
+            </SelectTrigger>
+              <SelectContent>
+                {vendorOptions.map((vendor) => (
+                  <SelectItem key={vendor} value={vendor}>
+                    {vendor}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="assignedTo">Assigned To</Label>
+            <Select
+              value={editFormData.assignedTo || ''}
+              onValueChange={(value) => setEditFormData({ ...editFormData, assignedTo: value })}
             >
-              Save Changes
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              <SelectTrigger className="border border-gray-400">
+              <SelectValue placeholder="Select a user" />
+            </SelectTrigger>
+              <SelectContent>
+                {allUsers.map((user) => (
+                  <SelectItem key={user} value={user}>
+                    {user}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="action">Action</Label>
+            <Select
+              value={editFormData.action || ''}
+              onValueChange={(value) => setEditFormData({ ...editFormData, action: value })}
+            >
+              <SelectTrigger className="border border-gray-400">
+              <SelectValue placeholder="Select an action" />
+            </SelectTrigger>
+              <SelectContent>
+                {actionOptions.map((action) => (
+                  <SelectItem key={action} value={action}>
+                    {action}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="unitPrice" className="text-right">
+            Price per Unit
+          </Label>
+            <Input
+              id="unitPrice"
+              type="number"
+              value={editFormData.unitPrice || ''}
+              onChange={(e) => setEditFormData({ ...editFormData, unitPrice: parseFloat(e.target.value) || 0 })}
+              className="border border-gray-400"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button onClick={() => setShowEditDialog(false)} variant="outline">
+            Cancel
+          </Button>
+          <Button onClick={handleSaveEdit}>Save changes</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
       {/* Simple wide white popup for Settings */}
       {settingsOpen && (
