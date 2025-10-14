@@ -253,10 +253,10 @@ export default function ProcurementDashboard() {
 
   const dynamicMetrics = useMemo(() => {
     const totalItems = lineItems.length
-    const totalValue = lineItems.reduce((sum, item) => sum + item.totalPrice, 0)
+    const totalValue = lineItems.reduce((sum: number, item: any) => sum + item.totalPrice, 0)
     const avgPrice = totalItems > 0 ? totalValue / totalItems : 0
 
-    const totalVendors = lineItems.filter((item) => item.vendor && item.vendor.trim() !== "").length
+    const totalVendors = lineItems.filter((item: any) => item.vendor && item.vendor.trim() !== "").length
     const avgVendorsPerItem = totalItems > 0 ? totalVendors / totalItems : 0
 
     return [
@@ -310,20 +310,20 @@ export default function ProcurementDashboard() {
   const filterMetrics = useMemo(() => {
     return {
       prices: {
-        pending: lineItems.filter((item) => item.unitPrice === 0).length,
-        identified: lineItems.filter((item) => item.unitPrice > 0).length
+        pending: lineItems.filter((item: any) => item.unitPrice === 0).length,
+        identified: lineItems.filter((item: any) => item.unitPrice > 0).length
       },
       actions: {
-        pending: lineItems.filter((item) => !item.action || item.action.trim() === "").length,
-        defined: lineItems.filter((item) => item.action && item.action.trim() !== "").length
+        pending: lineItems.filter((item: any) => !item.action || item.action.trim() === "").length,
+        defined: lineItems.filter((item: any) => item.action && item.action.trim() !== "").length
       },
       users: {
-        pending: lineItems.filter((item) => !item.assignedTo || item.assignedTo.trim() === "").length,
-        assigned: lineItems.filter((item) => item.assignedTo && item.assignedTo.trim() !== "").length
+        pending: lineItems.filter((item: any) => !item.assignedTo || item.assignedTo.trim() === "").length,
+        assigned: lineItems.filter((item: any) => item.assignedTo && item.assignedTo.trim() !== "").length
       },
       vendors: {
-        missing: lineItems.filter((item) => !item.vendor || item.vendor.trim() === "").length,
-        assigned: lineItems.filter((item) => item.vendor && item.vendor.trim() !== "").length
+        missing: lineItems.filter((item: any) => !item.vendor || item.vendor.trim() === "").length,
+        assigned: lineItems.filter((item: any) => item.vendor && item.vendor.trim() !== "").length
       }
     }
   }, [lineItems])
@@ -345,7 +345,7 @@ export default function ProcurementDashboard() {
   }
 
   const filteredAndSortedItems = useMemo(() => {
-    let filtered = lineItems.filter((item) => {
+    let filtered = lineItems.filter((item: any) => {
       const matchesSearch =
         item.customer.toLowerCase().includes(searchTerm.toLowerCase()) ||
         item.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -363,24 +363,24 @@ export default function ProcurementDashboard() {
     if (activeFilter) {
       switch (activeFilter) {
         case "prices":
-          filtered = filtered.filter((item) => (reverseFilter ? item.unitPrice > 0 : item.unitPrice === 0))
+          filtered = filtered.filter((item: any) => (reverseFilter ? item.unitPrice > 0 : item.unitPrice === 0))
           break
         case "actions":
-          filtered = filtered.filter((item) =>
+          filtered = filtered.filter((item: any) =>
             reverseFilter
               ? item.action && item.action.trim() !== ""
               : !item.action || item.action.trim() === "",
           )
           break
         case "users":
-          filtered = filtered.filter((item) =>
+          filtered = filtered.filter((item: any) =>
             reverseFilter
               ? item.assignedTo && item.assignedTo.trim() !== ""
               : !item.assignedTo || item.assignedTo.trim() === "",
           )
           break
         case "vendors":
-          filtered = filtered.filter((item) =>
+          filtered = filtered.filter((item: any) =>
             reverseFilter ? item.vendor && item.vendor.trim() !== "" : !item.vendor || item.vendor.trim() === "",
           )
           break
@@ -388,7 +388,7 @@ export default function ProcurementDashboard() {
     }
 
     if (sortField) {
-      filtered.sort((a, b) => {
+      filtered.sort((a: any, b: any) => {
         const rawA = (a as any)[sortField as keyof typeof a]
         const rawB = (b as any)[sortField as keyof typeof b]
 
@@ -509,14 +509,14 @@ export default function ProcurementDashboard() {
   const handleAutoAssignUsers = (scope: 'all' | 'unassigned' | 'selected') => {
     let itemsToUpdate = lineItems
     if (scope === 'unassigned') {
-      itemsToUpdate = lineItems.filter((item) => !item.assignedTo || item.assignedTo.trim().length === 0)
+      itemsToUpdate = lineItems.filter((item: any) => !item.assignedTo || item.assignedTo.trim().length === 0)
     } else if (scope === 'selected') {
-      itemsToUpdate = lineItems.filter((item) => selectedItems.includes(item.id))
+      itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
     }
 
     const tagMap = currentSettings.users.tagUserMap || {}
 
-    const updatedItems = lineItems.map((item) => {
+    const updatedItems = lineItems.map((item: any) => {
       if (!itemsToUpdate.some((u) => u.id === item.id)) return item
       const tags = Array.isArray(item.category)
         ? (item.category as string[])
@@ -539,9 +539,9 @@ export default function ProcurementDashboard() {
   const handleAutoFillPrices = (scope: 'all' | 'non-selected' | 'selected') => {
     let itemsToUpdate = lineItems
     if (scope === 'non-selected') {
-      itemsToUpdate = lineItems.filter((item) => !selectedItems.includes(item.id))
+      itemsToUpdate = lineItems.filter((item: any) => !selectedItems.includes(item.id))
     } else if (scope === 'selected') {
-      itemsToUpdate = lineItems.filter((item) => selectedItems.includes(item.id))
+      itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
     }
 
     // Helper: choose mapping id for an item (one mapping per item; for now pick first configured)
@@ -562,7 +562,7 @@ export default function ProcurementDashboard() {
     // Items to exclude from auto-fill (2-3 items that should remain blank)
     const excludedItemIds = [6, 9, 15] // These will remain without prices
 
-    const updatedItems = lineItems.map((item) => {
+    const updatedItems = lineItems.map((item: any) => {
       if (!itemsToUpdate.some((u) => u.id === item.id)) return item
 
       // Skip certain items to keep them blank
@@ -578,7 +578,7 @@ export default function ProcurementDashboard() {
       const priceEXIM = Math.round(mockPriceForSource(item, 'EXIM') * 100) / 100
 
       // Find cheapest for unitPrice and totalPrice
-      const allPrices = [pricePO, priceContract, priceQuote, priceDigikey, priceEXIM].filter(p => p > 0)
+      const allPrices = [pricePO, priceContract, priceQuote, priceDigikey, priceEXIM].filter((p: number) => p > 0)
       const unitPrice = allPrices.length > 0 ? Math.min(...allPrices) : 0
       const totalPrice = Math.round(unitPrice * item.quantity * 100) / 100
 
@@ -593,12 +593,12 @@ export default function ProcurementDashboard() {
   const handleAssignActions = (scope: 'all' | 'unassigned' | 'selected') => {
     let itemsToUpdate = lineItems
     if (scope === 'unassigned') {
-      itemsToUpdate = lineItems.filter((item) => !item.action || item.action.trim() === '')
+      itemsToUpdate = lineItems.filter((item: any) => !item.action || item.action.trim() === '')
     } else if (scope === 'selected') {
-      itemsToUpdate = lineItems.filter((item) => selectedItems.includes(item.id))
+      itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
     }
 
-    const updatedItems = lineItems.map((item) => {
+    const updatedItems = lineItems.map((item: any) => {
       if (!itemsToUpdate.some((u) => u.id === item.id)) return item
       const hasPrice = !!item.unitPrice && item.unitPrice > 0
       const hasVendor = !!item.vendor && String(item.vendor).trim() !== ''
@@ -626,7 +626,7 @@ export default function ProcurementDashboard() {
     if (selectedItems.length === 0) return
 
     // Get the selected line items
-    const itemsToEdit = lineItems.filter(item => selectedItems.includes(item.id))
+    const itemsToEdit = lineItems.filter((item: any) => selectedItems.includes(item.id))
 
     // For bulk edit, use common values or empty strings
     if (selectedItems.length === 1) {
@@ -660,7 +660,7 @@ export default function ProcurementDashboard() {
   const handleSaveEdit = () => {
     if (selectedItems.length === 0) return
 
-    const updatedItems = lineItems.map(item => {
+    const updatedItems = lineItems.map((item: any) => {
       if (!selectedItems.includes(item.id)) return item
 
       // Create updated item with manual change flag
@@ -1003,12 +1003,12 @@ export default function ProcurementDashboard() {
   const renderCategoryInput = () => {
     return (
       <div className="flex flex-wrap items-center gap-2 rounded-md border border-gray-400 bg-background p-2">
-        {(editFormData.category || '').split(',').filter(c => c.trim()).map((cat, index) => (
+        {String(editFormData.category || '').split(',').filter((c: string) => c.trim()).map((cat: string, index: number) => (
           <Badge key={index} variant="outline" className="flex items-center gap-2 pl-2 pr-1">
             {cat}
             <button
               onClick={() => {
-                const newCategories = (editFormData.category || '').split(',').filter(c => c.trim())
+                const newCategories = String(editFormData.category || '').split(',').filter((c: string) => c.trim())
                 newCategories.splice(index, 1)
                 setEditFormData({ ...editFormData, category: newCategories.join(',') })
               }}
@@ -1027,7 +1027,7 @@ export default function ProcurementDashboard() {
               e.preventDefault()
               const newTag = e.currentTarget.value.trim()
               if (newTag) {
-                const currentCategories = (editFormData.category || '').split(',').filter(c => c.trim())
+                const currentCategories = String(editFormData.category || '').split(',').filter((c: string) => c.trim())
                 if (!currentCategories.includes(newTag)) {
                   setEditFormData({ ...editFormData, category: [...currentCategories, newTag].join(',') })
                 }
@@ -1721,7 +1721,7 @@ export default function ProcurementDashboard() {
         </tr>
       </thead>
       <tbody className="bg-white divide-y divide-gray-100">
-        {paginatedItems.map((item) => (
+        {paginatedItems.map((item: any) => (
           <tr key={item.id} className="hover:bg-gray-50 transition-colors">
                     <td className="p-2">
                       <input
@@ -1792,7 +1792,7 @@ export default function ProcurementDashboard() {
                       }
 
                       if (columnKey === "category") {
-                        const categories = (item.category || '').split(',').filter(c => c.trim())
+                        const categories = (item.category || '').split(',').filter((c: string) => c.trim())
                         const isMissing = categories.length === 0
 
                         return (
@@ -1803,7 +1803,7 @@ export default function ProcurementDashboard() {
                                   No tag
                                 </Badge>
                               ) : (
-                                categories.map((cat, index) => (
+                                categories.map((cat: string, index: number) => (
                                   <Badge key={index} variant="outline" className="border-gray-200 text-gray-700">
                                     {cat}
                                   </Badge>
@@ -1936,10 +1936,10 @@ export default function ProcurementDashboard() {
                           { source: 'Quote', value: (item as any).priceQuote },
                           { source: 'Digi-Key', value: (item as any).priceDigikey },
                           { source: 'EXIM', value: (item as any).priceEXIM },
-                        ].filter(p => p.value !== undefined && p.value > 0)
+                        ].filter((p): p is { source: string; value: number } => p.value !== undefined && p.value > 0)
 
                         const cheapest = prices.length > 0
-                          ? prices.reduce((min, p) => p.value < min.value ? p : min)
+                          ? prices.reduce((min: { source: string; value: number }, p: { source: string; value: number }) => p.value < min.value ? p : min)
                           : null
 
                         return (
