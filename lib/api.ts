@@ -6,10 +6,11 @@
  */
 
 // API Configuration
-// Use AWS API Gateway for dev environment
-const API_BASE_URL = typeof window !== 'undefined'
-  ? (window as any).NEXT_PUBLIC_API_URL || 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev'
-  : 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
+// Environment-based API URLs:
+// - Local dev: http://localhost:8000 (from .env.local)
+// - Vercel dev: AWS Dev API Gateway (from .env.development)
+// - Vercel prod: AWS Prod API Gateway (from .env.production)
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
 
 /**
  * Get API token from URL parameters
