@@ -6,9 +6,10 @@
  */
 
 // API Configuration
+// Use AWS API Gateway for dev environment
 const API_BASE_URL = typeof window !== 'undefined'
-  ? (window as any).NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-  : 'http://localhost:8000';
+  ? (window as any).NEXT_PUBLIC_API_URL || 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev'
+  : 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
 
 /**
  * Get API token from URL parameters
