@@ -99,6 +99,7 @@ export default function ProcurementDashboard() {
     quantity: 80,
     vendor: 144,
     assignedTo: 144,
+    unitPrice: 100,
     pricePO: 88,
     priceContract: 88,
     priceQuote: 88,
