@@ -628,7 +628,7 @@ export default function ProcurementDashboard() {
             const user = projectUsers.find(u => u.name === userName)
             return user?.user_id
           })
-          .filter((id): id is string => id !== undefined)
+          .filter((id: string | undefined): id is string => id !== undefined)
 
         if (userIds.length > 0) {
           tagUserIdMap[tag] = userIds
@@ -645,7 +645,7 @@ export default function ProcurementDashboard() {
         itemIds = selectedItems.map(id => {
           const item = lineItems.find((item: any) => item.id === id)
           return item?.project_item_id
-        }).filter((id): id is string => id !== undefined)
+        }).filter((id: string | undefined): id is string => id !== undefined)
       } else {
         apiScope = scope
       }
@@ -756,7 +756,7 @@ export default function ProcurementDashboard() {
           console.log(`[Manual Assign] Looking for user "${userName}", found:`, user)
           return user?.user_id
         })
-        .filter((id): id is string => id !== undefined)
+        .filter((id: string | undefined): id is string => id !== undefined)
 
       console.log('[Manual Assign] Assigning users:', editingUsers, 'IDs:', selectedUserIds)
       console.log('[Manual Assign] Item to update:', editingItem.project_item_id)
@@ -1201,7 +1201,7 @@ export default function ProcurementDashboard() {
             const user = projectUsers.find(u => u.name === userName)
             return user?.user_id
           })
-          .filter((id): id is string => id !== undefined)
+          .filter((id: string | undefined): id is string => id !== undefined)
 
         console.log('[Edit] Assigning users:', assignedUserNames, 'IDs:', selectedUserIds)
 
