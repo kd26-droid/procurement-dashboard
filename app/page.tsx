@@ -12,9 +12,10 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
-import { initialLineItems } from '../data/lineItems'
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
+import { getProjectId, getProjectItems, getProjectOverview, getProjectUsers, updateProjectItem, bulkAssignUsers, autoAssignUsersByTags, notifyItemsAssigned, notifyItemUpdated, type ProjectItem } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
+import { useToast } from "@/hooks/use-toast"
 import {
   Settings,
   Users,
@@ -41,19 +42,22 @@ import {
   X,
 } from "lucide-react"
 
-// Sample data based on the specification
-const projectData = {
-  name: "Wireless Multisensor",
-  id: "PROJ-2024-001",
-  status: "Active",
-  created: "2024-01-15",
-  deadline: "2026-11-31",
-}
-
-
 export default function ProcurementDashboard() {
-  const [lineItems, setLineItems] = useState(initialLineItems)
+  const { toast } = useToast()
+  const [lineItems, setLineItems] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [projectData, setProjectData] = useState({
+    name: "",
+    id: "",
+    status: "",
+    created: "",
+    deadline: "",
+    customer: "",
+  })
+  const [projectUsers, setProjectUsers] = useState<Array<{user_id: string, name: string, email: string, role: string}>>([])
   const [selectedItems, setSelectedItems] = useState<number[]>([])
+  const [editingItem, setEditingItem] = useState<any | null>(null)
+  const [editingUsers, setEditingUsers] = useState<string[]>([])
   const [searchTerm, setSearchTerm] = useState("")
   const [vendorFilter, setVendorFilter] = useState<string[]>([])
   const [actionFilter, setActionFilter] = useState<string[]>([])
@@ -67,7 +71,6 @@ export default function ProcurementDashboard() {
   const itemsPerPage = 20
 
   const [columnOrder, setColumnOrder] = useState([
-    "customer",
     "itemId",
     "description",
     "quantity",
@@ -77,7 +80,7 @@ export default function ProcurementDashboard() {
     "assignedTo",
     "dueDate",
     "vendor",
-    "totalPrice",
+    "unitPrice",
     "source",
     "pricePO",
     "priceContract",
@@ -85,7 +88,7 @@ export default function ProcurementDashboard() {
     "priceDigikey",
     "priceEXIM",
   ])
-  const [hiddenColumns, setHiddenColumns] = useState<string[]>([])
+  const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer"]) // Hide customer column by default
   const [savedViews, setSavedViews] = useState<{ [key: string]: { order: string[]; hidden: string[] } }>({})
   const [currentView, setCurrentView] = useState("default")
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null)
@@ -142,6 +145,85 @@ export default function ProcurementDashboard() {
     }
   }, [])
 
+  // Load project data from API
+  useEffect(() => {
+    async function loadProjectData() {
+      try {
+        setLoading(true)
+        const projectId = getProjectId()
+
+        if (!projectId) {
+          console.warn('No project_id in URL, using empty data')
+          setLineItems([])
+          setLoading(false)
+          return
+        }
+
+        console.log('[Dashboard] Fetching data for project:', projectId)
+
+        // Fetch overview, items, and users in parallel
+        const [overviewResponse, itemsResponse, usersResponse] = await Promise.all([
+          getProjectOverview(projectId),
+          getProjectItems(projectId),
+          getProjectUsers(projectId)
+        ])
+
+        // Set project data
+        setProjectData({
+          name: overviewResponse.project.project_name,
+          id: overviewResponse.project.project_code,
+          status: overviewResponse.project.status,
+          created: overviewResponse.project.validity_from || '',
+          deadline: overviewResponse.project.deadline || '',
+          customer: overviewResponse.project.customer_name || '',
+        })
+
+        console.log('[Dashboard] Project:', overviewResponse.project.project_name)
+
+        // Set users data
+        setProjectUsers(usersResponse.users)
+        console.log('[Dashboard] Loaded', usersResponse.users.length, 'users:', usersResponse.users.map(u => `${u.name} (${u.email})`))
+
+        // Transform API data to match dashboard format
+        const transformedItems = itemsResponse.items.map((item: ProjectItem, index: number) => ({
+          id: index + 1,
+          project_item_id: item.project_item_id,
+          customer: '',
+          itemId: item.item_code,
+          description: item.item_name,
+          quantity: item.quantity,
+          unit: item.measurement_unit?.abbreviation || '',
+          category: item.tags && item.tags.length > 0 ? item.tags.join(', ') : 'Uncategorized',
+          assignedTo: item.assigned_users.map(u => u.name).join(', '),
+          assigned_user_ids: item.assigned_users.map(u => u.user_id),
+          unitPrice: item.rate || 0,
+          totalPrice: item.amount || 0,
+          currency: item.currency,
+          vendor: '',
+          action: '',
+          dueDate: '',
+          source: '',
+          pricePO: 0,
+          priceContract: 0,
+          priceQuote: 0,
+          priceDigikey: 0,
+          priceEXIM: 0,
+          manuallyEdited: item.custom_fields?.manually_edited || false,
+        }))
+
+        console.log('[Dashboard] Loaded', transformedItems.length, 'items')
+        setLineItems(transformedItems)
+        setLoading(false)
+      } catch (error) {
+        console.error('[Dashboard] Error loading data:', error)
+        setLineItems([])
+        setLoading(false)
+      }
+    }
+
+    loadProjectData()
+  }, [])
+
   // Click outside handler for column visibility dropdown
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -174,7 +256,20 @@ export default function ProcurementDashboard() {
   }, [lineItems])
 
   const allUsers = useMemo(() => {
-    const set = new Set<string>(['John Smith', 'Sarah Johnson', 'Mike Wilson', 'Lisa Chen', 'David Brown'])
+    const userNames = new Set<string>()
+
+    // Add all users from API - these are the users with project access
+    console.log('[Dashboard] Processing', projectUsers.length, 'users from API')
+    projectUsers.forEach((user) => {
+      console.log('[Dashboard] User:', user.name, '| Email:', user.email, '| Role:', user.role)
+      if (user.name && user.name.trim()) {
+        userNames.add(user.name.trim())
+      } else {
+        console.warn('[Dashboard] Skipping user with empty name:', user.email)
+      }
+    })
+
+    // Also add users from assigned items (in case there are legacy assignments)
     for (const it of lineItems) {
       const people = Array.isArray(it.assignedTo)
         ? (it.assignedTo as string[])
@@ -182,10 +277,16 @@ export default function ProcurementDashboard() {
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean)
-      people.forEach((p) => set.add(p))
+      people.forEach((p) => {
+        if (p && p.trim()) {
+          userNames.add(p.trim())
+        }
+      })
     }
-    return Array.from(set).sort()
-  }, [lineItems])
+
+    console.log('[Dashboard] Final user list:', Array.from(userNames))
+    return Array.from(userNames).sort()
+  }, [lineItems, projectUsers])
 
   // Dynamic filter options from table data
   const vendorOptions = useMemo(() => {
@@ -355,7 +456,10 @@ export default function ProcurementDashboard() {
       const vendorMatch = vendorFilter.length === 0 || vendorFilter.includes(item.vendor || "tbd")
       const actionMatch = actionFilter.length === 0 || actionFilter.includes(item.action)
       const assignedMatch = assignedFilter.length === 0 || assignedFilter.includes(item.assignedTo || "unassigned")
-      const categoryMatch = categoryFilter.length === 0 || categoryFilter.includes(item.category)
+
+      // Category filter: check if ANY of the item's tags match the selected categories
+      const itemTags = item.category ? String(item.category).split(',').map((t: string) => t.trim()) : []
+      const categoryMatch = categoryFilter.length === 0 || itemTags.some((tag: string) => categoryFilter.includes(tag))
 
       return matchesSearch && vendorMatch && actionMatch && assignedMatch && categoryMatch
     })
@@ -506,33 +610,433 @@ export default function ProcurementDashboard() {
   }
 
   // Auto Assign Users Handler
-  const handleAutoAssignUsers = (scope: 'all' | 'unassigned' | 'selected') => {
-    let itemsToUpdate = lineItems
-    if (scope === 'unassigned') {
-      itemsToUpdate = lineItems.filter((item: any) => !item.assignedTo || item.assignedTo.trim().length === 0)
-    } else if (scope === 'selected') {
-      itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
+  const handleAutoAssignUsers = async (scope: 'all' | 'unassigned' | 'selected') => {
+    const projectId = getProjectId()
+    if (!projectId) {
+      console.error('[Auto-Assign] No project ID found')
+      return
     }
 
-    const tagMap = currentSettings.users.tagUserMap || {}
+    try {
+      const tagMap = currentSettings.users.tagUserMap || {}
 
-    const updatedItems = lineItems.map((item: any) => {
-      if (!itemsToUpdate.some((u) => u.id === item.id)) return item
-      const tags = Array.isArray(item.category)
-        ? (item.category as string[])
-        : String(item.category || '')
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
-      const userSet = new Set<string>()
-      tags.forEach((t) => (tagMap[t] || []).forEach((u) => userSet.add(u)))
-      const usersForItem = Array.from(userSet)
-      if (usersForItem.length === 0) return item
-      return { ...item, assignedTo: usersForItem.join(', ') }
-    })
+      // Convert tag-user map from user names to user IDs
+      const tagUserIdMap: Record<string, string[]> = {}
+      Object.entries(tagMap).forEach(([tag, userNames]) => {
+        const userIds = userNames
+          .map(userName => {
+            const user = projectUsers.find(u => u.name === userName)
+            return user?.user_id
+          })
+          .filter((id): id is string => id !== undefined)
 
-    setLineItems(updatedItems)
+        if (userIds.length > 0) {
+          tagUserIdMap[tag] = userIds
+        }
+      })
+
+      console.log('[Auto-Assign] Tag-User ID Map:', tagUserIdMap)
+
+      let apiScope: 'all' | 'unassigned' | 'item_ids'
+      let itemIds: string[] | undefined
+
+      if (scope === 'selected') {
+        apiScope = 'item_ids'
+        itemIds = selectedItems.map(id => {
+          const item = lineItems.find((item: any) => item.id === id)
+          return item?.project_item_id
+        }).filter((id): id is string => id !== undefined)
+      } else {
+        apiScope = scope
+      }
+
+      console.log('[Auto-Assign] Calling API with scope:', apiScope, 'itemIds:', itemIds)
+
+      const result = await autoAssignUsersByTags(projectId, tagUserIdMap, apiScope, itemIds)
+
+      console.log('[Auto-Assign] Result:', result)
+
+      if (result.success) {
+        // Refresh items from API
+        const itemsResponse = await getProjectItems(projectId)
+        const transformedItems = itemsResponse.items.map((item, index) => ({
+          id: index + 1,
+          project_item_id: item.project_item_id,
+          customer: '',
+          itemId: item.item_code,
+          description: item.item_name,
+          quantity: item.quantity,
+          unit: item.measurement_unit?.abbreviation || '',
+          category: item.tags && item.tags.length > 0 ? item.tags.join(', ') : 'Uncategorized',
+          assignedTo: item.assigned_users.map(u => u.name).join(', '),
+          assigned_user_ids: item.assigned_users.map(u => u.user_id),
+          unitPrice: item.rate || 0,
+          totalPrice: item.amount || 0,
+          vendor: '',
+          action: '',
+          dueDate: '',
+          source: '',
+          pricePO: 0,
+          priceContract: 0,
+          priceQuote: 0,
+          priceDigikey: 0,
+          priceEXIM: 0,
+          manuallyEdited: item.custom_fields?.manually_edited || false,
+        }))
+
+        setLineItems(transformedItems)
+
+        // Notify Factwise parent
+        const updatedItemIds = itemsResponse.items.map(item => item.project_item_id)
+        const allUserIds = Array.from(new Set(
+          itemsResponse.items.flatMap(item => item.assigned_users.map(u => u.user_id))
+        ))
+        notifyItemsAssigned(updatedItemIds, allUserIds)
+
+        console.log(`[Auto-Assign] Successfully updated ${result.updated} items`)
+
+        // Show success toast
+        toast({
+          title: "Users Assigned Successfully",
+          description: `Auto-assigned users to ${result.updated} item(s)${result.skipped > 0 ? `, skipped ${result.skipped} item(s)` : ''}`,
+        })
+      } else {
+        console.error('[Auto-Assign] Failed:', result.message)
+
+        // Show error toast
+        toast({
+          title: "Auto-Assign Failed",
+          description: result.message || "Failed to auto-assign users",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      console.error('[Auto-Assign] Error:', error)
+
+      // Show error toast
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "An unexpected error occurred",
+        variant: "destructive",
+      })
+    }
+
     document.body.click()
+  }
+
+  // Manual User Assignment Handler
+  const handleManualUserAssignment = async () => {
+    console.log('[Manual Assign] Save button clicked!')
+    console.log('[Manual Assign] editingItem:', editingItem)
+    console.log('[Manual Assign] editingUsers:', editingUsers)
+
+    if (!editingItem) {
+      console.error('[Manual Assign] No editing item found')
+      return
+    }
+
+    const projectId = getProjectId()
+    console.log('[Manual Assign] Project ID:', projectId)
+
+    if (!projectId) {
+      console.error('[Manual Assign] No project ID found')
+      toast({
+        title: "Error",
+        description: "Project ID not found",
+        variant: "destructive",
+      })
+      return
+    }
+
+    try {
+      // Convert user names to user IDs
+      const selectedUserIds = editingUsers
+        .map(userName => {
+          const user = projectUsers.find(u => u.name === userName)
+          console.log(`[Manual Assign] Looking for user "${userName}", found:`, user)
+          return user?.user_id
+        })
+        .filter((id): id is string => id !== undefined)
+
+      console.log('[Manual Assign] Assigning users:', editingUsers, 'IDs:', selectedUserIds)
+      console.log('[Manual Assign] Item to update:', editingItem.project_item_id)
+
+      // Use update item API with assigned_user_ids
+      const result = await updateProjectItem(projectId, editingItem.project_item_id, {
+        assigned_user_ids: selectedUserIds
+      })
+
+      if (result.success) {
+        console.log('[Manual Assign] Successfully assigned users to item')
+
+        // Refresh items from API to get latest data
+        const itemsResponse = await getProjectItems(projectId)
+        const transformedItems = itemsResponse.items.map((item, index) => ({
+          id: index + 1,
+          project_item_id: item.project_item_id,
+          customer: '',
+          itemId: item.item_code,
+          description: item.item_name,
+          quantity: item.quantity,
+          unit: item.measurement_unit?.abbreviation || '',
+          category: item.tags && item.tags.length > 0 ? item.tags.join(', ') : 'Uncategorized',
+          assignedTo: item.assigned_users.map(u => u.name).join(', '),
+          assigned_user_ids: item.assigned_users.map(u => u.user_id),
+          unitPrice: item.rate || 0,
+          totalPrice: item.amount || 0,
+          vendor: '',
+          action: '',
+          dueDate: '',
+          source: '',
+          pricePO: 0,
+          priceContract: 0,
+          priceQuote: 0,
+          priceDigikey: 0,
+          priceEXIM: 0,
+          manuallyEdited: item.custom_fields?.manually_edited || false,
+        }))
+
+        setLineItems(transformedItems)
+
+        // Notify Factwise parent
+        notifyItemsAssigned([editingItem.project_item_id], selectedUserIds)
+
+        // Show success toast
+        toast({
+          title: "User Assigned",
+          description: editingUsers.length > 0
+            ? `Assigned ${editingUsers.join(', ')} to item`
+            : "Removed user assignment",
+        })
+
+        // Close dialog
+        setEditingItem(null)
+        setEditingUsers([])
+      } else {
+        console.error('[Manual Assign] Failed:', result)
+
+        // Show error toast
+        toast({
+          title: "Assignment Failed",
+          description: "Failed to assign user to item",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      console.error('[Manual Assign] Error:', error)
+
+      // Show error toast
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "An unexpected error occurred",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Edit Rate and Quantity Handler
+  const handleEditRateQuantity = async () => {
+    console.log('[Edit Rate/Qty] Save button clicked!')
+    console.log('[Edit Rate/Qty] editFormData:', editFormData)
+
+    if (!editFormData.project_item_id) {
+      console.error('[Edit Rate/Qty] No item ID found in editFormData')
+      return
+    }
+
+    const projectId = getProjectId()
+    console.log('[Edit Rate/Qty] Project ID:', projectId)
+
+    if (!projectId) {
+      console.error('[Edit Rate/Qty] No project ID found')
+      toast({
+        title: "Error",
+        description: "Project ID not found",
+        variant: "destructive",
+      })
+      return
+    }
+
+    try {
+      // Validation
+      const rate = parseFloat(String(editFormData.rate || 0))
+      const quantity = parseFloat(String(editFormData.quantity || 0))
+
+      if (isNaN(rate) || rate < 0) {
+        toast({
+          title: "Validation Error",
+          description: "Rate must be a positive number",
+          variant: "destructive",
+        })
+        return
+      }
+
+      if (isNaN(quantity) || quantity <= 0) {
+        toast({
+          title: "Validation Error",
+          description: "Quantity must be greater than zero",
+          variant: "destructive",
+        })
+        return
+      }
+
+      // Get the original item to compare changes
+      const originalItem = editFormData.item
+
+      console.log('[Edit Rate/Qty] Original item:', originalItem)
+      console.log('[Edit Rate/Qty] New values - rate:', rate, 'quantity:', quantity)
+
+      // Prepare update payload - only include changed fields
+      const updatePayload: any = {}
+      let hasChanges = false
+
+      // Check if rate changed
+      if (originalItem && rate !== originalItem.unitPrice) {
+        updatePayload.rate = rate
+        hasChanges = true
+        console.log('[Edit Rate/Qty] Rate changed from', originalItem.unitPrice, 'to', rate)
+      }
+
+      // Check if quantity changed
+      if (originalItem && quantity !== originalItem.quantity) {
+        updatePayload.quantity = quantity
+        hasChanges = true
+        console.log('[Edit Rate/Qty] Quantity changed from', originalItem.quantity, 'to', quantity)
+      }
+
+      // Check if assignedTo changed
+      let userIdsChanged = false
+      let selectedUserIds: string[] = []
+      if (editFormData.assignedTo !== undefined && editFormData.assignedTo !== null) {
+        const assignedUserNames = editFormData.assignedTo
+          .split(',')
+          .map((name: string) => name.trim())
+          .filter(Boolean)
+
+        selectedUserIds = assignedUserNames
+          .map((userName: string) => {
+            const user = projectUsers.find(u => u.name === userName)
+            return user?.user_id
+          })
+          .filter((id): id is string => id !== undefined)
+
+        // Compare with original assigned users
+        const originalUserIds = originalItem?.assigned_user_ids || []
+        const userIdsMatch =
+          selectedUserIds.length === originalUserIds.length &&
+          selectedUserIds.every(id => originalUserIds.includes(id))
+
+        if (!userIdsMatch) {
+          updatePayload.assigned_user_ids = selectedUserIds
+          hasChanges = true
+          userIdsChanged = true
+          console.log('[Edit Rate/Qty] Users changed from', originalUserIds, 'to', selectedUserIds)
+        }
+      }
+
+      // If nothing changed, show message and return
+      if (!hasChanges) {
+        toast({
+          title: "No Changes",
+          description: "No fields were modified",
+        })
+        setShowEditDialog(false)
+        setEditFormData({})
+        return
+      }
+
+      console.log('[Edit Rate/Qty] Updating item:', editFormData.project_item_id, 'with payload:', updatePayload)
+
+      // Use update item API
+      const result = await updateProjectItem(projectId, editFormData.project_item_id, updatePayload)
+
+      if (result.success) {
+        console.log('[Edit Rate/Qty] Successfully updated rate and quantity')
+
+        // Refresh items from API to get latest data
+        const itemsResponse = await getProjectItems(projectId)
+        const transformedItems = itemsResponse.items.map((item, index) => ({
+          id: index + 1,
+          project_item_id: item.project_item_id,
+          customer: '',
+          itemId: item.item_code,
+          description: item.item_name,
+          quantity: item.quantity,
+          unit: item.measurement_unit?.abbreviation || '',
+          category: item.tags && item.tags.length > 0 ? item.tags.join(', ') : 'Uncategorized',
+          assignedTo: item.assigned_users.map(u => u.name).join(', '),
+          assigned_user_ids: item.assigned_users.map(u => u.user_id),
+          unitPrice: item.rate || 0,
+          totalPrice: item.amount || 0,
+          currency: item.currency,
+          vendor: '',
+          action: '',
+          dueDate: '',
+          source: '',
+          pricePO: 0,
+          priceContract: 0,
+          priceQuote: 0,
+          priceDigikey: 0,
+          priceEXIM: 0,
+          manuallyEdited: item.custom_fields?.manually_edited || false,
+        }))
+
+        setLineItems(transformedItems)
+
+        // Notify Factwise parent - only send what changed
+        const changedFields: any = {}
+        const updatedFieldsList: string[] = []
+        const currencySymbol = editFormData.currency?.symbol || '₹'
+
+        if (updatePayload.rate !== undefined) {
+          changedFields.rate = updatePayload.rate
+          updatedFieldsList.push(`rate to ${currencySymbol}${updatePayload.rate.toFixed(2)}`)
+        }
+
+        if (updatePayload.quantity !== undefined) {
+          changedFields.quantity = updatePayload.quantity
+          updatedFieldsList.push(`quantity to ${updatePayload.quantity}`)
+        }
+
+        // Send notifications
+        if (Object.keys(changedFields).length > 0) {
+          notifyItemUpdated(editFormData.project_item_id, changedFields)
+        }
+
+        if (userIdsChanged && updatePayload.assigned_user_ids) {
+          notifyItemsAssigned([editFormData.project_item_id], updatePayload.assigned_user_ids)
+          updatedFieldsList.push('assigned users')
+        }
+
+        // Show success toast
+        toast({
+          title: "Item Updated",
+          description: `Updated ${updatedFieldsList.join(', ')}`,
+        })
+
+        // Close dialog
+        setShowEditDialog(false)
+        setEditFormData({})
+      } else {
+        console.error('[Edit Rate/Qty] Failed:', result)
+
+        // Show error toast
+        toast({
+          title: "Update Failed",
+          description: "Failed to update item",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      console.error('[Edit Rate/Qty] Error:', error)
+
+      // Show error toast
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "An unexpected error occurred",
+        variant: "destructive",
+      })
+    }
   }
 
   // Auto Fill Prices Handler
@@ -635,11 +1139,18 @@ export default function ProcurementDashboard() {
       setEditFormData({
         isBulk: false,
         itemCount: 1,
+        item: item, // Store the item in formData instead
         category: item.category || '',
         vendor: item.vendor || '',
         assignedTo: item.assignedTo || '',
         action: item.action || '',
         unitPrice: item.unitPrice || 0,
+        rate: item.unitPrice || 0,
+        quantity: item.quantity || 0,
+        currency: item.currency,
+        unit: item.unit,
+        itemId: item.itemId,
+        project_item_id: item.project_item_id
       })
     } else {
       // Bulk edit - leave fields empty or use common values
@@ -651,44 +1162,141 @@ export default function ProcurementDashboard() {
         assignedTo: '',
         action: '',
         unitPrice: 0,
+        rate: 0,
+        quantity: 0
       })
     }
 
     setShowEditDialog(true)
   }
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (selectedItems.length === 0) return
 
-    const updatedItems = lineItems.map((item: any) => {
-      if (!selectedItems.includes(item.id)) return item
+    const projectId = getProjectId()
+    if (!projectId) {
+      console.error('[Edit] No project ID found')
+      toast({
+        title: "Error",
+        description: "Project ID not found",
+        variant: "destructive",
+      })
+      return
+    }
 
-      // Create updated item with manual change flag
-      const updates: any = { manuallyEdited: true }
+    console.log('[Edit] Saving changes for', selectedItems.length, 'items')
+    console.log('[Edit] Form data:', editFormData)
 
-      // Only update fields that have values in the form
-      if (editFormData.category && editFormData.category.trim()) {
-        updates.category = editFormData.category
-      }
-      if (editFormData.vendor && editFormData.vendor.trim()) {
-        updates.vendor = editFormData.vendor
-      }
-      if (editFormData.assignedTo && editFormData.assignedTo.trim()) {
-        updates.assignedTo = editFormData.assignedTo
-      }
-      if (editFormData.action && editFormData.action.trim()) {
-        updates.action = editFormData.action
-      }
-      if (editFormData.unitPrice && editFormData.unitPrice > 0) {
-        console.log('unitPrice:', editFormData.unitPrice, 'quantity:', item.quantity);
-        updates.unitPrice = editFormData.unitPrice
-        updates.totalPrice = editFormData.unitPrice * item.quantity
-      }
+    // If assignedTo is being changed, update via API
+    if (editFormData.assignedTo !== undefined && editFormData.assignedTo !== null) {
+      try {
+        // Convert assigned user names to user IDs
+        const assignedUserNames = editFormData.assignedTo
+          .split(',')
+          .map((name: string) => name.trim())
+          .filter(Boolean)
 
-      return { ...item, ...updates }
-    })
+        const selectedUserIds = assignedUserNames
+          .map((userName: string) => {
+            const user = projectUsers.find(u => u.name === userName)
+            return user?.user_id
+          })
+          .filter((id): id is string => id !== undefined)
 
-    setLineItems(updatedItems)
+        console.log('[Edit] Assigning users:', assignedUserNames, 'IDs:', selectedUserIds)
+
+        // Update each selected item
+        const itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
+
+        for (const item of itemsToUpdate) {
+          const result = await updateProjectItem(projectId, item.project_item_id, {
+            assigned_user_ids: selectedUserIds,
+            custom_fields: {
+              manually_edited: true,
+              last_manual_edit: new Date().toISOString()
+            }
+          })
+
+          if (result.success) {
+            console.log('[Edit] Successfully updated item:', item.itemId)
+          } else {
+            console.error('[Edit] Failed to update item:', item.itemId, result)
+          }
+        }
+
+        // Refresh items from API
+        const itemsResponse = await getProjectItems(projectId)
+        const transformedItems = itemsResponse.items.map((item, index) => ({
+          id: index + 1,
+          project_item_id: item.project_item_id,
+          customer: '',
+          itemId: item.item_code,
+          description: item.item_name,
+          quantity: item.quantity,
+          unit: item.measurement_unit?.abbreviation || '',
+          category: item.tags && item.tags.length > 0 ? item.tags.join(', ') : 'Uncategorized',
+          assignedTo: item.assigned_users.map(u => u.name).join(', '),
+          assigned_user_ids: item.assigned_users.map(u => u.user_id),
+          unitPrice: item.rate || 0,
+          totalPrice: item.amount || 0,
+          vendor: '',
+          action: '',
+          dueDate: '',
+          source: '',
+          pricePO: 0,
+          priceContract: 0,
+          priceQuote: 0,
+          priceDigikey: 0,
+          priceEXIM: 0,
+          manuallyEdited: item.custom_fields?.manually_edited || false,
+        }))
+
+        setLineItems(transformedItems)
+
+        // Notify Factwise parent
+        const updatedItemIds = itemsToUpdate.map(item => item.project_item_id)
+        notifyItemsAssigned(updatedItemIds, selectedUserIds)
+
+        toast({
+          title: "Changes Saved",
+          description: `Updated ${selectedItems.length} item(s)`,
+        })
+
+      } catch (error) {
+        console.error('[Edit] Error:', error)
+        toast({
+          title: "Error",
+          description: error instanceof Error ? error.message : "Failed to save changes",
+          variant: "destructive",
+        })
+      }
+    } else {
+      // No assignedTo change, just update local state for other fields
+      const updatedItems = lineItems.map((item: any) => {
+        if (!selectedItems.includes(item.id)) return item
+
+        const updates: any = { manuallyEdited: true }
+
+        if (editFormData.category && editFormData.category.trim()) {
+          updates.category = editFormData.category
+        }
+        if (editFormData.vendor && editFormData.vendor.trim()) {
+          updates.vendor = editFormData.vendor
+        }
+        if (editFormData.action && editFormData.action.trim()) {
+          updates.action = editFormData.action
+        }
+        if (editFormData.unitPrice && editFormData.unitPrice > 0) {
+          updates.unitPrice = editFormData.unitPrice
+          updates.totalPrice = editFormData.unitPrice * item.quantity
+        }
+
+        return { ...item, ...updates }
+      })
+
+      setLineItems(updatedItems)
+    }
+
     setShowEditDialog(false)
     setEditFormData({})
   }
@@ -723,7 +1331,7 @@ export default function ProcurementDashboard() {
     priceDigikey: "Digi-Key",
     priceEXIM: "EXIM",
     source: "Source",
-    totalPrice: "Price",
+    unitPrice: "Price",
   }
 
   // Helpers for price icons
@@ -1040,6 +1648,19 @@ export default function ProcurementDashboard() {
     )
   }
 
+  // Show loading state
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600 mx-auto"></div>
+          <div className="text-xl font-semibold text-gray-700">Loading Project Data...</div>
+          <div className="text-sm text-gray-500">Fetching items from Factwise</div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-7xl mx-auto p-6 space-y-4">
@@ -1075,6 +1696,10 @@ export default function ProcurementDashboard() {
                   <p className="font-medium text-gray-900">{projectData.id}</p>
                 </div>
                 <div>
+                  <span className="text-xs text-gray-500">Customer:</span>
+                  <p className="font-medium text-gray-900 text-sm">{projectData.customer || 'N/A'}</p>
+                </div>
+                <div>
                   <span className="text-xs text-gray-500">Status:</span>
                   <Badge className="ml-1 bg-green-50 text-green-700 border-green-200 text-xs">
                     {projectData.status}
@@ -1082,7 +1707,7 @@ export default function ProcurementDashboard() {
                 </div>
                 <div>
                   <span className="text-xs text-gray-500">Deadline:</span>
-                  <p className="font-medium text-gray-900 text-sm">{projectData.deadline}</p>
+                  <p className="font-medium text-gray-900 text-sm">{projectData.deadline || 'N/A'}</p>
                 </div>
               </div>
             </div>
@@ -1797,19 +2422,30 @@ export default function ProcurementDashboard() {
 
                         return (
                           <td key={columnKey} className="p-2 text-left" style={{ width: columnWidths.category }}>
-                            <div className="flex flex-wrap gap-1">
-                              {isMissing ? (
-                                <Badge variant="outline" className="border-red-300 text-red-700 bg-red-50">
-                                  No tag
-                                </Badge>
-                              ) : (
-                                categories.map((cat: string, index: number) => (
-                                  <Badge key={index} variant="outline" className="border-gray-200 text-gray-700">
-                                    {cat}
-                                  </Badge>
-                                ))
-                              )}
-                            </div>
+                            {isMissing ? (
+                              <span className="text-gray-400 text-xs">-</span>
+                            ) : categories.length === 1 ? (
+                              <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs">
+                                {categories[0]}
+                              </Badge>
+                            ) : (
+                              <UiTooltip>
+                                <UiTooltipTrigger>
+                                  <span className="text-blue-600 font-medium text-xs cursor-pointer hover:text-blue-800">
+                                    {categories.length}
+                                  </span>
+                                </UiTooltipTrigger>
+                                <UiTooltipContent side="bottom" align="start">
+                                  <div className="space-y-1">
+                                    {categories.map((cat: string, index: number) => (
+                                      <div key={index} className="text-xs">
+                                        {index + 1}. {cat}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </UiTooltipContent>
+                              </UiTooltip>
+                            )}
                           </td>
                         )
                       }
@@ -1864,32 +2500,35 @@ export default function ProcurementDashboard() {
                       }
 
                       if (columnKey === "assignedTo") {
-                        const people = Array.isArray(item.assignedTo) ? item.assignedTo : [item.assignedTo || ""]
-                        const displayPerson = people[0] || ""
-                        const hasMultiple = people.length > 1
-                        const isTextTruncated = displayPerson && displayPerson.length > 15
-                        const isMissing = !displayPerson || displayPerson === ""
+                        const assignedUsersList = item.assignedTo
+                          ? String(item.assignedTo).split(',').map((u: string) => u.trim()).filter(Boolean)
+                          : []
+                        const isMissing = assignedUsersList.length === 0
 
                         return (
                           <td key={columnKey} className="p-2 text-left" style={{ width: columnWidths.assignedTo }}>
-                            <div className="flex items-center gap-1 w-full">
-                              <span
-                                className={`text-xs truncate block flex-shrink max-w-24 ${
-                                  isMissing ? "text-red-700" : "text-gray-900"
-                                }`}
-                                title={hasMultiple ? people.join(", ") : displayPerson || "Unassigned"}
-                              >
-                                {displayPerson || "Unassigned"}
-                              </span>
-                              {(hasMultiple || isTextTruncated) && !isMissing && (
-                                <span
-                                  className="text-blue-600 text-xs font-medium flex-shrink-0"
-                                  title={hasMultiple ? people.join(", ") : displayPerson}
-                                >
-                                  +{hasMultiple ? people.length - 1 : "..."}
-                                </span>
-                              )}
-                            </div>
+                            {isMissing ? (
+                              <span className="text-red-700 text-xs">Unassigned</span>
+                            ) : assignedUsersList.length === 1 ? (
+                              <Badge variant="outline" className="text-xs">{assignedUsersList[0]}</Badge>
+                            ) : (
+                              <UiTooltip>
+                                <UiTooltipTrigger>
+                                  <span className="text-blue-600 font-medium text-xs cursor-pointer">
+                                    {assignedUsersList.length}
+                                  </span>
+                                </UiTooltipTrigger>
+                                <UiTooltipContent side="bottom" align="start">
+                                  <div className="space-y-1">
+                                    {assignedUsersList.map((user: string, index: number) => (
+                                      <div key={index} className="text-xs">
+                                        {index + 1}. {user}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </UiTooltipContent>
+                              </UiTooltip>
+                            )}
                           </td>
                         )
                       }
@@ -1946,6 +2585,21 @@ export default function ProcurementDashboard() {
                           <td key={columnKey} className="p-2 text-center" style={{ width: columnWidths.source }}>
                             <span className="text-xs font-medium text-gray-900">
                               {cheapest ? cheapest.source : '-'}
+                            </span>
+                          </td>
+                        )
+                      }
+
+                      if (columnKey === "unitPrice") {
+                        const hasPrice = item.unitPrice && item.unitPrice > 0
+                        const currencySymbol = (item as any).currency?.symbol || '₹'
+                        return (
+                          <td key={columnKey} className="p-2 text-right" style={{ width: columnWidths.unitPrice }}>
+                            <span
+                              className={`text-xs font-semibold ${hasPrice ? "text-gray-900" : "text-red-700"}`}
+                              title={hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(2)}` : "N/A"}
+                            >
+                              {hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(2)}` : "N/A"}
                             </span>
                           </td>
                         )
@@ -2273,22 +2927,43 @@ export default function ProcurementDashboard() {
             </Select>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="assignedTo">Assigned To</Label>
-            <Select
-              value={editFormData.assignedTo || ''}
-              onValueChange={(value) => setEditFormData({ ...editFormData, assignedTo: value })}
-            >
-              <SelectTrigger className="border border-gray-400">
-              <SelectValue placeholder="Select a user" />
-            </SelectTrigger>
-              <SelectContent>
-                {allUsers.map((user) => (
-                  <SelectItem key={user} value={user}>
-                    {user}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Label>Assigned To (Multiple Selection)</Label>
+            <div className="border rounded-md p-3 max-h-48 overflow-y-auto space-y-2 border-gray-400">
+              {allUsers.map((user) => {
+                const selectedUsers = editFormData.assignedTo
+                  ? String(editFormData.assignedTo).split(',').map((u: string) => u.trim()).filter(Boolean)
+                  : []
+                const isChecked = selectedUsers.includes(user)
+
+                return (
+                  <label
+                    key={user}
+                    className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-2 rounded"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={(e) => {
+                        let newUsers: string[]
+                        if (e.target.checked) {
+                          newUsers = [...selectedUsers, user]
+                        } else {
+                          newUsers = selectedUsers.filter(u => u !== user)
+                        }
+                        setEditFormData({ ...editFormData, assignedTo: newUsers.join(', ') })
+                      }}
+                      className="rounded"
+                    />
+                    <span className="text-sm">{user}</span>
+                  </label>
+                )
+              })}
+            </div>
+            {editFormData.assignedTo && (
+              <p className="text-xs text-gray-600">
+                Selected: {editFormData.assignedTo}
+              </p>
+            )}
           </div>
           <div className="space-y-2">
             <Label htmlFor="action">Action</Label>
@@ -2309,23 +2984,47 @@ export default function ProcurementDashboard() {
             </Select>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="unitPrice" className="text-right">
-            Price per Unit
-          </Label>
-            <Input
-              id="unitPrice"
-              type="number"
-              value={editFormData.unitPrice || ''}
-              onChange={(e) => setEditFormData({ ...editFormData, unitPrice: parseFloat(e.target.value) || 0 })}
-              className="border border-gray-400"
-            />
+            <Label htmlFor="rate">Rate (Price per Unit)</Label>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-gray-700">
+                {editFormData.currency?.symbol || '₹'}
+              </span>
+              <Input
+                id="rate"
+                type="number"
+                min="0"
+                step="0.01"
+                value={editFormData.rate || ''}
+                onChange={(e) => setEditFormData({ ...editFormData, rate: parseFloat(e.target.value) || 0 })}
+                className="border border-gray-400"
+                placeholder="Enter rate"
+              />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="quantity">Quantity</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                id="quantity"
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={editFormData.quantity || ''}
+                onChange={(e) => setEditFormData({ ...editFormData, quantity: parseFloat(e.target.value) || 0 })}
+                className="border border-gray-400"
+                placeholder="Enter quantity"
+              />
+              <span className="text-sm font-medium text-gray-700">
+                {editFormData.unit || 'units'}
+              </span>
+            </div>
           </div>
         </div>
         <DialogFooter>
           <Button onClick={() => setShowEditDialog(false)} variant="outline">
             Cancel
           </Button>
-          <Button onClick={handleSaveEdit}>Save changes</Button>
+          <Button onClick={handleEditRateQuantity}>Save changes</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -2372,6 +3071,76 @@ export default function ProcurementDashboard() {
           </div>
         </div>
       )}
+
+      {/* Edit User Assignment Dialog */}
+      <Dialog open={!!editingItem} onOpenChange={(open) => {
+        if (!open) {
+          setEditingItem(null)
+          setEditingUsers([])
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Assign Users</DialogTitle>
+            <DialogDescription>
+              Select users to assign to {editingItem?.itemId || 'this item'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Select Users</Label>
+              <div className="border rounded-md p-3 max-h-60 overflow-y-auto space-y-2">
+                {allUsers.map((userName) => (
+                  <label
+                    key={userName}
+                    className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-2 rounded"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={editingUsers.includes(userName)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setEditingUsers([...editingUsers, userName])
+                        } else {
+                          setEditingUsers(editingUsers.filter(u => u !== userName))
+                        }
+                      }}
+                      className="rounded"
+                    />
+                    <span className="text-sm">{userName}</span>
+                  </label>
+                ))}
+              </div>
+              {editingUsers.length > 0 && (
+                <p className="text-xs text-gray-600">
+                  Selected: {editingUsers.join(', ')}
+                </p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setEditingItem(null)
+                setEditingUsers([])
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                console.log('[DEBUG] Save button clicked - about to call handler')
+                handleManualUserAssignment()
+              }}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
