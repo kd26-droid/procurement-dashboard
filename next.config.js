@@ -13,6 +13,21 @@ const nextConfig = {
   basePath: '',
   assetPrefix: '',
 
+  // Allow iframe embedding
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          {
+            key: 'Content-Security-Policy',
+            value: 'frame-ancestors *',
+          },
+        ],
+      },
+    ]
+  },
+
   // Disable server-side features for static export
   experimental: {
     // None needed for this project
