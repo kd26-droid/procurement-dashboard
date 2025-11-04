@@ -918,7 +918,7 @@ export default function ProcurementDashboard() {
             const user = projectUsers.find(u => u.name === userName)
             return user?.user_id
           })
-          .filter((id): id is string => id !== undefined)
+          .filter((id: string | undefined): id is string => id !== undefined)
 
         // Compare with original assigned users
         const originalUserIds = originalItem?.assigned_user_ids || []
