@@ -185,6 +185,27 @@ export default function ProcurementDashboard() {
         setProjectUsers(usersResponse.users)
         console.log('[Dashboard] Loaded', usersResponse.users.length, 'users:', usersResponse.users.map(u => `${u.name} (${u.email})`))
 
+        // LOG: Check for duplicates from backend
+        console.log('[Dashboard] Raw items from backend:', itemsResponse.items.length)
+        console.log('[Dashboard] Item codes:', itemsResponse.items.map((item: ProjectItem) => item.item_code))
+
+        // Check for duplicate item_codes
+        const itemCodes = itemsResponse.items.map((item: ProjectItem) => item.item_code)
+        const duplicateCodes = itemCodes.filter((code, index) => itemCodes.indexOf(code) !== index)
+        if (duplicateCodes.length > 0) {
+          console.warn('[Dashboard] ⚠️ DUPLICATE ITEM CODES FROM BACKEND:', duplicateCodes)
+        }
+
+        // LOG: Verify tags and custom_tags from backend
+        console.log('[Dashboard] Tags received from API:')
+        itemsResponse.items.slice(0, 5).forEach((item: ProjectItem) => {
+          console.log(`  ${item.item_code}:`, {
+            tags: item.tags || [],
+            custom_tags: item.custom_tags || [],
+            combined: [...(item.tags || []), ...(item.custom_tags || [])]
+          })
+        })
+
         // Transform API data to match dashboard format
         const transformedItems = itemsResponse.items.map((item: ProjectItem, index: number) => ({
           id: index + 1,
@@ -194,7 +215,9 @@ export default function ProcurementDashboard() {
           description: item.item_name,
           quantity: item.quantity,
           unit: item.measurement_unit?.abbreviation || '',
-          category: item.tags && item.tags.length > 0 ? item.tags.join(', ') : 'Uncategorized',
+          category: [...(item.tags || []), ...(item.custom_tags || [])].length > 0
+            ? [...(item.tags || []), ...(item.custom_tags || [])].join(', ')
+            : 'Uncategorized',
           assignedTo: item.assigned_users.map(u => u.name).join(', '),
           assigned_user_ids: item.assigned_users.map(u => u.user_id),
           unitPrice: item.rate || 0,
@@ -213,6 +236,15 @@ export default function ProcurementDashboard() {
         }))
 
         console.log('[Dashboard] Loaded', transformedItems.length, 'items')
+        console.log('[Dashboard] Transformed item codes:', transformedItems.map((item: any) => item.itemId))
+
+        // Check for duplicates in transformed items
+        const transformedCodes = transformedItems.map((item: any) => item.itemId)
+        const dupTransformed = transformedCodes.filter((code, index) => transformedCodes.indexOf(code) !== index)
+        if (dupTransformed.length > 0) {
+          console.warn('[Dashboard] ⚠️ DUPLICATE ITEM CODES AFTER TRANSFORM:', dupTransformed)
+        }
+
         setLineItems(transformedItems)
         setLoading(false)
       } catch (error) {
@@ -668,7 +700,9 @@ export default function ProcurementDashboard() {
           description: item.item_name,
           quantity: item.quantity,
           unit: item.measurement_unit?.abbreviation || '',
-          category: item.tags && item.tags.length > 0 ? item.tags.join(', ') : 'Uncategorized',
+          category: [...(item.tags || []), ...(item.custom_tags || [])].length > 0
+            ? [...(item.tags || []), ...(item.custom_tags || [])].join(', ')
+            : 'Uncategorized',
           assignedTo: item.assigned_users.map(u => u.name).join(', '),
           assigned_user_ids: item.assigned_users.map(u => u.user_id),
           unitPrice: item.rate || 0,
@@ -780,7 +814,9 @@ export default function ProcurementDashboard() {
           description: item.item_name,
           quantity: item.quantity,
           unit: item.measurement_unit?.abbreviation || '',
-          category: item.tags && item.tags.length > 0 ? item.tags.join(', ') : 'Uncategorized',
+          category: [...(item.tags || []), ...(item.custom_tags || [])].length > 0
+            ? [...(item.tags || []), ...(item.custom_tags || [])].join(', ')
+            : 'Uncategorized',
           assignedTo: item.assigned_users.map(u => u.name).join(', '),
           assigned_user_ids: item.assigned_users.map(u => u.user_id),
           unitPrice: item.rate || 0,
@@ -964,7 +1000,9 @@ export default function ProcurementDashboard() {
           description: item.item_name,
           quantity: item.quantity,
           unit: item.measurement_unit?.abbreviation || '',
-          category: item.tags && item.tags.length > 0 ? item.tags.join(', ') : 'Uncategorized',
+          category: [...(item.tags || []), ...(item.custom_tags || [])].length > 0
+            ? [...(item.tags || []), ...(item.custom_tags || [])].join(', ')
+            : 'Uncategorized',
           assignedTo: item.assigned_users.map(u => u.name).join(', '),
           assigned_user_ids: item.assigned_users.map(u => u.user_id),
           unitPrice: item.rate || 0,
@@ -1235,7 +1273,9 @@ export default function ProcurementDashboard() {
           description: item.item_name,
           quantity: item.quantity,
           unit: item.measurement_unit?.abbreviation || '',
-          category: item.tags && item.tags.length > 0 ? item.tags.join(', ') : 'Uncategorized',
+          category: [...(item.tags || []), ...(item.custom_tags || [])].length > 0
+            ? [...(item.tags || []), ...(item.custom_tags || [])].join(', ')
+            : 'Uncategorized',
           assignedTo: item.assigned_users.map(u => u.name).join(', '),
           assigned_user_ids: item.assigned_users.map(u => u.user_id),
           unitPrice: item.rate || 0,
@@ -1662,8 +1702,57 @@ export default function ProcurementDashboard() {
     )
   }
 
+  // Handle back button click
+  const handleBackClick = () => {
+    // Check if opened from popup (sessionStorage)
+    const returnUrl = typeof window !== 'undefined' ? sessionStorage.getItem('returnUrl') : null
+
+    if (returnUrl) {
+      console.log('[Dashboard] Navigating back to:', returnUrl)
+      console.log('[Dashboard] sessionStorage flags:', {
+        openAddItemPopup: sessionStorage.getItem('openAddItemPopup'),
+        returnProjectId: sessionStorage.getItem('returnProjectId')
+      })
+
+      // Navigate back to the saved URL
+      // The sessionStorage flags will be read by ProjectCreationPage to reopen the popup
+      window.location.href = returnUrl
+    } else {
+      console.log('[Dashboard] No returnUrl found, using history.back()')
+      // Fallback: go back in history
+      window.history.back()
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* Back Button - Top Left */}
+      <div className="bg-white border-b border-gray-200 sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-6 py-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleBackClick}
+            className="flex items-center gap-2 hover:bg-gray-100"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+            Back to Project
+          </Button>
+        </div>
+      </div>
+
       <div className="max-w-7xl mx-auto p-6 space-y-4">
         <div className="bg-white rounded-lg shadow-sm p-4">
           <div className="mb-4">

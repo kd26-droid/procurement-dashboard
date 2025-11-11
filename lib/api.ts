@@ -119,6 +119,7 @@ export interface ProjectItem {
     name: string;
   } | null;
   tags: string[];
+  custom_tags: string[];
   item_type: string | null;
   status: string | null;
   custom_ids: any;
