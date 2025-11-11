@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
-import { getProjectId, getProjectItems, getProjectOverview, getProjectUsers, updateProjectItem, bulkAssignUsers, autoAssignUsersByTags, notifyItemsAssigned, notifyItemUpdated, type ProjectItem } from '@/lib/api'
+import { getProjectId, getProjectItems, getProjectOverview, getProjectUsers, updateProjectItem, bulkAssignUsers, autoAssignUsersByTags, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, type ProjectItem } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -55,6 +55,10 @@ export default function ProcurementDashboard() {
     customer: "",
   })
   const [projectUsers, setProjectUsers] = useState<Array<{user_id: string, name: string, email: string, role: string}>>([])
+  const [availableTags, setAvailableTags] = useState<string[]>([])
+  const [tagSearchTerm, setTagSearchTerm] = useState("")
+  const [vendorSearchTerm, setVendorSearchTerm] = useState("")
+  const [userSearchTerm, setUserSearchTerm] = useState("")
   const [selectedItems, setSelectedItems] = useState<number[]>([])
   const [editingItem, setEditingItem] = useState<any | null>(null)
   const [editingUsers, setEditingUsers] = useState<string[]>([])
@@ -73,6 +77,7 @@ export default function ProcurementDashboard() {
   const [columnOrder, setColumnOrder] = useState([
     "itemId",
     "description",
+    "bom",
     "quantity",
     "unit",
     "category",
@@ -162,11 +167,12 @@ export default function ProcurementDashboard() {
 
         console.log('[Dashboard] Fetching data for project:', projectId)
 
-        // Fetch overview, items, and users in parallel
-        const [overviewResponse, itemsResponse, usersResponse] = await Promise.all([
+        // Fetch overview, items, users, and tags in parallel
+        const [overviewResponse, itemsResponse, usersResponse, tagsResponse] = await Promise.all([
           getProjectOverview(projectId),
           getProjectItems(projectId),
-          getProjectUsers(projectId)
+          getProjectUsers(projectId),
+          getProjectTags(projectId)
         ])
 
         // Set project data
@@ -184,6 +190,10 @@ export default function ProcurementDashboard() {
         // Set users data
         setProjectUsers(usersResponse.users)
         console.log('[Dashboard] Loaded', usersResponse.users.length, 'users:', usersResponse.users.map(u => `${u.name} (${u.email})`))
+
+        // Set available tags (ALL organization-level tags from backend)
+        setAvailableTags(tagsResponse.tags || [])
+        console.log('[Dashboard] Available tags:', tagsResponse.total, 'tags:', tagsResponse.tags)
 
         // LOG: Check for duplicates from backend
         console.log('[Dashboard] Raw items from backend:', itemsResponse.items.length)
@@ -233,6 +243,15 @@ export default function ProcurementDashboard() {
           priceDigikey: 0,
           priceEXIM: 0,
           manuallyEdited: item.custom_fields?.manually_edited || false,
+          // BOM Information
+          bom_info: item.bom_info || {
+            is_bom_item: false,
+            bom_id: null,
+            bom_code: null,
+            bom_name: null,
+            bom_item_id: null,
+            bom_module_linkage_id: null,
+          },
         }))
 
         console.log('[Dashboard] Loaded', transformedItems.length, 'items')
@@ -971,6 +990,34 @@ export default function ProcurementDashboard() {
         }
       }
 
+      // Check if category/tags changed
+      let tagsChanged = false
+      let newTags: string[] = []
+      if (editFormData.category !== undefined && editFormData.category !== null) {
+        newTags = String(editFormData.category)
+          .split(',')
+          .map((t: string) => t.trim())
+          .filter(Boolean)
+
+        const originalCategory = originalItem?.category || ''
+        const originalTags = originalCategory
+          .split(',')
+          .map((t: string) => t.trim())
+          .filter(Boolean)
+
+        // Compare tag arrays
+        const tagsMatch =
+          newTags.length === originalTags.length &&
+          newTags.every(tag => originalTags.includes(tag))
+
+        if (!tagsMatch) {
+          // Tags changed - we'll handle this separately after rate/qty update
+          tagsChanged = true
+          hasChanges = true
+          console.log('[Edit Rate/Qty] Tags changed from', originalTags, 'to', newTags)
+        }
+      }
+
       // If nothing changed, show message and return
       if (!hasChanges) {
         toast({
@@ -989,6 +1036,25 @@ export default function ProcurementDashboard() {
 
       if (result.success) {
         console.log('[Edit Rate/Qty] Successfully updated rate and quantity')
+
+        // Update tags if they changed
+        if (tagsChanged && newTags) {
+          console.log('[Edit Rate/Qty] Updating tags:', newTags)
+          try {
+            const tagsResult = await updateItemTags(
+              projectId,
+              editFormData.project_item_id,
+              newTags
+            )
+            if (tagsResult.success) {
+              console.log('[Edit Rate/Qty] Successfully updated tags')
+            } else {
+              console.error('[Edit Rate/Qty] Failed to update tags:', tagsResult)
+            }
+          } catch (tagError) {
+            console.error('[Edit Rate/Qty] Error updating tags:', tagError)
+          }
+        }
 
         // Refresh items from API to get latest data
         const itemsResponse = await getProjectItems(projectId)
@@ -1045,6 +1111,18 @@ export default function ProcurementDashboard() {
         if (userIdsChanged && updatePayload.assigned_user_ids) {
           notifyItemsAssigned([editFormData.project_item_id], updatePayload.assigned_user_ids)
           updatedFieldsList.push('assigned users')
+        }
+
+        if (tagsChanged) {
+          // Notify Factwise parent to refetch items
+          window.parent.postMessage({
+            type: 'PROJECT_ITEM_UPDATED',
+            project_item_ids: [editFormData.project_item_id],
+            project_id: projectId,
+            updated_fields: ['tags'],
+            timestamp: new Date().toISOString()
+          }, '*')
+          updatedFieldsList.push('tags')
         }
 
         // Show success toast
@@ -1311,16 +1389,94 @@ export default function ProcurementDashboard() {
           variant: "destructive",
         })
       }
+    } else if (editFormData.category !== undefined && editFormData.category !== null) {
+      // Category/tags are being changed - update via API
+      try {
+        console.log('[Edit Tags] Updating tags for', selectedItems.length, 'items')
+
+        const itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
+        const newTags = editFormData.category
+          .split(',')
+          .map((t: string) => t.trim())
+          .filter(Boolean)
+
+        // Update each selected item
+        for (const item of itemsToUpdate) {
+          const result = await updateItemTags(
+            projectId,
+            item.project_item_id,
+            newTags  // Update tags
+          )
+
+          if (result.success) {
+            console.log('[Edit Tags] Successfully updated item:', item.itemId)
+          } else {
+            console.error('[Edit Tags] Failed to update item:', item.itemId, result)
+          }
+        }
+
+        // Refresh items from API
+        const itemsResponse = await getProjectItems(projectId)
+        const transformedItems = itemsResponse.items.map((item, index) => ({
+          id: index + 1,
+          project_item_id: item.project_item_id,
+          customer: '',
+          itemId: item.item_code,
+          description: item.item_name,
+          quantity: item.quantity,
+          unit: item.measurement_unit?.abbreviation || '',
+          category: [...(item.tags || []), ...(item.custom_tags || [])].length > 0
+            ? [...(item.tags || []), ...(item.custom_tags || [])].join(', ')
+            : 'Uncategorized',
+          assignedTo: item.assigned_users.map(u => u.name).join(', '),
+          assigned_user_ids: item.assigned_users.map(u => u.user_id),
+          unitPrice: item.rate || 0,
+          totalPrice: item.amount || 0,
+          currency: item.currency,
+          vendor: '',
+          action: '',
+          dueDate: '',
+          source: '',
+          pricePO: 0,
+          priceContract: 0,
+          priceQuote: 0,
+          priceDigikey: 0,
+          priceEXIM: 0,
+          manuallyEdited: item.custom_fields?.manually_edited || false,
+        }))
+
+        setLineItems(transformedItems)
+
+        // Notify Factwise parent to refetch items
+        const updatedItemIds = itemsToUpdate.map(item => item.project_item_id)
+        window.parent.postMessage({
+          type: 'PROJECT_ITEM_UPDATED',
+          project_item_ids: updatedItemIds,
+          project_id: projectId,
+          updated_fields: ['tags'],
+          timestamp: new Date().toISOString()
+        }, '*')
+
+        toast({
+          title: "Tags Updated",
+          description: `Updated tags for ${selectedItems.length} item(s)`,
+        })
+
+      } catch (error) {
+        console.error('[Edit Tags] Error:', error)
+        toast({
+          title: "Error",
+          description: error instanceof Error ? error.message : "Failed to update tags",
+          variant: "destructive",
+        })
+      }
     } else {
-      // No assignedTo change, just update local state for other fields
+      // No assignedTo or category change, just update local state for other fields
       const updatedItems = lineItems.map((item: any) => {
         if (!selectedItems.includes(item.id)) return item
 
         const updates: any = { manuallyEdited: true }
 
-        if (editFormData.category && editFormData.category.trim()) {
-          updates.category = editFormData.category
-        }
         if (editFormData.vendor && editFormData.vendor.trim()) {
           updates.vendor = editFormData.vendor
         }
@@ -1359,6 +1515,7 @@ export default function ProcurementDashboard() {
     customer: "Customer",
     itemId: "Item ID",
     description: "Description",
+    bom: "BOM",
     quantity: "Qty",
     unit: "Unit",
     category: "Tag",
@@ -1650,41 +1807,80 @@ export default function ProcurementDashboard() {
   }, [selectedItemForAnalytics])
 
   const renderCategoryInput = () => {
+    const selectedTags = String(editFormData.category || '').split(',').filter((c: string) => c.trim())
+
+    const filteredTags = availableTags
+      .filter(tag => !selectedTags.includes(tag))
+      .filter(tag => tag.toLowerCase().includes(tagSearchTerm.toLowerCase()))
+
     return (
-      <div className="flex flex-wrap items-center gap-2 rounded-md border border-gray-400 bg-background p-2">
-        {String(editFormData.category || '').split(',').filter((c: string) => c.trim()).map((cat: string, index: number) => (
-          <Badge key={index} variant="outline" className="flex items-center gap-2 pl-2 pr-1">
-            {cat}
-            <button
-              onClick={() => {
-                const newCategories = String(editFormData.category || '').split(',').filter((c: string) => c.trim())
-                newCategories.splice(index, 1)
-                setEditFormData({ ...editFormData, category: newCategories.join(',') })
-              }}
-              className="rounded-full hover:bg-muted"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          </Badge>
-        ))}
-        <Input
-          id="category-input"
-          placeholder="Add a tag and press Enter..."
-          className="flex-1 border-0 shadow-none focus-visible:ring-0"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ',') {
-              e.preventDefault()
-              const newTag = e.currentTarget.value.trim()
-              if (newTag) {
-                const currentCategories = String(editFormData.category || '').split(',').filter((c: string) => c.trim())
-                if (!currentCategories.includes(newTag)) {
-                  setEditFormData({ ...editFormData, category: [...currentCategories, newTag].join(',') })
-                }
-                e.currentTarget.value = ''
-              }
-            }
-          }}
-        />
+      <div className="space-y-2">
+        {/* Selected Tags */}
+        <div className="flex flex-wrap items-center gap-2 min-h-[36px] p-2 bg-white border border-gray-300 rounded-md">
+          {selectedTags.length === 0 ? (
+            <span className="text-gray-500 text-sm">No tags selected</span>
+          ) : (
+            selectedTags.map((cat: string, index: number) => (
+              <Badge key={index} variant="outline" className="flex items-center gap-2 pl-3 pr-2 py-1 bg-blue-100 border-blue-300 text-blue-900">
+                <span className="font-medium">{cat}</span>
+                <button
+                  onClick={() => {
+                    const newCategories = selectedTags.filter((_, i) => i !== index)
+                    setEditFormData({ ...editFormData, category: newCategories.join(',') })
+                  }}
+                  className="rounded-full hover:bg-blue-200 p-0.5"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </Badge>
+            ))
+          )}
+        </div>
+
+        {/* Searchable Tag Selector */}
+        <div className="relative">
+          <Input
+            placeholder="Type to search and add tags..."
+            value={tagSearchTerm}
+            onChange={(e) => setTagSearchTerm(e.target.value)}
+            onBlur={() => setTimeout(() => setTagSearchTerm(""), 200)}
+            className="border-gray-400 bg-white pr-10"
+          />
+          <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+
+          {/* Dropdown appears ONLY when typing */}
+          {tagSearchTerm.length > 0 && (
+            <div className="absolute z-50 w-full mt-1 border-2 border-gray-300 rounded-md bg-white max-h-[180px] overflow-y-auto shadow-lg">
+              {filteredTags.length === 0 ? (
+                <div className="p-2 text-sm text-gray-500 text-center">
+                  No tags match "{tagSearchTerm}"
+                </div>
+              ) : (
+                <div className="py-1">
+                  {filteredTags.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => {
+                        if (!selectedTags.includes(tag)) {
+                          setEditFormData({ ...editFormData, category: [...selectedTags, tag].join(',') })
+                          setTagSearchTerm("")
+                        }
+                      }}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 focus:bg-blue-100 focus:outline-none"
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <p className="text-xs text-gray-500">
+          {availableTags.length} tag{availableTags.length !== 1 ? 's' : ''} available
+        </p>
       </div>
     )
   }
@@ -2506,6 +2702,29 @@ export default function ProcurementDashboard() {
                         )
                       }
 
+                      if (columnKey === "bom") {
+                        const bomInfo = (item as any).bom_info
+                        return (
+                          <td key={columnKey} className="p-2 text-left">
+                            {bomInfo?.is_bom_item ? (
+                              <UiTooltip>
+                                <UiTooltipTrigger>
+                                  <Badge variant="outline" className="border-purple-300 bg-purple-50 text-purple-900 text-xs">
+                                    {bomInfo.bom_code || 'BOM'}
+                                  </Badge>
+                                </UiTooltipTrigger>
+                                <UiTooltipContent>
+                                  <p className="font-semibold">{bomInfo.bom_name}</p>
+                                  <p className="text-xs text-gray-500">Code: {bomInfo.bom_code}</p>
+                                </UiTooltipContent>
+                              </UiTooltip>
+                            ) : (
+                              <span className="text-gray-400 text-xs">-</span>
+                            )}
+                          </td>
+                        )
+                      }
+
                       if (columnKey === "category") {
                         const categories = (item.category || '').split(',').filter((c: string) => c.trim())
                         const isMissing = categories.length === 0
@@ -2984,79 +3203,153 @@ export default function ProcurementDashboard() {
 
       {/* Manual Edit Dialog */}
       <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto bg-gray-50 border-2 border-gray-300">
         <DialogHeader>
-          <DialogTitle>{editFormData.isBulk ? `Bulk Edit (${editFormData.itemCount} items)` : 'Edit Item'}</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-gray-900 font-semibold">{editFormData.isBulk ? `Bulk Edit (${editFormData.itemCount} items)` : 'Edit Item'}</DialogTitle>
+          <DialogDescription className="text-gray-700">
             {editFormData.isBulk
               ? 'Enter values to update for all selected items. Fields left blank will not be changed.'
               : 'Make changes to the item details below.'}
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-4 py-4">
-          <div className="space-y-2">
-            <Label htmlFor="category">Tag</Label>
+        <div className="grid gap-4 py-3">
+          {/* Tags Section - Full Width */}
+          <div className="space-y-1.5">
+            <Label htmlFor="category" className="text-gray-900 font-medium">Tags</Label>
             {renderCategoryInput()}
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="vendor">Vendor</Label>
-            <Select
-              value={editFormData.vendor || ''}
-              onValueChange={(value) => setEditFormData({ ...editFormData, vendor: value })}
-            >
-              <SelectTrigger className="border border-gray-400">
-              <SelectValue placeholder="Select a vendor" />
-            </SelectTrigger>
-              <SelectContent>
-                {vendorOptions.map((vendor) => (
-                  <SelectItem key={vendor} value={vendor}>
-                    {vendor}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>Assigned To (Multiple Selection)</Label>
-            <div className="border rounded-md p-3 max-h-48 overflow-y-auto space-y-2 border-gray-400">
-              {allUsers.map((user) => {
+
+          {/* Two Column Layout for Other Fields */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="vendor" className="text-gray-900 font-medium">Vendor</Label>
+              <div className="relative">
+                <Input
+                  placeholder={editFormData.vendor || "Type to search vendors..."}
+                  value={vendorSearchTerm}
+                  onChange={(e) => setVendorSearchTerm(e.target.value)}
+                  onBlur={() => setTimeout(() => setVendorSearchTerm(""), 200)}
+                  className="border-gray-400 bg-white pr-10"
+                />
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+
+                {vendorSearchTerm.length > 0 && (
+                  <div className="absolute z-50 w-full mt-1 border-2 border-gray-300 rounded-md bg-white max-h-[180px] overflow-y-auto shadow-lg">
+                    {vendorOptions.filter(v => v.toLowerCase().includes(vendorSearchTerm.toLowerCase())).length === 0 ? (
+                      <div className="p-2 text-sm text-gray-500 text-center">
+                        No vendors match "{vendorSearchTerm}"
+                      </div>
+                    ) : (
+                      <div className="py-1">
+                        {vendorOptions
+                          .filter(v => v.toLowerCase().includes(vendorSearchTerm.toLowerCase()))
+                          .map((vendor) => (
+                            <button
+                              key={vendor}
+                              type="button"
+                              onClick={() => {
+                                setEditFormData({ ...editFormData, vendor })
+                                setVendorSearchTerm("")
+                              }}
+                              className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 focus:bg-blue-100 focus:outline-none"
+                            >
+                              {vendor}
+                            </button>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              {editFormData.vendor && (
+                <p className="text-xs text-gray-600">Selected: {editFormData.vendor}</p>
+              )}
+            </div>
+          <div className="space-y-1.5">
+            <Label className="text-gray-900 font-medium">Assigned To</Label>
+
+            {/* Selected Users as Badges */}
+            <div className="flex flex-wrap items-center gap-2 min-h-[36px] p-2 bg-white border border-gray-300 rounded-md">
+              {(() => {
                 const selectedUsers = editFormData.assignedTo
                   ? String(editFormData.assignedTo).split(',').map((u: string) => u.trim()).filter(Boolean)
                   : []
-                const isChecked = selectedUsers.includes(user)
-
-                return (
-                  <label
-                    key={user}
-                    className="flex items-center space-x-2 cursor-pointer hover:bg-gray-100 p-2 rounded"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      onChange={(e) => {
-                        let newUsers: string[]
-                        if (e.target.checked) {
-                          newUsers = [...selectedUsers, user]
-                        } else {
-                          newUsers = selectedUsers.filter(u => u !== user)
-                        }
-                        setEditFormData({ ...editFormData, assignedTo: newUsers.join(', ') })
-                      }}
-                      className="rounded"
-                    />
-                    <span className="text-sm">{user}</span>
-                  </label>
+                return selectedUsers.length === 0 ? (
+                  <span className="text-gray-500 text-sm">No users assigned</span>
+                ) : (
+                  selectedUsers.map((user: string, index: number) => (
+                    <Badge key={index} variant="outline" className="flex items-center gap-2 pl-3 pr-2 py-1 bg-green-100 border-green-300 text-green-900">
+                      <span className="font-medium">{user}</span>
+                      <button
+                        onClick={() => {
+                          const newUsers = selectedUsers.filter((_, i) => i !== index)
+                          setEditFormData({ ...editFormData, assignedTo: newUsers.join(', ') })
+                        }}
+                        className="rounded-full hover:bg-green-200 p-0.5"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  ))
                 )
-              })}
+              })()}
             </div>
-            {editFormData.assignedTo && (
-              <p className="text-xs text-gray-600">
-                Selected: {editFormData.assignedTo}
-              </p>
-            )}
+
+            {/* Searchable User Selector */}
+            <div className="relative">
+              <Input
+                placeholder="Type to search and add users..."
+                value={userSearchTerm}
+                onChange={(e) => setUserSearchTerm(e.target.value)}
+                onBlur={() => setTimeout(() => setUserSearchTerm(""), 200)}
+                className="border-gray-400 bg-white pr-10"
+              />
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+
+              {/* Dropdown appears ONLY when typing */}
+              {userSearchTerm.length > 0 && (
+                <div className="absolute z-50 w-full mt-1 border-2 border-gray-300 rounded-md bg-white max-h-[180px] overflow-y-auto shadow-lg">
+                  {(() => {
+                    const selectedUsers = editFormData.assignedTo
+                      ? String(editFormData.assignedTo).split(',').map((u: string) => u.trim()).filter(Boolean)
+                      : []
+                    const filteredUsers = allUsers.filter(
+                      user => !selectedUsers.includes(user) && user.toLowerCase().includes(userSearchTerm.toLowerCase())
+                    )
+
+                    return filteredUsers.length === 0 ? (
+                      <div className="p-2 text-sm text-gray-500 text-center">
+                        No users match "{userSearchTerm}"
+                      </div>
+                    ) : (
+                      <div className="py-1">
+                        {filteredUsers.map((user) => (
+                          <button
+                            key={user}
+                            type="button"
+                            onClick={() => {
+                              const newUsers = [...selectedUsers, user]
+                              setEditFormData({ ...editFormData, assignedTo: newUsers.join(', ') })
+                              setUserSearchTerm("")
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm hover:bg-green-50 focus:bg-green-100 focus:outline-none"
+                          >
+                            {user}
+                          </button>
+                        ))}
+                      </div>
+                    )
+                  })()}
+                </div>
+              )}
+            </div>
+
+            <p className="text-xs text-gray-500">
+              {allUsers.length} user{allUsers.length !== 1 ? 's' : ''} available
+            </p>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="action">Action</Label>
+          <div className="space-y-1.5">
+            <Label htmlFor="action" className="text-gray-900 font-medium">Action</Label>
             <Select
               value={editFormData.action || ''}
               onValueChange={(value) => setEditFormData({ ...editFormData, action: value })}
@@ -3073,8 +3366,8 @@ export default function ProcurementDashboard() {
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="rate">Rate (Price per Unit)</Label>
+          <div className="space-y-1.5">
+            <Label htmlFor="rate" className="text-gray-900 font-medium">Rate (Price per Unit)</Label>
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-gray-700">
                 {editFormData.currency?.symbol || '₹'}
@@ -3091,24 +3384,26 @@ export default function ProcurementDashboard() {
               />
             </div>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="quantity">Quantity</Label>
-            <div className="flex items-center gap-2">
-              <Input
-                id="quantity"
-                type="number"
-                min="0.01"
-                step="0.01"
-                value={editFormData.quantity || ''}
-                onChange={(e) => setEditFormData({ ...editFormData, quantity: parseFloat(e.target.value) || 0 })}
-                className="border border-gray-400"
-                placeholder="Enter quantity"
-              />
-              <span className="text-sm font-medium text-gray-700">
-                {editFormData.unit || 'units'}
-              </span>
+            <div className="space-y-1.5">
+              <Label htmlFor="quantity" className="text-gray-900 font-medium">Quantity</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="quantity"
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={editFormData.quantity || ''}
+                  onChange={(e) => setEditFormData({ ...editFormData, quantity: parseFloat(e.target.value) || 0 })}
+                  className="border border-gray-400"
+                  placeholder="Enter quantity"
+                />
+                <span className="text-sm font-medium text-gray-700">
+                  {editFormData.unit || 'units'}
+                </span>
+              </div>
             </div>
           </div>
+          {/* End Two Column Layout */}
         </div>
         <DialogFooter>
           <Button onClick={() => setShowEditDialog(false)} variant="outline">

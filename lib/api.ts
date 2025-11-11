@@ -157,6 +157,14 @@ export interface ProjectItem {
   modified_by_user_id: string | null;
   project_id: string;
   enterprise_item_id: string | null;
+  bom_info: {
+    is_bom_item: boolean;
+    bom_id: string | null;
+    bom_code: string | null;
+    bom_name: string | null;
+    bom_item_id: string | null;
+    bom_module_linkage_id: string | null;
+  };
 }
 
 export interface ProjectItemsResponse {
@@ -467,6 +475,52 @@ export async function autoAssignUsersByTags(
     `/organization/project/${projectId}/strategy/auto-assign-by-tags/`,
     {
       method: 'POST',
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+/**
+ * Get available tags for organization (ALL enterprise-level tags)
+ */
+export async function getProjectTags(projectId: string): Promise<{
+  success: boolean;
+  tags: string[];
+  total: number;
+}> {
+  return apiRequest(`/organization/project/${projectId}/strategy/tags/`);
+}
+
+/**
+ * Update tags on a project item
+ */
+export async function updateItemTags(
+  projectId: string,
+  itemId: string,
+  tags?: string[],
+  customTags?: string[]
+): Promise<{
+  success: boolean;
+  project_item_id: string;
+  tags: string[];
+  custom_tags: string[];
+  modified_datetime: string;
+  message: string;
+}> {
+  const body: any = {};
+
+  if (tags !== undefined) {
+    body.tags = tags;
+  }
+
+  if (customTags !== undefined) {
+    body.custom_tags = customTags;
+  }
+
+  return apiRequest(
+    `/organization/project/${projectId}/item/${itemId}/tags/`,
+    {
+      method: 'PATCH',
       body: JSON.stringify(body),
     }
   );
