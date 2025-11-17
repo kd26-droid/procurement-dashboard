@@ -3272,29 +3272,99 @@ export default function ProcurementDashboard() {
                           return symbols[currency] || '$'
                         }
 
+                        // Use quantity-based price if available, otherwise fall back to unit_price
+                        const displayPrice = pricing?.quantity_price ?? pricing?.unit_price
+                        const currencySymbol = pricing ? getCurrencySymbol(pricing.currency) : '$'
+
                         return (
                           <td key={columnKey} className="p-2 text-right" style={{ width: (columnWidths as any)[columnKey] }}>
                             {pricing ? (
-                              <div className="text-xs">
-                                <div className="font-semibold text-green-700">
-                                  {pricing.unit_price ? (
-                                    <>
-                                      {getCurrencySymbol(pricing.currency)}
-                                      {typeof pricing.unit_price === 'number' ? pricing.unit_price.toFixed(3) : parseFloat(pricing.unit_price).toFixed(3)}
-                                    </>
-                                  ) : 'N/A'}
-                                </div>
-                                {pricing.stock !== null && pricing.stock !== undefined && (
-                                  <div className="text-gray-500" title={`Stock: ${pricing.stock.toLocaleString()}`}>
-                                    Stock: {pricing.stock > 1000 ? `${(pricing.stock / 1000).toFixed(1)}k` : pricing.stock}
+                              <UiTooltip>
+                                <UiTooltipTrigger asChild>
+                                  <div className="text-xs cursor-help">
+                                    <div className="font-semibold text-green-700 flex items-center justify-end gap-1">
+                                      {displayPrice ? (
+                                        <>
+                                          {currencySymbol}
+                                          {typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
+                                          {pricing.savings_info && (
+                                            <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">
+                                              -{pricing.savings_info.discount_percent.toFixed(0)}%
+                                            </span>
+                                          )}
+                                        </>
+                                      ) : 'N/A'}
+                                    </div>
+                                    {pricing.stock !== null && pricing.stock !== undefined && (
+                                      <div className="text-gray-500" title={`Stock: ${pricing.stock.toLocaleString()}`}>
+                                        Stock: {pricing.stock > 1000 ? `${(pricing.stock / 1000).toFixed(1)}k` : pricing.stock}
+                                      </div>
+                                    )}
+                                    {pricing.next_tier_info && (
+                                      <div className="text-blue-600 text-[10px]">
+                                        +{pricing.next_tier_info.additional_qty_needed} → {currencySymbol}{pricing.next_tier_info.next_tier_price.toFixed(3)}
+                                      </div>
+                                    )}
+                                    {pricing.is_stale && (
+                                      <div className="text-orange-500">⚠️ Stale</div>
+                                    )}
                                   </div>
-                                )}
-                                {pricing.is_stale && (
-                                  <div className="text-orange-500" title="Pricing data is older than 7 days">
-                                    ⚠️ Stale
+                                </UiTooltipTrigger>
+                                <UiTooltipContent side="left" className="max-w-xs">
+                                  <div className="space-y-2 text-xs">
+                                    <div className="font-semibold border-b pb-1">Digi-Key Pricing</div>
+
+                                    {pricing.item_quantity && (
+                                      <div>
+                                        <span className="text-gray-500">Order Qty:</span> {pricing.item_quantity} units
+                                      </div>
+                                    )}
+
+                                    {pricing.quantity_tier && (
+                                      <div>
+                                        <span className="text-gray-500">Price Tier:</span> {pricing.quantity_tier}+ units
+                                      </div>
+                                    )}
+
+                                    {displayPrice && (
+                                      <div>
+                                        <span className="text-gray-500">Unit Price:</span> {currencySymbol}{typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
+                                      </div>
+                                    )}
+
+                                    {pricing.savings_info && (
+                                      <div className="bg-green-50 p-2 rounded space-y-1">
+                                        <div className="font-semibold text-green-700">💰 Savings</div>
+                                        <div>{pricing.savings_info.discount_percent.toFixed(1)}% off base price</div>
+                                        <div>Save {currencySymbol}{pricing.savings_info.savings_per_unit.toFixed(3)}/unit</div>
+                                        <div className="font-semibold">Total: {currencySymbol}{pricing.savings_info.total_savings.toFixed(2)}</div>
+                                      </div>
+                                    )}
+
+                                    {pricing.next_tier_info && (
+                                      <div className="bg-blue-50 p-2 rounded space-y-1">
+                                        <div className="font-semibold text-blue-700">💡 Next Tier</div>
+                                        <div>Order {pricing.next_tier_info.additional_qty_needed} more units</div>
+                                        <div>to get {currencySymbol}{pricing.next_tier_info.next_tier_price.toFixed(3)}/unit</div>
+                                        <div className="text-blue-600">Save {currencySymbol}{pricing.next_tier_info.savings_per_unit.toFixed(3)} more/unit</div>
+                                      </div>
+                                    )}
+
+                                    {pricing.price_breaks && pricing.price_breaks.length > 0 && (
+                                      <div className="border-t pt-2 space-y-1">
+                                        <div className="font-semibold">All Price Tiers:</div>
+                                        <div className="grid grid-cols-2 gap-1 text-[11px]">
+                                          {pricing.price_breaks.map((tier: any, idx: number) => (
+                                            <div key={idx} className={pricing.quantity_tier === tier.quantity ? 'font-semibold text-green-700' : ''}>
+                                              {tier.quantity}+: {currencySymbol}{typeof tier.price === 'number' ? tier.price.toFixed(3) : parseFloat(tier.price).toFixed(3)}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
-                                )}
-                              </div>
+                                </UiTooltipContent>
+                              </UiTooltip>
                             ) : (
                               <span className="text-xs text-gray-400">
                                 {digikeyJob?.status === 'processing' ? '...' : 'N/A'}
@@ -3325,12 +3395,17 @@ export default function ProcurementDashboard() {
                           return symbols[currency] || '$'
                         }
 
+                        // Use quantity-based price if available, otherwise fall back to unit_price
+                        const basePrice = pricing?.quantity_price ?? pricing?.unit_price
+
                         // Convert Mouser USD price to item's currency
                         let displayPrice = null
                         let displayCurrency = 'USD'
+                        let displaySavings = null
+                        let displayNextTier = null
 
-                        if (pricing?.unit_price) {
-                          const usdPrice = typeof pricing.unit_price === 'number' ? pricing.unit_price : parseFloat(pricing.unit_price)
+                        if (basePrice) {
+                          const usdPrice = typeof basePrice === 'number' ? basePrice : parseFloat(basePrice)
 
                           // If target currency is USD, no conversion needed
                           if (targetCurrency === 'USD') {
@@ -3350,31 +3425,129 @@ export default function ProcurementDashboard() {
                               displayCurrency = 'USD'
                             }
                           }
+
+                          // Convert savings info to display currency
+                          if (pricing?.savings_info) {
+                            const rate = targetCurrency === 'USD' ? 1 : (exchangeRates[`USD_TO_${targetCurrency}`] || 1)
+                            displaySavings = {
+                              ...pricing.savings_info,
+                              current_price: pricing.savings_info.current_price * rate,
+                              base_price: pricing.savings_info.base_price * rate,
+                              savings_per_unit: pricing.savings_info.savings_per_unit * rate,
+                              total_savings: pricing.savings_info.total_savings * rate,
+                            }
+                          }
+
+                          // Convert next tier info to display currency
+                          if (pricing?.next_tier_info) {
+                            const rate = targetCurrency === 'USD' ? 1 : (exchangeRates[`USD_TO_${targetCurrency}`] || 1)
+                            displayNextTier = {
+                              ...pricing.next_tier_info,
+                              next_tier_price: pricing.next_tier_info.next_tier_price * rate,
+                              savings_per_unit: pricing.next_tier_info.savings_per_unit * rate,
+                              potential_total_savings: pricing.next_tier_info.potential_total_savings * rate,
+                            }
+                          }
                         }
+
+                        const currencySymbol = getCurrencySymbol(displayCurrency)
 
                         return (
                           <td key={columnKey} className="p-2 text-right" style={{ width: (columnWidths as any)[columnKey] }}>
                             {pricing ? (
-                              <div className="text-xs">
-                                <div className="font-semibold text-green-700">
-                                  {displayPrice ? (
-                                    <>
-                                      {getCurrencySymbol(displayCurrency)}
-                                      {displayPrice.toFixed(3)}
-                                    </>
-                                  ) : 'N/A'}
-                                </div>
-                                {pricing.stock !== null && pricing.stock !== undefined && (
-                                  <div className="text-gray-500" title={`Stock: ${pricing.stock.toLocaleString()}`}>
-                                    Stock: {pricing.stock > 1000 ? `${(pricing.stock / 1000).toFixed(1)}k` : pricing.stock}
+                              <UiTooltip>
+                                <UiTooltipTrigger asChild>
+                                  <div className="text-xs cursor-help">
+                                    <div className="font-semibold text-green-700 flex items-center justify-end gap-1">
+                                      {displayPrice ? (
+                                        <>
+                                          {currencySymbol}
+                                          {displayPrice.toFixed(3)}
+                                          {displaySavings && (
+                                            <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">
+                                              -{displaySavings.discount_percent.toFixed(0)}%
+                                            </span>
+                                          )}
+                                        </>
+                                      ) : 'N/A'}
+                                    </div>
+                                    {pricing.stock !== null && pricing.stock !== undefined && (
+                                      <div className="text-gray-500" title={`Stock: ${pricing.stock.toLocaleString()}`}>
+                                        Stock: {pricing.stock > 1000 ? `${(pricing.stock / 1000).toFixed(1)}k` : pricing.stock}
+                                      </div>
+                                    )}
+                                    {displayNextTier && (
+                                      <div className="text-blue-600 text-[10px]">
+                                        +{displayNextTier.additional_qty_needed} → {currencySymbol}{displayNextTier.next_tier_price.toFixed(3)}
+                                      </div>
+                                    )}
+                                    {pricing.is_stale && (
+                                      <div className="text-orange-500">⚠️ Stale</div>
+                                    )}
                                   </div>
-                                )}
-                                {pricing.is_stale && (
-                                  <div className="text-orange-500" title="Pricing data is older than 7 days">
-                                    ⚠️ Stale
+                                </UiTooltipTrigger>
+                                <UiTooltipContent side="left" className="max-w-xs">
+                                  <div className="space-y-2 text-xs">
+                                    <div className="font-semibold border-b pb-1">Mouser Pricing</div>
+
+                                    {pricing.item_quantity && (
+                                      <div>
+                                        <span className="text-gray-500">Order Qty:</span> {pricing.item_quantity} units
+                                      </div>
+                                    )}
+
+                                    {pricing.quantity_tier && (
+                                      <div>
+                                        <span className="text-gray-500">Price Tier:</span> {pricing.quantity_tier}+ units
+                                      </div>
+                                    )}
+
+                                    {displayPrice && (
+                                      <div>
+                                        <span className="text-gray-500">Unit Price:</span> {currencySymbol}{displayPrice.toFixed(3)}
+                                        {displayCurrency !== 'USD' && (
+                                          <span className="text-gray-400 text-[10px] ml-1">(${basePrice?.toFixed(3)} USD)</span>
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {displaySavings && (
+                                      <div className="bg-green-50 p-2 rounded space-y-1">
+                                        <div className="font-semibold text-green-700">💰 Savings</div>
+                                        <div>{displaySavings.discount_percent.toFixed(1)}% off base price</div>
+                                        <div>Save {currencySymbol}{displaySavings.savings_per_unit.toFixed(3)}/unit</div>
+                                        <div className="font-semibold">Total: {currencySymbol}{displaySavings.total_savings.toFixed(2)}</div>
+                                      </div>
+                                    )}
+
+                                    {displayNextTier && (
+                                      <div className="bg-blue-50 p-2 rounded space-y-1">
+                                        <div className="font-semibold text-blue-700">💡 Next Tier</div>
+                                        <div>Order {displayNextTier.additional_qty_needed} more units</div>
+                                        <div>to get {currencySymbol}{displayNextTier.next_tier_price.toFixed(3)}/unit</div>
+                                        <div className="text-blue-600">Save {currencySymbol}{displayNextTier.savings_per_unit.toFixed(3)} more/unit</div>
+                                      </div>
+                                    )}
+
+                                    {pricing.price_breaks && pricing.price_breaks.length > 0 && (
+                                      <div className="border-t pt-2 space-y-1">
+                                        <div className="font-semibold">All Price Tiers:</div>
+                                        <div className="grid grid-cols-2 gap-1 text-[11px]">
+                                          {pricing.price_breaks.map((tier: any, idx: number) => {
+                                            const tierPrice = typeof tier.price === 'number' ? tier.price : parseFloat(tier.price)
+                                            const convertedPrice = displayCurrency === 'USD' ? tierPrice : tierPrice * (exchangeRates[`USD_TO_${displayCurrency}`] || 1)
+                                            return (
+                                              <div key={idx} className={pricing.quantity_tier === tier.quantity ? 'font-semibold text-green-700' : ''}>
+                                                {tier.quantity}+: {currencySymbol}{convertedPrice.toFixed(3)}
+                                              </div>
+                                            )
+                                          })}
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
-                                )}
-                              </div>
+                                </UiTooltipContent>
+                              </UiTooltip>
                             ) : (
                               <span className="text-xs text-gray-400">
                                 {mouserJob?.status === 'processing' ? '...' : 'N/A'}
@@ -3388,19 +3561,18 @@ export default function ProcurementDashboard() {
                         const priceValue = (item as any)[columnKey] as number | undefined
                         const hasPrice = priceValue !== undefined && priceValue > 0
 
-                        // Calculate cheapest price (include Digikey and Mouser pricing)
-                        const digikeyPrice = (item as any).digikey_pricing?.unit_price ?
-                          (typeof (item as any).digikey_pricing.unit_price === 'number' ?
-                            (item as any).digikey_pricing.unit_price :
-                            parseFloat((item as any).digikey_pricing.unit_price)) :
+                        // Calculate cheapest price (include Digikey and Mouser pricing with quantity-based prices)
+                        // Use quantity_price if available, otherwise fall back to unit_price
+                        const digikeyBasePrice = (item as any).digikey_pricing?.quantity_price ?? (item as any).digikey_pricing?.unit_price
+                        const digikeyPrice = digikeyBasePrice ?
+                          (typeof digikeyBasePrice === 'number' ? digikeyBasePrice : parseFloat(digikeyBasePrice)) :
                           undefined
 
-                        // Convert Mouser USD price to item's currency for comparison
+                        // Convert Mouser USD price to item's currency for comparison (use quantity_price if available)
                         let mouserPrice = undefined
-                        if ((item as any).mouser_pricing?.unit_price) {
-                          const mouserUsdPrice = typeof (item as any).mouser_pricing.unit_price === 'number' ?
-                            (item as any).mouser_pricing.unit_price :
-                            parseFloat((item as any).mouser_pricing.unit_price)
+                        const mouserBasePrice = (item as any).mouser_pricing?.quantity_price ?? (item as any).mouser_pricing?.unit_price
+                        if (mouserBasePrice) {
+                          const mouserUsdPrice = typeof mouserBasePrice === 'number' ? mouserBasePrice : parseFloat(mouserBasePrice)
 
                           // Get target currency from Digikey pricing
                           const targetCurrency = (item as any).digikey_pricing?.currency || 'INR'
@@ -3445,19 +3617,18 @@ export default function ProcurementDashboard() {
                       }
 
                       if (columnKey === "source") {
-                        // Find cheapest price source (including Digikey and Mouser pricing)
-                        const digikeyPrice = (item as any).digikey_pricing?.unit_price ?
-                          (typeof (item as any).digikey_pricing.unit_price === 'number' ?
-                            (item as any).digikey_pricing.unit_price :
-                            parseFloat((item as any).digikey_pricing.unit_price)) :
+                        // Find cheapest price source (including Digikey and Mouser pricing with quantity-based prices)
+                        // Use quantity_price if available, otherwise fall back to unit_price
+                        const digikeyBasePrice = (item as any).digikey_pricing?.quantity_price ?? (item as any).digikey_pricing?.unit_price
+                        const digikeyPrice = digikeyBasePrice ?
+                          (typeof digikeyBasePrice === 'number' ? digikeyBasePrice : parseFloat(digikeyBasePrice)) :
                           undefined
 
-                        // Convert Mouser USD price to item's currency for comparison
+                        // Convert Mouser USD price to item's currency for comparison (use quantity_price if available)
                         let mouserPrice = undefined
-                        if ((item as any).mouser_pricing?.unit_price) {
-                          const mouserUsdPrice = typeof (item as any).mouser_pricing.unit_price === 'number' ?
-                            (item as any).mouser_pricing.unit_price :
-                            parseFloat((item as any).mouser_pricing.unit_price)
+                        const mouserBasePrice = (item as any).mouser_pricing?.quantity_price ?? (item as any).mouser_pricing?.unit_price
+                        if (mouserBasePrice) {
+                          const mouserUsdPrice = typeof mouserBasePrice === 'number' ? mouserBasePrice : parseFloat(mouserBasePrice)
 
                           // Get target currency from Digikey pricing
                           const targetCurrency = (item as any).digikey_pricing?.currency || 'INR'

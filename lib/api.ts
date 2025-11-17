@@ -200,6 +200,28 @@ export interface DigikeyPricing {
   cached_at: string;
   is_stale: boolean;
   source: 'cache' | 'live';
+  // Quantity-based pricing fields
+  quantity_price?: number | null;
+  quantity_tier?: number | null;
+  item_quantity?: number | null;
+  price_breaks?: Array<{
+    quantity: number;
+    price: number | string;
+  }>;
+  savings_info?: {
+    base_price: number;
+    current_price: number;
+    savings_per_unit: number;
+    total_savings: number;
+    discount_percent: number;
+  };
+  next_tier_info?: {
+    next_tier_qty: number;
+    next_tier_price: number;
+    additional_qty_needed: number;
+    savings_per_unit: number;
+    potential_total_savings: number;
+  };
 }
 
 // Mouser Pricing Interfaces
@@ -215,11 +237,29 @@ export interface MouserPricing {
   product_url?: string | null;
   price_breaks?: Array<{
     quantity: number;
-    price: string;
+    price: number | string;
   }>;
   cached_at: string;
   is_stale: boolean;
   source: 'cache' | 'live';
+  // Quantity-based pricing fields
+  quantity_price?: number | null;
+  quantity_tier?: number | null;
+  item_quantity?: number | null;
+  savings_info?: {
+    base_price: number;
+    current_price: number;
+    savings_per_unit: number;
+    total_savings: number;
+    discount_percent: number;
+  };
+  next_tier_info?: {
+    next_tier_qty: number;
+    next_tier_price: number;
+    additional_qty_needed: number;
+    savings_per_unit: number;
+    potential_total_savings: number;
+  };
 }
 
 export interface ProjectItemsResponse {
