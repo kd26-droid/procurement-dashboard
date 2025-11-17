@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
-import { getProjectId, getProjectItems, getProjectOverview, getProjectUsers, updateProjectItem, bulkAssignUsers, autoAssignUsersByTags, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, type ProjectItem } from '@/lib/api'
+import { getProjectId, getProjectItems, getProjectOverview, getProjectUsers, updateProjectItem, bulkAssignUsers, autoAssignUsersByTags, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, type ProjectItem } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -91,12 +91,23 @@ export default function ProcurementDashboard() {
     "priceContract",
     "priceQuote",
     "priceDigikey",
+    "priceMouser",
     "priceEXIM",
   ])
   const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer"]) // Hide customer column by default
   const [savedViews, setSavedViews] = useState<{ [key: string]: { order: string[]; hidden: string[] } }>({})
   const [currentView, setCurrentView] = useState("default")
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null)
+
+  // Dynamic specification columns
+  const [specColumns, setSpecColumns] = useState<string[]>([])
+
+  // Digikey job state
+  const [digikeyJob, setDigikeyJob] = useState<any>(null)
+  // Mouser job state
+  const [mouserJob, setMouserJob] = useState<any>(null)
+  // Exchange rates for currency conversion (USD_TO_XXX format)
+  const [exchangeRates, setExchangeRates] = useState<Record<string, number>>({})
 
   const [columnWidths, setColumnWidths] = useState({
     description: 280,
@@ -109,6 +120,7 @@ export default function ProcurementDashboard() {
     priceContract: 88,
     priceQuote: 88,
     priceDigikey: 88,
+    priceMouser: 88,
     priceEXIM: 88,
     source: 96,
     totalPrice: 128,
@@ -216,43 +228,71 @@ export default function ProcurementDashboard() {
           })
         })
 
+        // Extract all unique spec names for dynamic columns
+        const specNamesSet = new Set<string>()
+        itemsResponse.items.forEach(item => {
+          item.specifications?.forEach(spec => {
+            specNamesSet.add(spec.spec_name)
+          })
+        })
+        const uniqueSpecNames = Array.from(specNamesSet).sort()
+        setSpecColumns(uniqueSpecNames)
+        console.log('[Dashboard] Found', uniqueSpecNames.length, 'unique specifications:', uniqueSpecNames)
+
         // Transform API data to match dashboard format
-        const transformedItems = itemsResponse.items.map((item: ProjectItem, index: number) => ({
-          id: index + 1,
-          project_item_id: item.project_item_id,
-          customer: '',
-          itemId: item.item_code,
-          description: item.item_name,
-          quantity: item.quantity,
-          unit: item.measurement_unit?.abbreviation || '',
-          category: (item.custom_tags || []).length > 0
-            ? (item.custom_tags || []).join(', ')
-            : 'Uncategorized',
-          assignedTo: item.assigned_users.map(u => u.name).join(', '),
-          assigned_user_ids: item.assigned_users.map(u => u.user_id),
-          unitPrice: item.rate || 0,
-          totalPrice: item.amount || 0,
-          currency: item.currency,
-          vendor: '',
-          action: '',
-          dueDate: '',
-          source: '',
-          pricePO: 0,
-          priceContract: 0,
-          priceQuote: 0,
-          priceDigikey: 0,
-          priceEXIM: 0,
-          manuallyEdited: item.custom_fields?.manually_edited || false,
-          // BOM Information
-          bom_info: item.bom_info || {
-            is_bom_item: false,
-            bom_id: null,
-            bom_code: null,
-            bom_name: null,
-            bom_item_id: null,
-            bom_module_linkage_id: null,
-          },
-        }))
+        const transformedItems = itemsResponse.items.map((item: ProjectItem, index: number) => {
+          // Create base item
+          const baseItem: any = {
+            id: index + 1,
+            project_item_id: item.project_item_id,
+            customer: '',
+            itemId: item.item_code,
+            description: item.item_name,
+            quantity: item.quantity,
+            unit: item.measurement_unit?.abbreviation || '',
+            category: (item.custom_tags || []).length > 0
+              ? (item.custom_tags || []).join(', ')
+              : 'Uncategorized',
+            assignedTo: item.assigned_users.map(u => u.name).join(', '),
+            assigned_user_ids: item.assigned_users.map(u => u.user_id),
+            unitPrice: item.rate || 0,
+            totalPrice: item.amount || 0,
+            currency: item.currency,
+            vendor: '',
+            action: '',
+            dueDate: '',
+            source: '',
+            pricePO: 0,
+            priceContract: 0,
+            priceQuote: 0,
+            priceDigikey: 0,
+            priceMouser: 0,
+            priceEXIM: 0,
+            manuallyEdited: item.custom_fields?.manually_edited || false,
+            // BOM Information
+            bom_info: item.bom_info || {
+              is_bom_item: false,
+              bom_id: null,
+              bom_code: null,
+              bom_name: null,
+              bom_item_id: null,
+              bom_module_linkage_id: null,
+            },
+          }
+
+          // Add dynamic spec columns
+          uniqueSpecNames.forEach(specName => {
+            const spec = item.specifications?.find(s => s.spec_name === specName)
+            baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
+          })
+
+          // Add Digikey pricing data
+          baseItem.digikey_pricing = item.digikey_pricing || null
+          // Add Mouser pricing data
+          baseItem.mouser_pricing = item.mouser_pricing || null
+
+          return baseItem
+        })
 
         console.log('[Dashboard] Loaded', transformedItems.length, 'items')
         console.log('[Dashboard] Transformed item codes:', transformedItems.map((item: any) => item.itemId))
@@ -266,6 +306,76 @@ export default function ProcurementDashboard() {
 
         setLineItems(transformedItems)
         setLoading(false)
+
+        // Store exchange rates for currency conversion
+        if (itemsResponse.exchange_rates) {
+          setExchangeRates(itemsResponse.exchange_rates)
+          console.log('[Dashboard] Loaded exchange rates:', Object.keys(itemsResponse.exchange_rates).length, 'currencies')
+        }
+
+        // Handle Digikey status - ALWAYS use background processing (no blocking!)
+        if (itemsResponse.digikey_status) {
+          console.log('[Dashboard] Digikey status:', itemsResponse.digikey_status)
+
+          if (itemsResponse.digikey_status === 'background_job_started') {
+            // Background job for uncached items
+            const uncachedCount = itemsResponse.digikey_uncached_count || itemsResponse.uncached_count || 0
+            const jobId = itemsResponse.digikey_job_id || itemsResponse.job_id
+
+            console.log(`🔄 Digikey background job started for ${uncachedCount} items`)
+
+            setDigikeyJob({
+              job_id: jobId,
+              status: 'processing',
+              uncached_count: uncachedCount,
+              progress_percentage: 0,
+              total_items: uncachedCount,
+              processed_items: 0,
+              successful_items: 0,
+              failed_items: 0
+            })
+
+            // Start polling
+            if (jobId) {
+              pollDigikeyJobProgress(jobId)
+            }
+          } else {
+            // All cached or processing complete
+            console.log('✅ Digikey pricing ready')
+          }
+        }
+
+        // Handle Mouser status - ALWAYS use background processing (no blocking!)
+        if (itemsResponse.mouser_status) {
+          console.log('[Dashboard] Mouser status:', itemsResponse.mouser_status)
+
+          if (itemsResponse.mouser_status === 'background_job_started') {
+            // Background job for uncached items
+            const uncachedCount = itemsResponse.mouser_uncached_count || 0
+            const jobId = itemsResponse.mouser_job_id
+
+            console.log(`🔄 Mouser background job started for ${uncachedCount} items`)
+
+            setMouserJob({
+              job_id: jobId,
+              status: 'processing',
+              uncached_count: uncachedCount,
+              progress_percentage: 0,
+              total_items: uncachedCount,
+              processed_items: 0,
+              successful_items: 0,
+              failed_items: 0
+            })
+
+            // Start polling
+            if (jobId) {
+              pollMouserJobProgress(jobId)
+            }
+          } else {
+            // All cached or processing complete
+            console.log('✅ Mouser pricing ready')
+          }
+        }
       } catch (error) {
         console.error('[Dashboard] Error loading data:', error)
         setLineItems([])
@@ -275,6 +385,210 @@ export default function ProcurementDashboard() {
 
     loadProjectData()
   }, [])
+
+  // Poll Digikey job progress
+  const pollDigikeyJobProgress = async (jobId: string) => {
+    const projectId = getProjectId()
+    if (!projectId) return
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const data = await getDigikeyJobStatus(projectId, jobId)
+
+        if (data.success) {
+          setDigikeyJob(data.job)
+
+          // Update progress
+          if (data.job.status === 'processing') {
+            console.log(`Digikey pricing: ${data.job.progress_percentage.toFixed(1)}%`)
+          }
+          else if (data.job.status === 'completed' || data.job.status === 'partial') {
+            clearInterval(pollInterval)
+
+            toast({
+              title: "Digikey Pricing Complete!",
+              description: `Pricing loaded for ${data.job.successful_items}/${data.job.total_items} items`,
+            })
+
+            // Refresh items to get the new pricing
+            const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
+
+            // Extract specs
+            const specNamesSet = new Set<string>()
+            itemsResponse.items.forEach(item => {
+              item.specifications?.forEach(spec => {
+                specNamesSet.add(spec.spec_name)
+              })
+            })
+            const uniqueSpecNames = Array.from(specNamesSet).sort()
+            setSpecColumns(uniqueSpecNames)
+
+            // Transform items with Digikey pricing
+            const transformedItems = itemsResponse.items.map((item: ProjectItem, index: number) => {
+              const baseItem: any = {
+                id: index + 1,
+                project_item_id: item.project_item_id,
+                customer: '',
+                itemId: item.item_code,
+                description: item.item_name,
+                quantity: item.quantity,
+                unit: item.measurement_unit?.abbreviation || '',
+                category: (item.custom_tags || []).length > 0
+                  ? (item.custom_tags || []).join(', ')
+                  : 'Uncategorized',
+                assignedTo: item.assigned_users.map(u => u.name).join(', '),
+                assigned_user_ids: item.assigned_users.map(u => u.user_id),
+                unitPrice: item.rate || 0,
+                totalPrice: item.amount || 0,
+                currency: item.currency,
+                vendor: '',
+                action: '',
+                dueDate: '',
+                source: '',
+                pricePO: 0,
+                priceContract: 0,
+                priceQuote: 0,
+                priceDigikey: 0,
+                priceEXIM: 0,
+                manuallyEdited: item.custom_fields?.manually_edited || false,
+                bom_info: item.bom_info || {
+                  is_bom_item: false,
+                  bom_id: null,
+                  bom_code: null,
+                  bom_name: null,
+                  bom_item_id: null,
+                  bom_module_linkage_id: null,
+                },
+                digikey_pricing: item.digikey_pricing || null,
+              }
+
+              // Add dynamic spec columns
+              uniqueSpecNames.forEach(specName => {
+                const spec = item.specifications?.find(s => s.spec_name === specName)
+                baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
+              })
+
+              return baseItem
+            })
+
+            setLineItems(transformedItems)
+            setDigikeyJob(null)
+          }
+        }
+      } catch (error) {
+        console.error('Failed to poll job status:', error)
+        clearInterval(pollInterval)
+        toast({
+          title: "Error",
+          description: "Failed to check Digikey pricing progress",
+          variant: "destructive"
+        })
+      }
+    }, 3000) // Poll every 3 seconds
+  }
+
+  // Poll Mouser job progress
+  const pollMouserJobProgress = async (jobId: string) => {
+    const projectId = getProjectId()
+    if (!projectId) return
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const data = await getMouserJobStatus(projectId, jobId)
+
+        if (data.success) {
+          setMouserJob(data.job)
+
+          // Update progress
+          if (data.job.status === 'processing') {
+            console.log(`Mouser pricing: ${data.job.progress_percentage.toFixed(1)}%`)
+          }
+          else if (data.job.status === 'completed' || data.job.status === 'partial') {
+            clearInterval(pollInterval)
+
+            toast({
+              title: "Mouser Pricing Complete!",
+              description: `Pricing loaded for ${data.job.successful_items}/${data.job.total_items} items`,
+            })
+
+            // Refresh items to get the new pricing
+            const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
+
+            // Extract specs
+            const specNamesSet = new Set<string>()
+            itemsResponse.items.forEach(item => {
+              item.specifications?.forEach(spec => {
+                specNamesSet.add(spec.spec_name)
+              })
+            })
+            const uniqueSpecNames = Array.from(specNamesSet).sort()
+            setSpecColumns(uniqueSpecNames)
+
+            // Transform items with Mouser pricing
+            const transformedItems = itemsResponse.items.map((item: ProjectItem, index: number) => {
+              const baseItem: any = {
+                id: index + 1,
+                project_item_id: item.project_item_id,
+                customer: '',
+                itemId: item.item_code,
+                description: item.item_name,
+                quantity: item.quantity,
+                unit: item.measurement_unit?.abbreviation || '',
+                category: (item.custom_tags || []).length > 0
+                  ? (item.custom_tags || []).join(', ')
+                  : 'Uncategorized',
+                assignedTo: item.assigned_users.map(u => u.name).join(', '),
+                assigned_user_ids: item.assigned_users.map(u => u.user_id),
+                unitPrice: item.rate || 0,
+                totalPrice: item.amount || 0,
+                currency: item.currency,
+                vendor: '',
+                action: '',
+                dueDate: '',
+                source: '',
+                pricePO: 0,
+                priceContract: 0,
+                priceQuote: 0,
+                priceDigikey: 0,
+                priceMouser: 0,
+                priceEXIM: 0,
+                manuallyEdited: item.custom_fields?.manually_edited || false,
+                bom_info: item.bom_info || {
+                  is_bom_item: false,
+                  bom_id: null,
+                  bom_code: null,
+                  bom_name: null,
+                  bom_item_id: null,
+                  bom_module_linkage_id: null,
+                },
+                digikey_pricing: item.digikey_pricing || null,
+                mouser_pricing: item.mouser_pricing || null,
+              }
+
+              // Add dynamic spec columns
+              uniqueSpecNames.forEach(specName => {
+                const spec = item.specifications?.find(s => s.spec_name === specName)
+                baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
+              })
+
+              return baseItem
+            })
+
+            setLineItems(transformedItems)
+            setMouserJob(null)
+          }
+        }
+      } catch (error) {
+        console.error('Failed to poll Mouser job status:', error)
+        clearInterval(pollInterval)
+        toast({
+          title: "Error",
+          description: "Failed to check Mouser pricing progress",
+          variant: "destructive"
+        })
+      }
+    }, 3000) // Poll every 3 seconds
+  }
 
   // Click outside handler for column visibility dropdown
   useEffect(() => {
@@ -1546,9 +1860,13 @@ export default function ProcurementDashboard() {
     setColumnOrder(newOrder)
   }
 
-  const visibleColumns = columnOrder.filter((col) => !hiddenColumns.includes(col))
+  // Add spec columns to column order dynamically (after "bom" column)
+  const specColumnKeys = specColumns.map(specName => `spec_${specName.replace(/\s+/g, '_')}`)
+  const allColumns = [...columnOrder.slice(0, 3), ...specColumnKeys, ...columnOrder.slice(3)] // Insert specs after itemId, description, bom
+  const visibleColumns = allColumns.filter((col) => !hiddenColumns.includes(col))
 
-  const columnLabels = {
+  // Build column labels dynamically with spec columns
+  const columnLabels: Record<string, string> = {
     customer: "Customer",
     itemId: "Item ID",
     description: "Description",
@@ -1564,10 +1882,17 @@ export default function ProcurementDashboard() {
     priceContract: "Contract",
     priceQuote: "Quote",
     priceDigikey: "Digi-Key",
+    priceMouser: "Mouser",
     priceEXIM: "EXIM",
     source: "Source",
     unitPrice: "Price",
   }
+
+  // Add dynamic spec column labels
+  specColumns.forEach(specName => {
+    const key = `spec_${specName.replace(/\s+/g, '_')}`
+    columnLabels[key] = specName
+  })
 
   // Helpers for price icons
   const priceSourceIcon = (src?: PriceSource) => {
@@ -2591,6 +2916,62 @@ export default function ProcurementDashboard() {
             </div>
           </div>
 
+          {/* Digikey Progress Banner */}
+          {digikeyJob && digikeyJob.status === 'processing' && (
+            <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="animate-spin h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full" />
+                  <div>
+                    <div className="font-medium text-blue-900">
+                      Fetching Digikey pricing...
+                    </div>
+                    <div className="text-sm text-blue-700">
+                      {digikeyJob.processed_items || 0}/{digikeyJob.total_items} items processed
+                      ({digikeyJob.progress_percentage?.toFixed(1) || 0}%)
+                    </div>
+                  </div>
+                </div>
+
+                {/* Progress bar */}
+                <div className="w-64 h-2 bg-blue-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-600 transition-all duration-300"
+                    style={{ width: `${digikeyJob.progress_percentage || 0}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Mouser Progress Banner */}
+          {mouserJob && mouserJob.status === 'processing' && (
+            <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="animate-spin h-5 w-5 border-2 border-green-600 border-t-transparent rounded-full" />
+                  <div>
+                    <div className="font-medium text-green-900">
+                      Fetching Mouser pricing...
+                    </div>
+                    <div className="text-sm text-green-700">
+                      {mouserJob.processed_items || 0}/{mouserJob.total_items} items processed
+                      ({mouserJob.progress_percentage?.toFixed(1) || 0}%)
+                    </div>
+                  </div>
+                </div>
+
+                {/* Progress bar */}
+                <div className="w-64 h-2 bg-green-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-green-600 transition-all duration-300"
+                    style={{ width: `${mouserJob.progress_percentage || 0}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
@@ -2656,7 +3037,7 @@ export default function ProcurementDashboard() {
                           </button>
                           <GripVertical className="h-3 w-3 text-gray-400 opacity-0 group-hover:opacity-100 cursor-grab flex-shrink-0 ml-2" />
                         </div>
-                        {(columnKey === "description" || columnKey === "category" || columnKey === "quantity" || columnKey === "vendor" || columnKey === "assignedTo" || columnKey === "pricePO" || columnKey === "priceContract" || columnKey === "priceQuote" || columnKey === "priceDigikey" || columnKey === "priceEXIM" || columnKey === "source" || columnKey === "totalPrice") && (
+                        {(columnKey === "description" || columnKey === "category" || columnKey === "quantity" || columnKey === "vendor" || columnKey === "assignedTo" || columnKey === "pricePO" || columnKey === "priceContract" || columnKey === "priceQuote" || columnKey === "priceDigikey" || columnKey === "priceMouser" || columnKey === "priceEXIM" || columnKey === "source" || columnKey === "totalPrice") && (
                           <div
                             className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 group-hover:opacity-100"
                             onMouseDown={(e) => handleMouseDown(columnKey, e)}
@@ -2874,18 +3255,173 @@ export default function ProcurementDashboard() {
                         )
                       }
 
-                      if (columnKey === "pricePO" || columnKey === "priceContract" || columnKey === "priceQuote" || columnKey === "priceDigikey" || columnKey === "priceEXIM") {
+                      // Special handling for Digikey pricing column
+                      if (columnKey === "priceDigikey") {
+                        const pricing = (item as any).digikey_pricing
+
+                        // Currency symbol helper
+                        const getCurrencySymbol = (currency: string) => {
+                          const symbols: Record<string, string> = {
+                            'INR': '₹',
+                            'USD': '$',
+                            'EUR': '€',
+                            'GBP': '£',
+                            'JPY': '¥',
+                            'CNY': '¥',
+                          }
+                          return symbols[currency] || '$'
+                        }
+
+                        return (
+                          <td key={columnKey} className="p-2 text-right" style={{ width: (columnWidths as any)[columnKey] }}>
+                            {pricing ? (
+                              <div className="text-xs">
+                                <div className="font-semibold text-green-700">
+                                  {pricing.unit_price ? (
+                                    <>
+                                      {getCurrencySymbol(pricing.currency)}
+                                      {typeof pricing.unit_price === 'number' ? pricing.unit_price.toFixed(3) : parseFloat(pricing.unit_price).toFixed(3)}
+                                    </>
+                                  ) : 'N/A'}
+                                </div>
+                                {pricing.stock !== null && pricing.stock !== undefined && (
+                                  <div className="text-gray-500" title={`Stock: ${pricing.stock.toLocaleString()}`}>
+                                    Stock: {pricing.stock > 1000 ? `${(pricing.stock / 1000).toFixed(1)}k` : pricing.stock}
+                                  </div>
+                                )}
+                                {pricing.is_stale && (
+                                  <div className="text-orange-500" title="Pricing data is older than 7 days">
+                                    ⚠️ Stale
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-gray-400">
+                                {digikeyJob?.status === 'processing' ? '...' : 'N/A'}
+                              </span>
+                            )}
+                          </td>
+                        )
+                      }
+
+                      // Special handling for Mouser pricing column
+                      if (columnKey === "priceMouser") {
+                        const pricing = (item as any).mouser_pricing
+
+                        // Get the item's target currency from Digikey pricing, default to INR
+                        const digikeyPricing = (item as any).digikey_pricing
+                        const targetCurrency = digikeyPricing?.currency || 'INR'
+
+                        // Currency symbol helper
+                        const getCurrencySymbol = (currency: string) => {
+                          const symbols: Record<string, string> = {
+                            'INR': '₹',
+                            'USD': '$',
+                            'EUR': '€',
+                            'GBP': '£',
+                            'JPY': '¥',
+                            'CNY': '¥',
+                          }
+                          return symbols[currency] || '$'
+                        }
+
+                        // Convert Mouser USD price to item's currency
+                        let displayPrice = null
+                        let displayCurrency = 'USD'
+
+                        if (pricing?.unit_price) {
+                          const usdPrice = typeof pricing.unit_price === 'number' ? pricing.unit_price : parseFloat(pricing.unit_price)
+
+                          // If target currency is USD, no conversion needed
+                          if (targetCurrency === 'USD') {
+                            displayPrice = usdPrice
+                            displayCurrency = 'USD'
+                          } else {
+                            // Convert USD to target currency
+                            const exchangeRateKey = `USD_TO_${targetCurrency}`
+                            const exchangeRate = exchangeRates[exchangeRateKey]
+
+                            if (exchangeRate) {
+                              displayPrice = usdPrice * exchangeRate
+                              displayCurrency = targetCurrency
+                            } else {
+                              // Fallback: show in USD if no exchange rate available
+                              displayPrice = usdPrice
+                              displayCurrency = 'USD'
+                            }
+                          }
+                        }
+
+                        return (
+                          <td key={columnKey} className="p-2 text-right" style={{ width: (columnWidths as any)[columnKey] }}>
+                            {pricing ? (
+                              <div className="text-xs">
+                                <div className="font-semibold text-green-700">
+                                  {displayPrice ? (
+                                    <>
+                                      {getCurrencySymbol(displayCurrency)}
+                                      {displayPrice.toFixed(3)}
+                                    </>
+                                  ) : 'N/A'}
+                                </div>
+                                {pricing.stock !== null && pricing.stock !== undefined && (
+                                  <div className="text-gray-500" title={`Stock: ${pricing.stock.toLocaleString()}`}>
+                                    Stock: {pricing.stock > 1000 ? `${(pricing.stock / 1000).toFixed(1)}k` : pricing.stock}
+                                  </div>
+                                )}
+                                {pricing.is_stale && (
+                                  <div className="text-orange-500" title="Pricing data is older than 7 days">
+                                    ⚠️ Stale
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-gray-400">
+                                {mouserJob?.status === 'processing' ? '...' : 'N/A'}
+                              </span>
+                            )}
+                          </td>
+                        )
+                      }
+
+                      if (columnKey === "pricePO" || columnKey === "priceContract" || columnKey === "priceQuote" || columnKey === "priceEXIM") {
                         const priceValue = (item as any)[columnKey] as number | undefined
                         const hasPrice = priceValue !== undefined && priceValue > 0
 
-                        // Calculate cheapest price
+                        // Calculate cheapest price (include Digikey and Mouser pricing)
+                        const digikeyPrice = (item as any).digikey_pricing?.unit_price ?
+                          (typeof (item as any).digikey_pricing.unit_price === 'number' ?
+                            (item as any).digikey_pricing.unit_price :
+                            parseFloat((item as any).digikey_pricing.unit_price)) :
+                          undefined
+
+                        // Convert Mouser USD price to item's currency for comparison
+                        let mouserPrice = undefined
+                        if ((item as any).mouser_pricing?.unit_price) {
+                          const mouserUsdPrice = typeof (item as any).mouser_pricing.unit_price === 'number' ?
+                            (item as any).mouser_pricing.unit_price :
+                            parseFloat((item as any).mouser_pricing.unit_price)
+
+                          // Get target currency from Digikey pricing
+                          const targetCurrency = (item as any).digikey_pricing?.currency || 'INR'
+
+                          if (targetCurrency === 'USD') {
+                            mouserPrice = mouserUsdPrice
+                          } else {
+                            const exchangeRateKey = `USD_TO_${targetCurrency}`
+                            const exchangeRate = exchangeRates[exchangeRateKey]
+                            mouserPrice = exchangeRate ? mouserUsdPrice * exchangeRate : mouserUsdPrice
+                          }
+                        }
+
                         const allPrices = [
                           (item as any).pricePO,
                           (item as any).priceContract,
                           (item as any).priceQuote,
-                          (item as any).priceDigikey,
+                          digikeyPrice,
+                          mouserPrice,
                           (item as any).priceEXIM,
-                        ].filter((p): p is number => p !== undefined && p > 0)
+                        ].filter((p): p is number => p !== undefined && !isNaN(p) && p > 0)
 
                         const cheapestPrice = allPrices.length > 0 ? Math.min(...allPrices) : null
                         const isCheapest = hasPrice && cheapestPrice !== null && priceValue === cheapestPrice
@@ -2909,14 +3445,40 @@ export default function ProcurementDashboard() {
                       }
 
                       if (columnKey === "source") {
-                        // Find cheapest price source
+                        // Find cheapest price source (including Digikey and Mouser pricing)
+                        const digikeyPrice = (item as any).digikey_pricing?.unit_price ?
+                          (typeof (item as any).digikey_pricing.unit_price === 'number' ?
+                            (item as any).digikey_pricing.unit_price :
+                            parseFloat((item as any).digikey_pricing.unit_price)) :
+                          undefined
+
+                        // Convert Mouser USD price to item's currency for comparison
+                        let mouserPrice = undefined
+                        if ((item as any).mouser_pricing?.unit_price) {
+                          const mouserUsdPrice = typeof (item as any).mouser_pricing.unit_price === 'number' ?
+                            (item as any).mouser_pricing.unit_price :
+                            parseFloat((item as any).mouser_pricing.unit_price)
+
+                          // Get target currency from Digikey pricing
+                          const targetCurrency = (item as any).digikey_pricing?.currency || 'INR'
+
+                          if (targetCurrency === 'USD') {
+                            mouserPrice = mouserUsdPrice
+                          } else {
+                            const exchangeRateKey = `USD_TO_${targetCurrency}`
+                            const exchangeRate = exchangeRates[exchangeRateKey]
+                            mouserPrice = exchangeRate ? mouserUsdPrice * exchangeRate : mouserUsdPrice
+                          }
+                        }
+
                         const prices = [
                           { source: 'PO', value: (item as any).pricePO },
                           { source: 'Contract', value: (item as any).priceContract },
                           { source: 'Quote', value: (item as any).priceQuote },
-                          { source: 'Digi-Key', value: (item as any).priceDigikey },
+                          { source: 'Digi-Key', value: digikeyPrice },
+                          { source: 'Mouser', value: mouserPrice },
                           { source: 'EXIM', value: (item as any).priceEXIM },
-                        ].filter((p): p is { source: string; value: number } => p.value !== undefined && p.value > 0)
+                        ].filter((p): p is { source: string; value: number } => p.value !== undefined && !isNaN(p.value) && p.value > 0)
 
                         const cheapest = prices.length > 0
                           ? prices.reduce((min: { source: string; value: number }, p: { source: string; value: number }) => p.value < min.value ? p : min)

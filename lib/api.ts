@@ -177,6 +177,49 @@ export interface ProjectItem {
     has_sub_bom?: boolean;
     sub_bom_id?: string | null;
   };
+  // NEW: Specifications support
+  specifications?: Array<{
+    spec_id: string;
+    spec_name: string;
+    spec_type: string;
+    spec_values: string[];
+  }>;
+  // NEW: Digikey pricing support
+  digikey_pricing?: DigikeyPricing | null;
+  // NEW: Mouser pricing support
+  mouser_pricing?: MouserPricing | null;
+}
+
+// Digikey Pricing Interfaces
+export interface DigikeyPricing {
+  unit_price: number | null;
+  currency: string;
+  stock: number | null;
+  manufacturer: string | null;
+  digikey_part_number?: string | null;
+  cached_at: string;
+  is_stale: boolean;
+  source: 'cache' | 'live';
+}
+
+// Mouser Pricing Interfaces
+export interface MouserPricing {
+  unit_price: number | null;
+  currency: string; // Always "USD"
+  stock: number | null;
+  manufacturer: string | null;
+  mouser_part_number?: string | null;
+  lifecycle_status?: string | null;
+  category?: string | null;
+  datasheet_url?: string | null;
+  product_url?: string | null;
+  price_breaks?: Array<{
+    quantity: number;
+    price: string;
+  }>;
+  cached_at: string;
+  is_stale: boolean;
+  source: 'cache' | 'live';
 }
 
 export interface ProjectItemsResponse {
@@ -185,6 +228,42 @@ export interface ProjectItemsResponse {
   total: number;
   page: number;
   limit: number;
+  // Exchange rates for currency conversion (USD_TO_XXX format)
+  exchange_rates?: Record<string, number>;
+  // Digikey status fields
+  digikey_status?: 'all_cached' | 'background_job_started';
+  digikey_uncached_count?: number;
+  digikey_job_id?: string;
+  digikey_estimated_duration_seconds?: number;
+  // Mouser status fields
+  mouser_status?: 'all_cached' | 'background_job_started';
+  mouser_uncached_count?: number;
+  mouser_job_id?: string;
+  mouser_estimated_duration_seconds?: number;
+  // Legacy fields (for backward compatibility)
+  uncached_count?: number;
+  job_id?: string;
+  estimated_duration_seconds?: number;
+  message?: string;
+}
+
+// Digikey Job Status Interface
+export interface DigikeyJobStatus {
+  success: boolean;
+  job: {
+    job_id: string;
+    status: 'pending' | 'processing' | 'completed' | 'partial' | 'failed';
+    progress_percentage: number;
+    total_items: number;
+    processed_items: number;
+    successful_items: number;
+    failed_items: number;
+    current_batch?: number;
+    total_batches?: number;
+    started_at?: string;
+    completed_at?: string;
+    estimated_completion?: string;
+  };
 }
 
 export interface ProjectUser {
@@ -537,5 +616,55 @@ export async function updateItemTags(
       method: 'PATCH',
       body: JSON.stringify(body),
     }
+  );
+}
+
+// ============================================================================
+// Digikey Pricing API Functions
+// ============================================================================
+
+/**
+ * Get Digikey job status
+ */
+export async function getDigikeyJobStatus(
+  projectId: string,
+  jobId: string
+): Promise<DigikeyJobStatus> {
+  return apiRequest(
+    `/organization/project/${projectId}/strategy/digikey/job/${jobId}/`
+  );
+}
+
+/**
+ * Get latest Digikey job for project
+ */
+export async function getLatestDigikeyJob(
+  projectId: string
+): Promise<DigikeyJobStatus> {
+  return apiRequest(
+    `/organization/project/${projectId}/strategy/digikey/job/latest/`
+  );
+}
+
+/**
+ * Get Mouser job status
+ */
+export async function getMouserJobStatus(
+  projectId: string,
+  jobId: string
+): Promise<DigikeyJobStatus> { // Same interface structure
+  return apiRequest(
+    `/organization/project/${projectId}/strategy/mouser/job/${jobId}/`
+  );
+}
+
+/**
+ * Get latest Mouser job for project
+ */
+export async function getLatestMouserJob(
+  projectId: string
+): Promise<DigikeyJobStatus> { // Same interface structure
+  return apiRequest(
+    `/organization/project/${projectId}/strategy/mouser/job/latest/`
   );
 }
