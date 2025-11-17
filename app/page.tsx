@@ -411,7 +411,21 @@ export default function ProcurementDashboard() {
             })
 
             // Refresh items to get the new pricing
+            console.log('[Digikey Poll] Refreshing items after job completion...')
             const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
+            console.log('[Digikey Poll] Received', itemsResponse.items?.length || 0, 'items')
+
+            if (!itemsResponse.items || itemsResponse.items.length === 0) {
+              console.error('[Digikey Poll] ERROR: No items in response!', itemsResponse)
+              clearInterval(pollInterval)
+              toast({
+                title: "Error",
+                description: "Failed to refresh items after Digikey pricing completed",
+                variant: "destructive"
+              })
+              setDigikeyJob(null)
+              return
+            }
 
             // Extract specs
             const specNamesSet = new Set<string>()
@@ -424,6 +438,7 @@ export default function ProcurementDashboard() {
             setSpecColumns(uniqueSpecNames)
 
             // Transform items with Digikey pricing
+            console.log('[Digikey Poll] Transforming items...')
             const transformedItems = itemsResponse.items.map((item: ProjectItem, index: number) => {
               const baseItem: any = {
                 id: index + 1,
@@ -472,8 +487,13 @@ export default function ProcurementDashboard() {
               return baseItem
             })
 
+            console.log('[Digikey Poll] Transformed', transformedItems.length, 'items')
+            console.log('[Digikey Poll] Sample item pricing:', transformedItems[0]?.digikey_pricing, transformedItems[0]?.mouser_pricing)
+
             setLineItems(transformedItems)
             setDigikeyJob(null)
+
+            console.log('[Digikey Poll] Items updated in state')
           }
         }
       } catch (error) {
