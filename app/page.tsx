@@ -3311,55 +3311,73 @@ export default function ProcurementDashboard() {
                                     )}
                                   </div>
                                 </UiTooltipTrigger>
-                                <UiTooltipContent side="left" className="max-w-xs">
-                                  <div className="space-y-2 text-xs">
-                                    <div className="font-semibold border-b pb-1">Digi-Key Pricing</div>
+                                <UiTooltipContent side="left" className="max-w-sm bg-white border-2 border-gray-200 shadow-lg">
+                                  <div className="space-y-3 text-sm p-1">
+                                    <div className="font-bold text-lg text-gray-900 border-b-2 border-gray-300 pb-2">🔷 Digi-Key Pricing</div>
 
                                     {pricing.item_quantity && (
-                                      <div>
-                                        <span className="text-gray-500">Order Qty:</span> {pricing.item_quantity} units
+                                      <div className="flex justify-between items-center">
+                                        <span className="font-medium text-gray-700">Your Order Quantity:</span>
+                                        <span className="font-semibold text-gray-900">{pricing.item_quantity} units</span>
                                       </div>
                                     )}
 
                                     {pricing.quantity_tier && (
-                                      <div>
-                                        <span className="text-gray-500">Price Tier:</span> {pricing.quantity_tier}+ units
+                                      <div className="flex justify-between items-center">
+                                        <span className="font-medium text-gray-700">Price Tier Applied:</span>
+                                        <span className="font-semibold text-gray-900">{pricing.quantity_tier}+ units tier</span>
                                       </div>
                                     )}
 
                                     {displayPrice && (
-                                      <div>
-                                        <span className="text-gray-500">Unit Price:</span> {currencySymbol}{typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
+                                      <div className="bg-gray-100 p-2 rounded">
+                                        <div className="flex justify-between items-center">
+                                          <span className="font-medium text-gray-700">Your Unit Price:</span>
+                                          <span className="font-bold text-lg text-gray-900">{currencySymbol}{typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}</span>
+                                        </div>
                                       </div>
                                     )}
 
                                     {pricing.savings_info && (
-                                      <div className="bg-green-50 p-2 rounded space-y-1">
-                                        <div className="font-semibold text-green-700">💰 Savings</div>
-                                        <div>{pricing.savings_info.discount_percent.toFixed(1)}% off base price</div>
-                                        <div>Save {currencySymbol}{pricing.savings_info.savings_per_unit.toFixed(3)}/unit</div>
-                                        <div className="font-semibold">Total: {currencySymbol}{pricing.savings_info.total_savings.toFixed(2)}</div>
+                                      <div className="bg-green-50 border border-green-200 p-3 rounded space-y-1.5">
+                                        <div className="font-bold text-base text-green-800">💰 You're Saving Money!</div>
+                                        <div className="text-gray-800"><span className="font-semibold">{pricing.savings_info.discount_percent.toFixed(1)}%</span> discount from base price</div>
+                                        <div className="text-gray-800">Saving <span className="font-semibold">{currencySymbol}{pricing.savings_info.savings_per_unit.toFixed(3)}</span> per unit</div>
+                                        <div className="font-bold text-green-700">Total Savings: {currencySymbol}{pricing.savings_info.total_savings.toFixed(2)}</div>
                                       </div>
                                     )}
 
                                     {pricing.next_tier_info && (
-                                      <div className="bg-blue-50 p-2 rounded space-y-1">
-                                        <div className="font-semibold text-blue-700">💡 Next Tier</div>
-                                        <div>Order {pricing.next_tier_info.additional_qty_needed} more units</div>
-                                        <div>to get {currencySymbol}{pricing.next_tier_info.next_tier_price.toFixed(3)}/unit</div>
-                                        <div className="text-blue-600">Save {currencySymbol}{pricing.next_tier_info.savings_per_unit.toFixed(3)} more/unit</div>
+                                      <div className="bg-blue-50 border border-blue-200 p-3 rounded space-y-1.5">
+                                        <div className="font-bold text-base text-blue-800">💡 Save Even More!</div>
+                                        <div className="text-gray-800">Order <span className="font-semibold text-blue-700">{pricing.next_tier_info.additional_qty_needed} more units</span></div>
+                                        <div className="text-gray-800">New price: <span className="font-semibold">{currencySymbol}{pricing.next_tier_info.next_tier_price.toFixed(3)}/unit</span></div>
+                                        <div className="font-semibold text-blue-700">Extra savings: {currencySymbol}{pricing.next_tier_info.savings_per_unit.toFixed(3)}/unit</div>
                                       </div>
                                     )}
 
                                     {pricing.price_breaks && pricing.price_breaks.length > 0 && (
-                                      <div className="border-t pt-2 space-y-1">
-                                        <div className="font-semibold">All Price Tiers:</div>
-                                        <div className="grid grid-cols-2 gap-1 text-[11px]">
-                                          {pricing.price_breaks.map((tier: any, idx: number) => (
-                                            <div key={idx} className={pricing.quantity_tier === tier.quantity ? 'font-semibold text-green-700' : ''}>
-                                              {tier.quantity}+: {currencySymbol}{typeof tier.price === 'number' ? tier.price.toFixed(3) : parseFloat(tier.price).toFixed(3)}
-                                            </div>
-                                          ))}
+                                      <div className="border-t-2 border-gray-300 pt-3 space-y-2">
+                                        <div className="font-bold text-gray-900">📊 All Available Price Tiers:</div>
+                                        <div className="grid grid-cols-2 gap-2 text-xs">
+                                          {pricing.price_breaks.map((tier: any, idx: number) => {
+                                            const isCurrentTier = pricing.quantity_tier === tier.quantity
+                                            return (
+                                              <div
+                                                key={idx}
+                                                className={`p-1.5 rounded ${
+                                                  isCurrentTier
+                                                    ? 'bg-green-100 border-2 border-green-500 font-bold text-green-800'
+                                                    : 'bg-gray-50 border border-gray-200 text-gray-700'
+                                                }`}
+                                              >
+                                                <div className="font-semibold">{tier.quantity}+ units:</div>
+                                                <div className={isCurrentTier ? 'text-green-900' : 'text-gray-900'}>
+                                                  {currencySymbol}{typeof tier.price === 'number' ? tier.price.toFixed(3) : parseFloat(tier.price).toFixed(3)}
+                                                </div>
+                                              </div>
+                                            )
+                                          })}
                                         </div>
                                       </div>
                                     )}
@@ -3379,9 +3397,9 @@ export default function ProcurementDashboard() {
                       if (columnKey === "priceMouser") {
                         const pricing = (item as any).mouser_pricing
 
-                        // Get the item's target currency from Digikey pricing, default to INR
-                        const digikeyPricing = (item as any).digikey_pricing
-                        const targetCurrency = digikeyPricing?.currency || 'INR'
+                        // Get the item's currency (NOT from Digikey, from the item itself)
+                        const itemCurrency = (item as any).currency
+                        const targetCurrency = itemCurrency?.code || 'USD'
 
                         // Currency symbol helper
                         const getCurrencySymbol = (currency: string) => {
@@ -3487,59 +3505,75 @@ export default function ProcurementDashboard() {
                                     )}
                                   </div>
                                 </UiTooltipTrigger>
-                                <UiTooltipContent side="left" className="max-w-xs">
-                                  <div className="space-y-2 text-xs">
-                                    <div className="font-semibold border-b pb-1">Mouser Pricing</div>
+                                <UiTooltipContent side="left" className="max-w-sm bg-white border-2 border-gray-200 shadow-lg">
+                                  <div className="space-y-3 text-sm p-1">
+                                    <div className="font-bold text-lg text-gray-900 border-b-2 border-gray-300 pb-2">🔷 Mouser Pricing</div>
 
                                     {pricing.item_quantity && (
-                                      <div>
-                                        <span className="text-gray-500">Order Qty:</span> {pricing.item_quantity} units
+                                      <div className="flex justify-between items-center">
+                                        <span className="font-medium text-gray-700">Your Order Quantity:</span>
+                                        <span className="font-semibold text-gray-900">{pricing.item_quantity} units</span>
                                       </div>
                                     )}
 
                                     {pricing.quantity_tier && (
-                                      <div>
-                                        <span className="text-gray-500">Price Tier:</span> {pricing.quantity_tier}+ units
+                                      <div className="flex justify-between items-center">
+                                        <span className="font-medium text-gray-700">Price Tier Applied:</span>
+                                        <span className="font-semibold text-gray-900">{pricing.quantity_tier}+ units tier</span>
                                       </div>
                                     )}
 
                                     {displayPrice && (
-                                      <div>
-                                        <span className="text-gray-500">Unit Price:</span> {currencySymbol}{displayPrice.toFixed(3)}
+                                      <div className="bg-gray-100 p-2 rounded">
+                                        <div className="flex justify-between items-center">
+                                          <span className="font-medium text-gray-700">Your Unit Price:</span>
+                                          <span className="font-bold text-lg text-gray-900">{currencySymbol}{displayPrice.toFixed(3)}</span>
+                                        </div>
                                         {displayCurrency !== 'USD' && (
-                                          <span className="text-gray-400 text-[10px] ml-1">(${basePrice?.toFixed(3)} USD)</span>
+                                          <div className="text-xs text-gray-500 text-right mt-1">Original: ${basePrice?.toFixed(3)} USD</div>
                                         )}
                                       </div>
                                     )}
 
                                     {displaySavings && (
-                                      <div className="bg-green-50 p-2 rounded space-y-1">
-                                        <div className="font-semibold text-green-700">💰 Savings</div>
-                                        <div>{displaySavings.discount_percent.toFixed(1)}% off base price</div>
-                                        <div>Save {currencySymbol}{displaySavings.savings_per_unit.toFixed(3)}/unit</div>
-                                        <div className="font-semibold">Total: {currencySymbol}{displaySavings.total_savings.toFixed(2)}</div>
+                                      <div className="bg-green-50 border border-green-200 p-3 rounded space-y-1.5">
+                                        <div className="font-bold text-base text-green-800">💰 You're Saving Money!</div>
+                                        <div className="text-gray-800"><span className="font-semibold">{displaySavings.discount_percent.toFixed(1)}%</span> discount from base price</div>
+                                        <div className="text-gray-800">Saving <span className="font-semibold">{currencySymbol}{displaySavings.savings_per_unit.toFixed(3)}</span> per unit</div>
+                                        <div className="font-bold text-green-700">Total Savings: {currencySymbol}{displaySavings.total_savings.toFixed(2)}</div>
                                       </div>
                                     )}
 
                                     {displayNextTier && (
-                                      <div className="bg-blue-50 p-2 rounded space-y-1">
-                                        <div className="font-semibold text-blue-700">💡 Next Tier</div>
-                                        <div>Order {displayNextTier.additional_qty_needed} more units</div>
-                                        <div>to get {currencySymbol}{displayNextTier.next_tier_price.toFixed(3)}/unit</div>
-                                        <div className="text-blue-600">Save {currencySymbol}{displayNextTier.savings_per_unit.toFixed(3)} more/unit</div>
+                                      <div className="bg-blue-50 border border-blue-200 p-3 rounded space-y-1.5">
+                                        <div className="font-bold text-base text-blue-800">💡 Save Even More!</div>
+                                        <div className="text-gray-800">Order <span className="font-semibold text-blue-700">{displayNextTier.additional_qty_needed} more units</span></div>
+                                        <div className="text-gray-800">New price: <span className="font-semibold">{currencySymbol}{displayNextTier.next_tier_price.toFixed(3)}/unit</span></div>
+                                        <div className="font-semibold text-blue-700">Extra savings: {currencySymbol}{displayNextTier.savings_per_unit.toFixed(3)}/unit</div>
                                       </div>
                                     )}
 
                                     {pricing.price_breaks && pricing.price_breaks.length > 0 && (
-                                      <div className="border-t pt-2 space-y-1">
-                                        <div className="font-semibold">All Price Tiers:</div>
-                                        <div className="grid grid-cols-2 gap-1 text-[11px]">
+                                      <div className="border-t-2 border-gray-300 pt-3 space-y-2">
+                                        <div className="font-bold text-gray-900">📊 All Available Price Tiers:</div>
+                                        <div className="grid grid-cols-2 gap-2 text-xs">
                                           {pricing.price_breaks.map((tier: any, idx: number) => {
                                             const tierPrice = typeof tier.price === 'number' ? tier.price : parseFloat(tier.price)
                                             const convertedPrice = displayCurrency === 'USD' ? tierPrice : tierPrice * (exchangeRates[`USD_TO_${displayCurrency}`] || 1)
+                                            const isCurrentTier = pricing.quantity_tier === tier.quantity
                                             return (
-                                              <div key={idx} className={pricing.quantity_tier === tier.quantity ? 'font-semibold text-green-700' : ''}>
-                                                {tier.quantity}+: {currencySymbol}{convertedPrice.toFixed(3)}
+                                              <div
+                                                key={idx}
+                                                className={`p-1.5 rounded ${
+                                                  isCurrentTier
+                                                    ? 'bg-green-100 border-2 border-green-500 font-bold text-green-800'
+                                                    : 'bg-gray-50 border border-gray-200 text-gray-700'
+                                                }`}
+                                              >
+                                                <div className="font-semibold">{tier.quantity}+ units:</div>
+                                                <div className={isCurrentTier ? 'text-green-900' : 'text-gray-900'}>
+                                                  {currencySymbol}{convertedPrice.toFixed(3)}
+                                                </div>
                                               </div>
                                             )
                                           })}
@@ -3575,8 +3609,9 @@ export default function ProcurementDashboard() {
                         if (mouserBasePrice) {
                           const mouserUsdPrice = typeof mouserBasePrice === 'number' ? mouserBasePrice : parseFloat(mouserBasePrice)
 
-                          // Get target currency from Digikey pricing
-                          const targetCurrency = (item as any).digikey_pricing?.currency || 'INR'
+                          // Get target currency from ITEM (not Digikey)
+                          const itemCurrency = (item as any).currency
+                          const targetCurrency = itemCurrency?.code || 'USD'
 
                           if (targetCurrency === 'USD') {
                             mouserPrice = mouserUsdPrice
@@ -3631,8 +3666,9 @@ export default function ProcurementDashboard() {
                         if (mouserBasePrice) {
                           const mouserUsdPrice = typeof mouserBasePrice === 'number' ? mouserBasePrice : parseFloat(mouserBasePrice)
 
-                          // Get target currency from Digikey pricing
-                          const targetCurrency = (item as any).digikey_pricing?.currency || 'INR'
+                          // Get target currency from ITEM (not Digikey)
+                          const itemCurrency = (item as any).currency
+                          const targetCurrency = itemCurrency?.code || 'USD'
 
                           if (targetCurrency === 'USD') {
                             mouserPrice = mouserUsdPrice
