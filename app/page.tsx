@@ -410,6 +410,10 @@ export default function ProcurementDashboard() {
               description: `Pricing loaded for ${data.job.successful_items}/${data.job.total_items} items`,
             })
 
+            // Wait a bit for database to commit pricing data
+            console.log('[Digikey Poll] Waiting 2 seconds for database commit...')
+            await new Promise(resolve => setTimeout(resolve, 2000))
+
             // Refresh items to get the new pricing
             console.log('[Digikey Poll] Refreshing items after job completion...')
             const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
