@@ -460,6 +460,7 @@ export default function ProcurementDashboard() {
                   bom_module_linkage_id: null,
                 },
                 digikey_pricing: item.digikey_pricing || null,
+                mouser_pricing: item.mouser_pricing || null,
               }
 
               // Add dynamic spec columns
