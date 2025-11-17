@@ -170,7 +170,7 @@ export default function ProcurementDashboard() {
         // Fetch overview, items, users, and tags in parallel
         const [overviewResponse, itemsResponse, usersResponse, tagsResponse] = await Promise.all([
           getProjectOverview(projectId),
-          getProjectItems(projectId),
+          getProjectItems(projectId, { limit: 10000 }),  // Fetch all items (up to 10k)
           getProjectUsers(projectId),
           getProjectTags(projectId)
         ])
@@ -207,12 +207,12 @@ export default function ProcurementDashboard() {
         }
 
         // LOG: Verify tags and custom_tags from backend
-        console.log('[Dashboard] Tags received from API:')
+        console.log('[Dashboard] Tags and BOM info received from API:')
         itemsResponse.items.slice(0, 5).forEach((item: ProjectItem) => {
           console.log(`  ${item.item_code}:`, {
             tags: item.tags || [],
             custom_tags: item.custom_tags || [],
-            combined: [...(item.tags || []), ...(item.custom_tags || [])]
+            bom_info: item.bom_info
           })
         })
 
@@ -225,8 +225,8 @@ export default function ProcurementDashboard() {
           description: item.item_name,
           quantity: item.quantity,
           unit: item.measurement_unit?.abbreviation || '',
-          category: [...(item.tags || []), ...(item.custom_tags || [])].length > 0
-            ? [...(item.tags || []), ...(item.custom_tags || [])].join(', ')
+          category: (item.custom_tags || []).length > 0
+            ? (item.custom_tags || []).join(', ')
             : 'Uncategorized',
           assignedTo: item.assigned_users.map(u => u.name).join(', '),
           assigned_user_ids: item.assigned_users.map(u => u.user_id),
@@ -710,7 +710,7 @@ export default function ProcurementDashboard() {
 
       if (result.success) {
         // Refresh items from API
-        const itemsResponse = await getProjectItems(projectId)
+        const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
         const transformedItems = itemsResponse.items.map((item, index) => ({
           id: index + 1,
           project_item_id: item.project_item_id,
@@ -719,8 +719,8 @@ export default function ProcurementDashboard() {
           description: item.item_name,
           quantity: item.quantity,
           unit: item.measurement_unit?.abbreviation || '',
-          category: [...(item.tags || []), ...(item.custom_tags || [])].length > 0
-            ? [...(item.tags || []), ...(item.custom_tags || [])].join(', ')
+          category: (item.custom_tags || []).length > 0
+            ? (item.custom_tags || []).join(', ')
             : 'Uncategorized',
           assignedTo: item.assigned_users.map(u => u.name).join(', '),
           assigned_user_ids: item.assigned_users.map(u => u.user_id),
@@ -824,7 +824,7 @@ export default function ProcurementDashboard() {
         console.log('[Manual Assign] Successfully assigned users to item')
 
         // Refresh items from API to get latest data
-        const itemsResponse = await getProjectItems(projectId)
+        const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
         const transformedItems = itemsResponse.items.map((item, index) => ({
           id: index + 1,
           project_item_id: item.project_item_id,
@@ -833,8 +833,8 @@ export default function ProcurementDashboard() {
           description: item.item_name,
           quantity: item.quantity,
           unit: item.measurement_unit?.abbreviation || '',
-          category: [...(item.tags || []), ...(item.custom_tags || [])].length > 0
-            ? [...(item.tags || []), ...(item.custom_tags || [])].join(', ')
+          category: (item.custom_tags || []).length > 0
+            ? (item.custom_tags || []).join(', ')
             : 'Uncategorized',
           assignedTo: item.assigned_users.map(u => u.name).join(', '),
           assigned_user_ids: item.assigned_users.map(u => u.user_id),
@@ -894,6 +894,13 @@ export default function ProcurementDashboard() {
   const handleEditRateQuantity = async () => {
     console.log('[Edit Rate/Qty] Save button clicked!')
     console.log('[Edit Rate/Qty] editFormData:', editFormData)
+
+    // For bulk edits, use the bulk handler instead
+    if (editFormData.isBulk) {
+      console.log('[Edit Rate/Qty] Bulk edit detected, calling handleSaveEdit')
+      await handleSaveEdit()
+      return
+    }
 
     if (!editFormData.project_item_id) {
       console.error('[Edit Rate/Qty] No item ID found in editFormData')
@@ -998,8 +1005,9 @@ export default function ProcurementDashboard() {
           .split(',')
           .map((t: string) => t.trim())
           .filter(Boolean)
+          .filter((t: string) => t !== 'Uncategorized') // Never send "Uncategorized" placeholder
 
-        const originalCategory = originalItem?.category || ''
+        const originalCategory = originalItem?.category === 'Uncategorized' ? '' : (originalItem?.category || '')
         const originalTags = originalCategory
           .split(',')
           .map((t: string) => t.trim())
@@ -1039,25 +1047,26 @@ export default function ProcurementDashboard() {
 
         // Update tags if they changed
         if (tagsChanged && newTags) {
-          console.log('[Edit Rate/Qty] Updating tags:', newTags)
+          console.log('[Edit Rate/Qty] Updating custom_tags:', newTags)
           try {
             const tagsResult = await updateItemTags(
               projectId,
               editFormData.project_item_id,
-              newTags
+              undefined,  // tags (enterprise-level, never modified from Strategy Dashboard)
+              newTags     // custom_tags (complete list to replace existing)
             )
             if (tagsResult.success) {
-              console.log('[Edit Rate/Qty] Successfully updated tags')
+              console.log('[Edit Rate/Qty] Successfully updated custom_tags')
             } else {
-              console.error('[Edit Rate/Qty] Failed to update tags:', tagsResult)
+              console.error('[Edit Rate/Qty] Failed to update custom_tags:', tagsResult)
             }
           } catch (tagError) {
-            console.error('[Edit Rate/Qty] Error updating tags:', tagError)
+            console.error('[Edit Rate/Qty] Error updating custom_tags:', tagError)
           }
         }
 
         // Refresh items from API to get latest data
-        const itemsResponse = await getProjectItems(projectId)
+        const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
         const transformedItems = itemsResponse.items.map((item, index) => ({
           id: index + 1,
           project_item_id: item.project_item_id,
@@ -1066,8 +1075,8 @@ export default function ProcurementDashboard() {
           description: item.item_name,
           quantity: item.quantity,
           unit: item.measurement_unit?.abbreviation || '',
-          category: [...(item.tags || []), ...(item.custom_tags || [])].length > 0
-            ? [...(item.tags || []), ...(item.custom_tags || [])].join(', ')
+          category: (item.custom_tags || []).length > 0
+            ? (item.custom_tags || []).join(', ')
             : 'Uncategorized',
           assignedTo: item.assigned_users.map(u => u.name).join(', '),
           assigned_user_ids: item.assigned_users.map(u => u.user_id),
@@ -1253,11 +1262,14 @@ export default function ProcurementDashboard() {
     if (selectedItems.length === 1) {
       // Single item edit - populate all fields
       const item = itemsToEdit[0]
+      // Filter out "Uncategorized" placeholder - it's not a real tag
+      const actualCategory = item.category === 'Uncategorized' ? '' : (item.category || '')
       setEditFormData({
         isBulk: false,
         itemCount: 1,
         item: item, // Store the item in formData instead
-        category: item.category || '',
+        category: actualCategory,
+        originalCategory: actualCategory, // Track original tags
         vendor: item.vendor || '',
         assignedTo: item.assignedTo || '',
         action: item.action || '',
@@ -1270,11 +1282,30 @@ export default function ProcurementDashboard() {
         project_item_id: item.project_item_id
       })
     } else {
-      // Bulk edit - leave fields empty or use common values
+      // Bulk edit - show common tags across all selected items
+      // Get all unique tags from selected items
+      const allTagsFromSelected = itemsToEdit
+        .map((item: any) => item.category === 'Uncategorized' ? '' : (item.category || ''))
+        .filter(Boolean)
+        .flatMap((cats: string) => cats.split(',').map((c: string) => c.trim()))
+        .filter(Boolean)
+
+      // Find tags that are common to ALL selected items (intersection)
+      const tagCounts = allTagsFromSelected.reduce((acc: any, tag: string) => {
+        acc[tag] = (acc[tag] || 0) + 1
+        return acc
+      }, {})
+
+      const commonTags = Object.entries(tagCounts)
+        .filter(([_, count]) => count === selectedItems.length)
+        .map(([tag, _]) => tag)
+        .join(', ')
+
       setEditFormData({
         isBulk: true,
         itemCount: selectedItems.length,
-        category: '',
+        category: commonTags,  // Show common tags
+        originalCategory: commonTags, // Track original tags
         vendor: '',
         assignedTo: '',
         action: '',
@@ -1305,7 +1336,7 @@ export default function ProcurementDashboard() {
     console.log('[Edit] Form data:', editFormData)
 
     // If assignedTo is being changed, update via API
-    if (editFormData.assignedTo !== undefined && editFormData.assignedTo !== null) {
+    if (editFormData.assignedTo !== undefined && editFormData.assignedTo !== null && editFormData.assignedTo !== '') {
       try {
         // Convert assigned user names to user IDs
         const assignedUserNames = editFormData.assignedTo
@@ -1342,7 +1373,7 @@ export default function ProcurementDashboard() {
         }
 
         // Refresh items from API
-        const itemsResponse = await getProjectItems(projectId)
+        const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
         const transformedItems = itemsResponse.items.map((item, index) => ({
           id: index + 1,
           project_item_id: item.project_item_id,
@@ -1351,8 +1382,8 @@ export default function ProcurementDashboard() {
           description: item.item_name,
           quantity: item.quantity,
           unit: item.measurement_unit?.abbreviation || '',
-          category: [...(item.tags || []), ...(item.custom_tags || [])].length > 0
-            ? [...(item.tags || []), ...(item.custom_tags || [])].join(', ')
+          category: (item.custom_tags || []).length > 0
+            ? (item.custom_tags || []).join(', ')
             : 'Uncategorized',
           assignedTo: item.assigned_users.map(u => u.name).join(', '),
           assigned_user_ids: item.assigned_users.map(u => u.user_id),
@@ -1395,17 +1426,23 @@ export default function ProcurementDashboard() {
         console.log('[Edit Tags] Updating tags for', selectedItems.length, 'items')
 
         const itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
-        const newTags = editFormData.category
+
+        // Get all current custom_tags (this is the complete list we want to save)
+        const allCustomTags = editFormData.category
           .split(',')
           .map((t: string) => t.trim())
           .filter(Boolean)
+          .filter((t: string) => t !== 'Uncategorized') // Never send "Uncategorized" placeholder
 
-        // Update each selected item
+        console.log('[Edit Tags] Saving custom_tags:', allCustomTags)
+
+        // Update each selected item with the complete custom_tags list
         for (const item of itemsToUpdate) {
           const result = await updateItemTags(
             projectId,
             item.project_item_id,
-            newTags  // Update tags
+            undefined,      // tags (enterprise-level, never modified from Strategy Dashboard)
+            allCustomTags   // custom_tags (complete list to replace existing)
           )
 
           if (result.success) {
@@ -1416,7 +1453,7 @@ export default function ProcurementDashboard() {
         }
 
         // Refresh items from API
-        const itemsResponse = await getProjectItems(projectId)
+        const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
         const transformedItems = itemsResponse.items.map((item, index) => ({
           id: index + 1,
           project_item_id: item.project_item_id,
@@ -1425,8 +1462,8 @@ export default function ProcurementDashboard() {
           description: item.item_name,
           quantity: item.quantity,
           unit: item.measurement_unit?.abbreviation || '',
-          category: [...(item.tags || []), ...(item.custom_tags || [])].length > 0
-            ? [...(item.tags || []), ...(item.custom_tags || [])].join(', ')
+          category: (item.custom_tags || []).length > 0
+            ? (item.custom_tags || []).join(', ')
             : 'Uncategorized',
           assignedTo: item.assigned_users.map(u => u.name).join(', '),
           assigned_user_ids: item.assigned_users.map(u => u.user_id),
@@ -2707,17 +2744,12 @@ export default function ProcurementDashboard() {
                         return (
                           <td key={columnKey} className="p-2 text-left">
                             {bomInfo?.is_bom_item ? (
-                              <UiTooltip>
-                                <UiTooltipTrigger>
-                                  <Badge variant="outline" className="border-purple-300 bg-purple-50 text-purple-900 text-xs">
-                                    {bomInfo.bom_code || 'BOM'}
-                                  </Badge>
-                                </UiTooltipTrigger>
-                                <UiTooltipContent>
-                                  <p className="font-semibold">{bomInfo.bom_name}</p>
-                                  <p className="text-xs text-gray-500">Code: {bomInfo.bom_code}</p>
-                                </UiTooltipContent>
-                              </UiTooltip>
+                              <span className="text-xs text-gray-700 whitespace-nowrap overflow-hidden text-ellipsis block max-w-[300px]">
+                                {/* Show breadcrumb path like: KDKDKD -> QASB2 (same as Factwise) */}
+                                {bomInfo.bom_hierarchy && bomInfo.bom_hierarchy.length > 0
+                                  ? bomInfo.bom_hierarchy.map((bom: any) => bom.bom_code).join(' → ')
+                                  : (bomInfo.bom_code || '-')}
+                              </span>
                             ) : (
                               <span className="text-gray-400 text-xs">-</span>
                             )}
@@ -3381,8 +3413,12 @@ export default function ProcurementDashboard() {
                 onChange={(e) => setEditFormData({ ...editFormData, rate: parseFloat(e.target.value) || 0 })}
                 className="border border-gray-400"
                 placeholder="Enter rate"
+                disabled={editFormData.isBulk}
               />
             </div>
+            {editFormData.isBulk && (
+              <p className="text-xs text-gray-500">Bulk edit: Rate cannot be changed for multiple items</p>
+            )}
           </div>
             <div className="space-y-1.5">
               <Label htmlFor="quantity" className="text-gray-900 font-medium">Quantity</Label>
@@ -3396,11 +3432,15 @@ export default function ProcurementDashboard() {
                   onChange={(e) => setEditFormData({ ...editFormData, quantity: parseFloat(e.target.value) || 0 })}
                   className="border border-gray-400"
                   placeholder="Enter quantity"
+                  disabled={editFormData.isBulk}
                 />
                 <span className="text-sm font-medium text-gray-700">
                   {editFormData.unit || 'units'}
                 </span>
               </div>
+              {editFormData.isBulk && (
+                <p className="text-xs text-gray-500">Bulk edit: Quantity cannot be changed for multiple items</p>
+              )}
             </div>
           </div>
           {/* End Two Column Layout */}

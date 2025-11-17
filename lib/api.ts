@@ -164,6 +164,18 @@ export interface ProjectItem {
     bom_name: string | null;
     bom_item_id: string | null;
     bom_module_linkage_id: string | null;
+    // NEW: Full hierarchy support
+    bom_hierarchy?: Array<{
+      bom_id: string;
+      bom_code: string;
+      bom_name: string;
+      level: number;
+    }>;
+    bom_level?: number;
+    root_bom_id?: string | null;
+    parent_sub_bom_item_id?: string | null;
+    has_sub_bom?: boolean;
+    sub_bom_id?: string | null;
   };
 }
 
@@ -516,6 +528,8 @@ export async function updateItemTags(
   if (customTags !== undefined) {
     body.custom_tags = customTags;
   }
+
+  console.log('[updateItemTags] Request body:', JSON.stringify(body, null, 2));
 
   return apiRequest(
     `/organization/project/${projectId}/item/${itemId}/tags/`,
