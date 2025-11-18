@@ -2056,24 +2056,56 @@ export default function ProcurementDashboard() {
 
         console.log('[Edit Tags] Saving custom_tags:', allCustomTags)
 
-        // Update each selected item with the complete custom_tags list
-        for (const item of itemsToUpdate) {
-          const result = await updateItemTags(
-            projectId,
-            item.project_item_id,
-            undefined,      // tags (enterprise-level, never modified from Strategy Dashboard)
-            allCustomTags   // custom_tags (complete list to replace existing)
+        // Update items in batches to avoid timeout
+        const BATCH_SIZE = 50
+        let successCount = 0
+        let failCount = 0
+
+        for (let i = 0; i < itemsToUpdate.length; i += BATCH_SIZE) {
+          const batch = itemsToUpdate.slice(i, i + BATCH_SIZE)
+          console.log(`[Edit Tags] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(itemsToUpdate.length / BATCH_SIZE)} (${batch.length} items)`)
+
+          // Update all items in this batch in parallel
+          const batchPromises = batch.map(item =>
+            updateItemTags(
+              projectId,
+              item.project_item_id,
+              undefined,      // tags (enterprise-level, never modified from Strategy Dashboard)
+              allCustomTags   // custom_tags (complete list to replace existing)
+            ).then(result => {
+              if (result.success) {
+                successCount++
+                return { success: true, itemId: item.itemId }
+              } else {
+                failCount++
+                console.error('[Edit Tags] Failed to update item:', item.itemId, result)
+                return { success: false, itemId: item.itemId }
+              }
+            }).catch(error => {
+              failCount++
+              console.error('[Edit Tags] Error updating item:', item.itemId, error)
+              return { success: false, itemId: item.itemId, error }
+            })
           )
 
-          if (result.success) {
-            console.log('[Edit Tags] Successfully updated item:', item.itemId)
-          } else {
-            console.error('[Edit Tags] Failed to update item:', item.itemId, result)
+          await Promise.all(batchPromises)
+
+          // Show progress
+          toast({
+            title: "Updating Tags...",
+            description: `Progress: ${Math.min(i + BATCH_SIZE, itemsToUpdate.length)}/${itemsToUpdate.length} items`,
+          })
+
+          // Small delay between batches to avoid overwhelming the API
+          if (i + BATCH_SIZE < itemsToUpdate.length) {
+            await new Promise(resolve => setTimeout(resolve, 500))
           }
         }
 
-        // Refresh items from API
-        const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
+        console.log(`[Edit Tags] Complete: ${successCount} succeeded, ${failCount} failed`)
+
+        // Refresh items from API with chunked loading
+        const itemsResponse = await getProjectItems(projectId, { limit: 100, offset: 0 })
         const transformedItems = itemsResponse.items.map((item, index) => ({
           id: index + 1,
           project_item_id: item.project_item_id,
@@ -2116,7 +2148,7 @@ export default function ProcurementDashboard() {
 
         toast({
           title: "Tags Updated",
-          description: `Updated tags for ${selectedItems.length} item(s)`,
+          description: `Successfully updated ${successCount} item(s)${failCount > 0 ? `, ${failCount} failed` : ''}`,
         })
 
       } catch (error) {
