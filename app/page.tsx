@@ -629,8 +629,7 @@ export default function ProcurementDashboard() {
               status: data.job.status,
               total_items: data.job.total_items,
               successful_items: data.job.successful_items,
-              failed_items: data.job.failed_items,
-              error_message: data.job.error_message
+              failed_items: data.job.failed_items
             })
 
             toast({
@@ -701,7 +700,7 @@ export default function ProcurementDashboard() {
 
             // Extract specs
             const specNamesSet = new Set<string>()
-            itemsResponse.items.forEach(item => {
+            itemsResponse.items.forEach((item: ProjectItem) => {
               item.specifications?.forEach(spec => {
                 specNamesSet.add(spec.spec_name)
               })
@@ -763,7 +762,7 @@ export default function ProcurementDashboard() {
             console.log('[Digikey Poll] Sample item pricing:', transformedItems[0]?.digikey_pricing, transformedItems[0]?.mouser_pricing)
 
             // Convert distributor pricing from USD to item currency
-            const itemsWithConvertedPricing = transformedItems.map(item =>
+            const itemsWithConvertedPricing = transformedItems.map((item: any) =>
               processItemPricing(item, itemsResponse.exchange_rates || exchangeRates)
             )
 
@@ -816,7 +815,7 @@ export default function ProcurementDashboard() {
 
             // Extract specs
             const specNamesSet = new Set<string>()
-            itemsResponse.items.forEach(item => {
+            itemsResponse.items.forEach((item: ProjectItem) => {
               item.specifications?.forEach(spec => {
                 specNamesSet.add(spec.spec_name)
               })
