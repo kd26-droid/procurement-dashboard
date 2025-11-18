@@ -179,6 +179,11 @@ export default function ProcurementDashboard() {
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 20
 
+  // Track if all items are loaded from server
+  const [allItemsLoaded, setAllItemsLoaded] = useState(false)
+  const [loadingProgress, setLoadingProgress] = useState({ loaded: 0, total: 0 })
+  const [isLoadingAllItems, setIsLoadingAllItems] = useState(false)
+
   const [columnOrder, setColumnOrder] = useState([
     "itemId",
     "description",
@@ -432,7 +437,10 @@ export default function ProcurementDashboard() {
         const totalItems = initialItemsResponse.total
         if (totalItems > 100) {
           console.log(`[Dashboard] Loading remaining ${totalItems - 100} items in background...`)
-          loadRemainingItems(projectId, initialItemsResponse.exchange_rates || {}, uniqueSpecNames)
+          loadRemainingItems(projectId, initialItemsResponse.exchange_rates || {}, uniqueSpecNames, totalItems)
+        } else {
+          // All items loaded initially
+          setAllItemsLoaded(true)
         }
 
         // Handle Digikey status - ALWAYS use background processing (no blocking!)
@@ -509,12 +517,15 @@ export default function ProcurementDashboard() {
   }, [])
 
   // Load remaining items in background (for large projects)
-  const loadRemainingItems = async (projectId: string, exchangeRates: Record<string, number>, uniqueSpecNames: string[]) => {
+  const loadRemainingItems = async (projectId: string, exchangeRates: Record<string, number>, uniqueSpecNames: string[], totalItems: number) => {
     try {
       const CHUNK_SIZE = 200
       let offset = 100 // We already loaded first 100
       let hasMore = true
       let allNewItems: any[] = []
+
+      setLoadingProgress({ loaded: 100, total: totalItems })
+      setIsLoadingAllItems(true)
 
       while (hasMore) {
         console.log(`[Background Load] Fetching items ${offset} to ${offset + CHUNK_SIZE}...`)
@@ -586,7 +597,11 @@ export default function ProcurementDashboard() {
         // Append to existing items
         setLineItems(prevItems => [...prevItems, ...convertedChunk])
 
-        console.log(`[Background Load] Loaded ${convertedChunk.length} more items (total: ${offset + convertedChunk.length})`)
+        // Update progress
+        const loadedSoFar = Math.min(offset + convertedChunk.length, totalItems)
+        setLoadingProgress({ loaded: loadedSoFar, total: totalItems })
+
+        console.log(`[Background Load] Loaded ${convertedChunk.length} more items (total: ${loadedSoFar}/${totalItems})`)
 
         offset += CHUNK_SIZE
 
@@ -599,9 +614,12 @@ export default function ProcurementDashboard() {
         await new Promise(resolve => setTimeout(resolve, 500))
       }
 
-      console.log(`[Background Load] ✅ Finished loading all ${offset} items`)
+      console.log(`[Background Load] ✅ Finished loading all items`)
+      setAllItemsLoaded(true)
+      setIsLoadingAllItems(false)
     } catch (error) {
       console.error('[Background Load] Error loading remaining items:', error)
+      setIsLoadingAllItems(false)
     }
   }
 
@@ -3335,6 +3353,34 @@ export default function ProcurementDashboard() {
                   <div
                     className="h-full bg-green-600 transition-all duration-300"
                     style={{ width: `${mouserJob.progress_percentage || 0}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Loading All Items Progress Banner */}
+          {isLoadingAllItems && (
+            <div className="mb-4 p-4 bg-purple-50 border border-purple-200 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="animate-spin h-5 w-5 border-2 border-purple-600 border-t-transparent rounded-full" />
+                  <div>
+                    <div className="font-medium text-purple-900">
+                      Loading all items...
+                    </div>
+                    <div className="text-sm text-purple-700">
+                      {loadingProgress.loaded}/{loadingProgress.total} items loaded
+                      ({((loadingProgress.loaded / loadingProgress.total) * 100).toFixed(1)}%)
+                    </div>
+                  </div>
+                </div>
+
+                {/* Progress bar */}
+                <div className="w-64 h-2 bg-purple-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-purple-600 transition-all duration-300"
+                    style={{ width: `${(loadingProgress.loaded / loadingProgress.total) * 100}%` }}
                   />
                 </div>
               </div>
