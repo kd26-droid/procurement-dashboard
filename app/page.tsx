@@ -1973,27 +1973,58 @@ export default function ProcurementDashboard() {
 
         console.log('[Edit] Assigning users:', assignedUserNames, 'IDs:', selectedUserIds)
 
-        // Update each selected item
+        // Update items in batches to avoid timeout
         const itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
+        const BATCH_SIZE = 50
+        let successCount = 0
+        let failCount = 0
 
-        for (const item of itemsToUpdate) {
-          const result = await updateProjectItem(projectId, item.project_item_id, {
-            assigned_user_ids: selectedUserIds,
-            custom_fields: {
-              manually_edited: true,
-              last_manual_edit: new Date().toISOString()
-            }
+        for (let i = 0; i < itemsToUpdate.length; i += BATCH_SIZE) {
+          const batch = itemsToUpdate.slice(i, i + BATCH_SIZE)
+          console.log(`[Edit Users] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(itemsToUpdate.length / BATCH_SIZE)} (${batch.length} items)`)
+
+          // Update all items in this batch in parallel
+          const batchPromises = batch.map(item =>
+            updateProjectItem(projectId, item.project_item_id, {
+              assigned_user_ids: selectedUserIds,
+              custom_fields: {
+                manually_edited: true,
+                last_manual_edit: new Date().toISOString()
+              }
+            }).then(result => {
+              if (result.success) {
+                successCount++
+                return { success: true, itemId: item.itemId }
+              } else {
+                failCount++
+                console.error('[Edit Users] Failed to update item:', item.itemId, result)
+                return { success: false, itemId: item.itemId }
+              }
+            }).catch(error => {
+              failCount++
+              console.error('[Edit Users] Error updating item:', item.itemId, error)
+              return { success: false, itemId: item.itemId, error }
+            })
+          )
+
+          await Promise.all(batchPromises)
+
+          // Show progress
+          toast({
+            title: "Assigning Users...",
+            description: `Progress: ${Math.min(i + BATCH_SIZE, itemsToUpdate.length)}/${itemsToUpdate.length} items`,
           })
 
-          if (result.success) {
-            console.log('[Edit] Successfully updated item:', item.itemId)
-          } else {
-            console.error('[Edit] Failed to update item:', item.itemId, result)
+          // Small delay between batches to avoid overwhelming the API
+          if (i + BATCH_SIZE < itemsToUpdate.length) {
+            await new Promise(resolve => setTimeout(resolve, 500))
           }
         }
 
-        // Refresh items from API
-        const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
+        console.log(`[Edit Users] Complete: ${successCount} succeeded, ${failCount} failed`)
+
+        // Refresh items from API with chunked loading
+        const itemsResponse = await getProjectItems(projectId, { limit: 100, offset: 0 })
         const transformedItems = itemsResponse.items.map((item, index) => ({
           id: index + 1,
           project_item_id: item.project_item_id,
@@ -2028,8 +2059,8 @@ export default function ProcurementDashboard() {
         notifyItemsAssigned(updatedItemIds, selectedUserIds)
 
         toast({
-          title: "Changes Saved",
-          description: `Updated ${selectedItems.length} item(s)`,
+          title: "Users Assigned",
+          description: `Successfully assigned users to ${successCount} item(s)${failCount > 0 ? `, ${failCount} failed` : ''}`,
         })
 
       } catch (error) {
