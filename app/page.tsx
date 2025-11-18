@@ -284,13 +284,17 @@ export default function ProcurementDashboard() {
 
         console.log('[Dashboard] Fetching data for project:', projectId)
 
-        // Fetch overview, items, users, and tags in parallel
-        const [overviewResponse, itemsResponse, usersResponse, tagsResponse] = await Promise.all([
+        // Fetch overview, users, and tags first (fast queries)
+        const [overviewResponse, usersResponse, tagsResponse] = await Promise.all([
           getProjectOverview(projectId),
-          getProjectItems(projectId, { limit: 10000 }),  // Fetch all items (up to 10k)
           getProjectUsers(projectId),
           getProjectTags(projectId)
         ])
+
+        // Load items in smaller chunks to avoid timeout
+        // Start with first 100 items for immediate display
+        const initialItemsResponse = await getProjectItems(projectId, { limit: 100, offset: 0 })
+        console.log('[Dashboard] Initial load:', initialItemsResponse.items.length, 'items of', initialItemsResponse.total)
 
         // Set project data
         setProjectData({
@@ -313,11 +317,11 @@ export default function ProcurementDashboard() {
         console.log('[Dashboard] Available tags:', tagsResponse.total, 'tags:', tagsResponse.tags)
 
         // LOG: Check for duplicates from backend
-        console.log('[Dashboard] Raw items from backend:', itemsResponse.items.length)
-        console.log('[Dashboard] Item codes:', itemsResponse.items.map((item: ProjectItem) => item.item_code))
+        console.log('[Dashboard] Raw items from backend:', initialItemsResponse.items.length)
+        console.log('[Dashboard] Item codes:', initialItemsResponse.items.map((item: ProjectItem) => item.item_code))
 
         // Check for duplicate item_codes
-        const itemCodes = itemsResponse.items.map((item: ProjectItem) => item.item_code)
+        const itemCodes = initialItemsResponse.items.map((item: ProjectItem) => item.item_code)
         const duplicateCodes = itemCodes.filter((code, index) => itemCodes.indexOf(code) !== index)
         if (duplicateCodes.length > 0) {
           console.warn('[Dashboard] ⚠️ DUPLICATE ITEM CODES FROM BACKEND:', duplicateCodes)
@@ -325,7 +329,7 @@ export default function ProcurementDashboard() {
 
         // LOG: Verify tags and custom_tags from backend
         console.log('[Dashboard] Tags and BOM info received from API:')
-        itemsResponse.items.slice(0, 5).forEach((item: ProjectItem) => {
+        initialItemsResponse.items.slice(0, 5).forEach((item: ProjectItem) => {
           console.log(`  ${item.item_code}:`, {
             tags: item.tags || [],
             custom_tags: item.custom_tags || [],
@@ -335,7 +339,7 @@ export default function ProcurementDashboard() {
 
         // Extract all unique spec names for dynamic columns
         const specNamesSet = new Set<string>()
-        itemsResponse.items.forEach(item => {
+        initialItemsResponse.items.forEach(item => {
           item.specifications?.forEach(spec => {
             specNamesSet.add(spec.spec_name)
           })
@@ -345,7 +349,7 @@ export default function ProcurementDashboard() {
         console.log('[Dashboard] Found', uniqueSpecNames.length, 'unique specifications:', uniqueSpecNames)
 
         // Transform API data to match dashboard format
-        const transformedItems = itemsResponse.items.map((item: ProjectItem, index: number) => {
+        const transformedItems = initialItemsResponse.items.map((item: ProjectItem, index: number) => {
           // Create base item
           const baseItem: any = {
             id: index + 1,
@@ -409,14 +413,14 @@ export default function ProcurementDashboard() {
         }
 
         // Store exchange rates for currency conversion
-        if (itemsResponse.exchange_rates) {
-          setExchangeRates(itemsResponse.exchange_rates)
-          console.log('[Dashboard] Loaded exchange rates:', Object.keys(itemsResponse.exchange_rates).length, 'currencies')
+        if (initialItemsResponse.exchange_rates) {
+          setExchangeRates(initialItemsResponse.exchange_rates)
+          console.log('[Dashboard] Loaded exchange rates:', Object.keys(initialItemsResponse.exchange_rates).length, 'currencies')
         }
 
         // Convert distributor pricing from USD to item currency
         const itemsWithConvertedPricing = transformedItems.map(item =>
-          processItemPricing(item, itemsResponse.exchange_rates || {})
+          processItemPricing(item, initialItemsResponse.exchange_rates || {})
         )
 
         console.log('[Dashboard] Applied currency conversion to all items')
@@ -424,14 +428,21 @@ export default function ProcurementDashboard() {
         setLineItems(itemsWithConvertedPricing)
         setLoading(false)
 
-        // Handle Digikey status - ALWAYS use background processing (no blocking!)
-        if (itemsResponse.digikey_status) {
-          console.log('[Dashboard] Digikey status:', itemsResponse.digikey_status)
+        // Load remaining items in background if there are more
+        const totalItems = initialItemsResponse.total
+        if (totalItems > 100) {
+          console.log(`[Dashboard] Loading remaining ${totalItems - 100} items in background...`)
+          loadRemainingItems(projectId, initialItemsResponse.exchange_rates || {}, uniqueSpecNames)
+        }
 
-          if (itemsResponse.digikey_status === 'background_job_started') {
+        // Handle Digikey status - ALWAYS use background processing (no blocking!)
+        if (initialItemsResponse.digikey_status) {
+          console.log('[Dashboard] Digikey status:', initialItemsResponse.digikey_status)
+
+          if (initialItemsResponse.digikey_status === 'background_job_started') {
             // Background job for uncached items
-            const uncachedCount = itemsResponse.digikey_uncached_count || itemsResponse.uncached_count || 0
-            const jobId = itemsResponse.digikey_job_id || itemsResponse.job_id
+            const uncachedCount = initialItemsResponse.digikey_uncached_count || initialItemsResponse.uncached_count || 0
+            const jobId = initialItemsResponse.digikey_job_id || initialItemsResponse.job_id
 
             console.log(`🔄 Digikey background job started for ${uncachedCount} items`)
 
@@ -457,13 +468,13 @@ export default function ProcurementDashboard() {
         }
 
         // Handle Mouser status - ALWAYS use background processing (no blocking!)
-        if (itemsResponse.mouser_status) {
-          console.log('[Dashboard] Mouser status:', itemsResponse.mouser_status)
+        if (initialItemsResponse.mouser_status) {
+          console.log('[Dashboard] Mouser status:', initialItemsResponse.mouser_status)
 
-          if (itemsResponse.mouser_status === 'background_job_started') {
+          if (initialItemsResponse.mouser_status === 'background_job_started') {
             // Background job for uncached items
-            const uncachedCount = itemsResponse.mouser_uncached_count || 0
-            const jobId = itemsResponse.mouser_job_id
+            const uncachedCount = initialItemsResponse.mouser_uncached_count || 0
+            const jobId = initialItemsResponse.mouser_job_id
 
             console.log(`🔄 Mouser background job started for ${uncachedCount} items`)
 
@@ -496,6 +507,103 @@ export default function ProcurementDashboard() {
 
     loadProjectData()
   }, [])
+
+  // Load remaining items in background (for large projects)
+  const loadRemainingItems = async (projectId: string, exchangeRates: Record<string, number>, uniqueSpecNames: string[]) => {
+    try {
+      const CHUNK_SIZE = 200
+      let offset = 100 // We already loaded first 100
+      let hasMore = true
+      let allNewItems: any[] = []
+
+      while (hasMore) {
+        console.log(`[Background Load] Fetching items ${offset} to ${offset + CHUNK_SIZE}...`)
+
+        const chunkResponse = await getProjectItems(projectId, { limit: CHUNK_SIZE, offset })
+
+        if (!chunkResponse.items || chunkResponse.items.length === 0) {
+          hasMore = false
+          break
+        }
+
+        // Transform and convert these items
+        const transformedChunk = chunkResponse.items.map((item: ProjectItem, index: number) => {
+          const baseItem: any = {
+            id: offset + index + 1,
+            project_item_id: item.project_item_id,
+            customer: '',
+            itemId: item.item_code,
+            description: item.item_name,
+            quantity: item.quantity,
+            unit: item.measurement_unit?.abbreviation || '',
+            category: (item.custom_tags || []).length > 0
+              ? (item.custom_tags || []).join(', ')
+              : 'Uncategorized',
+            assignedTo: item.assigned_users.map(u => u.name).join(', '),
+            assigned_user_ids: item.assigned_users.map(u => u.user_id),
+            unitPrice: item.rate || 0,
+            totalPrice: item.amount || 0,
+            currency: item.currency,
+            vendor: '',
+            action: '',
+            dueDate: '',
+            source: '',
+            pricePO: 0,
+            priceContract: 0,
+            priceQuote: 0,
+            priceDigikey: 0,
+            priceMouser: 0,
+            priceEXIM: 0,
+            manuallyEdited: item.custom_fields?.manually_edited || false,
+            bom_info: item.bom_info || {
+              is_bom_item: false,
+              bom_id: null,
+              bom_code: null,
+              bom_name: null,
+              bom_item_id: null,
+              bom_module_linkage_id: null,
+            },
+          }
+
+          // Add dynamic spec columns
+          uniqueSpecNames.forEach(specName => {
+            const spec = item.specifications?.find(s => s.spec_name === specName)
+            baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
+          })
+
+          // Add pricing data
+          baseItem.digikey_pricing = item.digikey_pricing || null
+          baseItem.mouser_pricing = item.mouser_pricing || null
+
+          return baseItem
+        })
+
+        // Convert pricing
+        const convertedChunk = transformedChunk.map(item => processItemPricing(item, exchangeRates))
+
+        allNewItems = [...allNewItems, ...convertedChunk]
+
+        // Append to existing items
+        setLineItems(prevItems => [...prevItems, ...convertedChunk])
+
+        console.log(`[Background Load] Loaded ${convertedChunk.length} more items (total: ${offset + convertedChunk.length})`)
+
+        offset += CHUNK_SIZE
+
+        // Check if we've loaded everything
+        if (chunkResponse.items.length < CHUNK_SIZE) {
+          hasMore = false
+        }
+
+        // Small delay to avoid overwhelming the API
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+
+      console.log(`[Background Load] ✅ Finished loading all ${offset} items`)
+    } catch (error) {
+      console.error('[Background Load] Error loading remaining items:', error)
+    }
+  }
 
   // Poll Digikey job progress
   const pollDigikeyJobProgress = async (jobId: string) => {
