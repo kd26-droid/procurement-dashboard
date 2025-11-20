@@ -1044,27 +1044,56 @@ export default function ProcurementDashboard() {
 
   const dynamicMetrics = useMemo(() => {
     const totalItems = lineItems.length
-    const totalValue = lineItems.reduce((sum: number, item: any) => sum + item.totalPrice, 0)
+
+    // Calculate total value: sum of (quantity × unit_price)
+    const totalValue = lineItems.reduce((sum: number, item: any) => {
+      return sum + (item.quantity * item.unitPrice)
+    }, 0)
+
+    // Calculate average value per item: total value / number of items
     const avgPrice = totalItems > 0 ? totalValue / totalItems : 0
 
     const totalVendors = lineItems.filter((item: any) => item.vendor && item.vendor.trim() !== "").length
     const avgVendorsPerItem = totalItems > 0 ? totalVendors / totalItems : 0
 
+    // Determine currency display
+    const currencies = Array.from(new Set(
+      lineItems
+        .map((item: any) => item.currency?.code || item.currency?.symbol)
+        .filter(Boolean)
+    ))
+    const hasMultipleCurrencies = currencies.length > 1
+    const currencySymbol = hasMultipleCurrencies
+      ? '?'
+      : (lineItems[0]?.currency?.symbol || '$')
+
+    // Format value with proper K/M/B suffix
+    const formatValue = (value: number) => {
+      if (value >= 1000000) {
+        return `${(value / 1000000).toFixed(1)}M`
+      } else if (value >= 1000) {
+        return `${(value / 1000).toFixed(1)}K`
+      } else {
+        return value.toFixed(2)
+      }
+    }
+
     return [
       {
         label: "Total Value",
-        value: `$${(totalValue / 1000).toFixed(1)}K`,
-        icon: DollarSign,
+        value: `${currencySymbol}${formatValue(totalValue)}`,
+        icon: FileText,
         trendIcon: TrendingUp,
         trendValue: "+35.2%",
         bgColor: "bg-gradient-to-br from-purple-50 to-purple-100",
         textColor: "text-purple-600",
         valueColor: "text-purple-900",
         iconColor: "text-purple-500",
+        tooltip: hasMultipleCurrencies ? "Multiple currencies detected" : undefined,
       },
       {
         label: "Avg Price",
-        value: `$${(avgPrice / 1000).toFixed(1)}K`,
+        value: `${currencySymbol}${formatValue(avgPrice)}`,
         icon: BarChart3,
         trendIcon: TrendingUp,
         trendValue: "+15.3%",
@@ -1072,6 +1101,7 @@ export default function ProcurementDashboard() {
         textColor: "text-teal-600",
         valueColor: "text-teal-900",
         iconColor: "text-teal-500",
+        tooltip: hasMultipleCurrencies ? "Multiple currencies detected" : undefined,
       },
       {
         label: "# of Items",
@@ -2771,7 +2801,7 @@ export default function ProcurementDashboard() {
               {dynamicMetrics.map((metric, index) => {
                 const Icon = metric.icon
                 const TrendIcon = metric.trendIcon
-                return (
+                const content = (
                   <div key={index} className={`rounded-lg shadow-sm ${metric.bgColor} p-3`}>
                     <div className="flex items-center justify-between">
                       <div>
@@ -2792,6 +2822,18 @@ export default function ProcurementDashboard() {
                     </div>
                   </div>
                 )
+
+                // Wrap with tooltip if tooltip text exists
+                return metric.tooltip ? (
+                  <UiTooltip key={index}>
+                    <UiTooltipTrigger asChild>
+                      {content}
+                    </UiTooltipTrigger>
+                    <UiTooltipContent>
+                      <p>{metric.tooltip}</p>
+                    </UiTooltipContent>
+                  </UiTooltip>
+                ) : content
               })}
             </div>
           </div>
