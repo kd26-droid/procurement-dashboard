@@ -1989,7 +1989,7 @@ export default function ProcurementDashboard() {
           })
           .filter((id: string | undefined): id is string => id !== undefined)
 
-        console.log('[Edit] Assigning users:', assignedUserNames, 'IDs:', selectedUserIds)
+        console.log('[Edit] New users from form:', assignedUserNames, 'IDs:', selectedUserIds)
 
         // Update items in batches to avoid timeout
         const itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
@@ -2002,9 +2002,17 @@ export default function ProcurementDashboard() {
           console.log(`[Edit Users] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(itemsToUpdate.length / BATCH_SIZE)} (${batch.length} items)`)
 
           // Update all items in this batch in parallel
-          const batchPromises = batch.map(item =>
-            updateProjectItem(projectId, item.project_item_id, {
-              assigned_user_ids: selectedUserIds,
+          const batchPromises = batch.map(item => {
+            // Merge new users with existing users for this item
+            const existingUserIds = item.assigned_user_ids || []
+
+            // Combine and deduplicate
+            const mergedUserIds = Array.from(new Set([...existingUserIds, ...selectedUserIds]))
+
+            console.log(`[Edit Users] Item ${item.itemId}: ${existingUserIds.length} existing + ${selectedUserIds.length} new = ${mergedUserIds.length} total users`)
+
+            return updateProjectItem(projectId, item.project_item_id, {
+              assigned_user_ids: mergedUserIds,
               custom_fields: {
                 manually_edited: true,
                 last_manual_edit: new Date().toISOString()
@@ -2023,7 +2031,7 @@ export default function ProcurementDashboard() {
               console.error('[Edit Users] Error updating item:', item.itemId, error)
               return { success: false, itemId: item.itemId, error }
             })
-          )
+          })
 
           await Promise.all(batchPromises)
 
@@ -2096,14 +2104,15 @@ export default function ProcurementDashboard() {
 
         const itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
 
-        // Get all current custom_tags (this is the complete list we want to save)
-        const allCustomTags = editFormData.category
+        // Get new tags from edit form
+        const newTagsFromForm = editFormData.category
           .split(',')
           .map((t: string) => t.trim())
           .filter(Boolean)
           .filter((t: string) => t !== 'Uncategorized') // Never send "Uncategorized" placeholder
 
-        console.log('[Edit Tags] Saving custom_tags:', allCustomTags)
+        console.log('[Edit Tags] New tags from form:', newTagsFromForm)
+        console.log('[Edit Tags] Updating', itemsToUpdate.length, 'items - merging with existing tags')
 
         // Update items in batches to avoid timeout
         const BATCH_SIZE = 50
@@ -2115,12 +2124,22 @@ export default function ProcurementDashboard() {
           console.log(`[Edit Tags] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(itemsToUpdate.length / BATCH_SIZE)} (${batch.length} items)`)
 
           // Update all items in this batch in parallel
-          const batchPromises = batch.map(item =>
-            updateItemTags(
+          const batchPromises = batch.map(item => {
+            // Merge new tags with existing tags for this item
+            const existingTags = item.category && item.category !== 'Uncategorized'
+              ? item.category.split(',').map((t: string) => t.trim()).filter(Boolean)
+              : []
+
+            // Combine and deduplicate
+            const mergedTags = Array.from(new Set([...existingTags, ...newTagsFromForm]))
+
+            console.log(`[Edit Tags] Item ${item.itemId}: ${existingTags.join(', ')} → ${mergedTags.join(', ')}`)
+
+            return updateItemTags(
               projectId,
               item.project_item_id,
               undefined,      // tags (enterprise-level, never modified from Strategy Dashboard)
-              allCustomTags   // custom_tags (complete list to replace existing)
+              mergedTags      // custom_tags (merged with existing)
             ).then(result => {
               if (result.success) {
                 successCount++
@@ -2135,7 +2154,7 @@ export default function ProcurementDashboard() {
               console.error('[Edit Tags] Error updating item:', item.itemId, error)
               return { success: false, itemId: item.itemId, error }
             })
-          )
+          })
 
           await Promise.all(batchPromises)
 
