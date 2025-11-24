@@ -43,6 +43,29 @@ import {
 } from "lucide-react"
 
 /**
+ * Format cached_at timestamp to human-readable format
+ */
+function formatCachedDate(isoString: string | null | undefined): string {
+  if (!isoString) return '';
+
+  const date = new Date(isoString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffHours = diffMs / (1000 * 60 * 60);
+  const diffDays = diffMs / (1000 * 60 * 60 * 24);
+
+  if (diffHours < 1) {
+    return "just now";
+  } else if (diffHours < 24) {
+    return `${Math.floor(diffHours)} hours ago`;
+  } else if (diffDays < 7) {
+    return `${Math.floor(diffDays)} days ago`;
+  } else {
+    return date.toLocaleDateString(); // e.g., "11/24/2025"
+  }
+}
+
+/**
  * Convert distributor pricing from USD to item currency
  * Handles: unit_price, quantity_price, price_breaks, savings_info, next_tier_info
  */
@@ -3812,6 +3835,13 @@ export default function ProcurementDashboard() {
                                   <div className="space-y-2 text-sm p-2">
                                     <div className="font-semibold text-base text-gray-900 border-b border-gray-300 pb-1.5">Digi-Key Pricing</div>
 
+                                    {pricing.cached_at && (
+                                      <div className="flex justify-between text-xs text-gray-500 italic">
+                                        <span>Last updated:</span>
+                                        <span>{formatCachedDate(pricing.cached_at)}</span>
+                                      </div>
+                                    )}
+
                                     {pricing.item_quantity && (
                                       <div className="flex justify-between text-xs">
                                         <span className="text-gray-600">Order Quantity:</span>
@@ -3948,6 +3978,13 @@ export default function ProcurementDashboard() {
                                 <UiTooltipContent side="left" className="max-w-sm bg-white border border-gray-300 shadow-lg">
                                   <div className="space-y-2 text-sm p-2">
                                     <div className="font-semibold text-base text-gray-900 border-b border-gray-300 pb-1.5">Mouser Pricing</div>
+
+                                    {pricing.cached_at && (
+                                      <div className="flex justify-between text-xs text-gray-500 italic">
+                                        <span>Last updated:</span>
+                                        <span>{formatCachedDate(pricing.cached_at)}</span>
+                                      </div>
+                                    )}
 
                                     {pricing.item_quantity && (
                                       <div className="flex justify-between text-xs">
