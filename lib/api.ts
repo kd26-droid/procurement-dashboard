@@ -406,6 +406,7 @@ export async function getProjectItems(
     offset?: number;
     search?: string;
     has_user?: boolean;
+    skip_pricing_jobs?: boolean; // Don't trigger Digikey/Mouser jobs
   }
 ): Promise<ProjectItemsResponse> {
   const params = new URLSearchParams();
@@ -414,6 +415,7 @@ export async function getProjectItems(
   if (options?.offset) params.append('offset', options.offset.toString());
   if (options?.search) params.append('search', options.search);
   if (options?.has_user !== undefined) params.append('has_user', options.has_user.toString());
+  if (options?.skip_pricing_jobs) params.append('skip_pricing_jobs', 'true');
 
   const queryString = params.toString();
   const endpoint = `/organization/project/${projectId}/strategy/items/${queryString ? '?' + queryString : ''}`;
@@ -706,5 +708,33 @@ export async function getLatestMouserJob(
 ): Promise<DigikeyJobStatus> { // Same interface structure
   return apiRequest(
     `/organization/project/${projectId}/strategy/mouser/job/latest/`
+  );
+}
+
+/**
+ * Manually trigger Digikey pricing job for all items
+ */
+export async function triggerDigikeyPricing(
+  projectId: string
+): Promise<DigikeyJobStatus> {
+  return apiRequest(
+    `/organization/project/${projectId}/strategy/digikey/fetch/`,
+    {
+      method: 'POST'
+    }
+  );
+}
+
+/**
+ * Manually trigger Mouser pricing job for all items
+ */
+export async function triggerMouserPricing(
+  projectId: string
+): Promise<DigikeyJobStatus> { // Same interface structure
+  return apiRequest(
+    `/organization/project/${projectId}/strategy/mouser/fetch/`,
+    {
+      method: 'POST'
+    }
   );
 }

@@ -298,7 +298,8 @@ export default function ProcurementDashboard() {
 
         // Load items in smaller chunks to avoid timeout
         // Start with first 100 items for immediate display
-        const initialItemsResponse = await getProjectItems(projectId, { limit: 100, offset: 0 })
+        // IMPORTANT: Skip pricing jobs on initial load - we'll trigger them after all data is loaded
+        const initialItemsResponse = await getProjectItems(projectId, { limit: 100, offset: 0, skip_pricing_jobs: true })
         console.log('[Dashboard] Initial load:', initialItemsResponse.items.length, 'items of', initialItemsResponse.total)
 
         // Set project data
@@ -439,72 +440,10 @@ export default function ProcurementDashboard() {
           console.log(`[Dashboard] Loading remaining ${totalItems - 100} items in background...`)
           loadRemainingItems(projectId, initialItemsResponse.exchange_rates || {}, uniqueSpecNames, totalItems)
         } else {
-          // All items loaded initially
+          // All items loaded initially - trigger pricing jobs
           setAllItemsLoaded(true)
-        }
-
-        // Handle Digikey status - ALWAYS use background processing (no blocking!)
-        if (initialItemsResponse.digikey_status) {
-          console.log('[Dashboard] Digikey status:', initialItemsResponse.digikey_status)
-
-          if (initialItemsResponse.digikey_status === 'background_job_started') {
-            // Background job for uncached items
-            const uncachedCount = initialItemsResponse.digikey_uncached_count || initialItemsResponse.uncached_count || 0
-            const jobId = initialItemsResponse.digikey_job_id || initialItemsResponse.job_id
-
-            console.log(`🔄 Digikey background job started for ${uncachedCount} items`)
-
-            setDigikeyJob({
-              job_id: jobId,
-              status: 'processing',
-              uncached_count: uncachedCount,
-              progress_percentage: 0,
-              total_items: uncachedCount,
-              processed_items: 0,
-              successful_items: 0,
-              failed_items: 0
-            })
-
-            // Start polling
-            if (jobId) {
-              pollDigikeyJobProgress(jobId)
-            }
-          } else {
-            // All cached or processing complete
-            console.log('✅ Digikey pricing ready')
-          }
-        }
-
-        // Handle Mouser status - ALWAYS use background processing (no blocking!)
-        if (initialItemsResponse.mouser_status) {
-          console.log('[Dashboard] Mouser status:', initialItemsResponse.mouser_status)
-
-          if (initialItemsResponse.mouser_status === 'background_job_started') {
-            // Background job for uncached items
-            const uncachedCount = initialItemsResponse.mouser_uncached_count || 0
-            const jobId = initialItemsResponse.mouser_job_id
-
-            console.log(`🔄 Mouser background job started for ${uncachedCount} items`)
-
-            setMouserJob({
-              job_id: jobId,
-              status: 'processing',
-              uncached_count: uncachedCount,
-              progress_percentage: 0,
-              total_items: uncachedCount,
-              processed_items: 0,
-              successful_items: 0,
-              failed_items: 0
-            })
-
-            // Start polling
-            if (jobId) {
-              pollMouserJobProgress(jobId)
-            }
-          } else {
-            // All cached or processing complete
-            console.log('✅ Mouser pricing ready')
-          }
+          console.log(`[Dashboard] All ${totalItems} items loaded, triggering pricing jobs...`)
+          triggerPricingJobs(projectId)
         }
       } catch (error) {
         console.error('[Dashboard] Error loading data:', error)
@@ -530,7 +469,7 @@ export default function ProcurementDashboard() {
       while (hasMore) {
         console.log(`[Background Load] Fetching items ${offset} to ${offset + CHUNK_SIZE}...`)
 
-        const chunkResponse = await getProjectItems(projectId, { limit: CHUNK_SIZE, offset })
+        const chunkResponse = await getProjectItems(projectId, { limit: CHUNK_SIZE, offset, skip_pricing_jobs: true })
 
         if (!chunkResponse.items || chunkResponse.items.length === 0) {
           hasMore = false
@@ -614,12 +553,95 @@ export default function ProcurementDashboard() {
         await new Promise(resolve => setTimeout(resolve, 500))
       }
 
-      console.log(`[Background Load] ✅ Finished loading all items`)
+      console.log(`[Background Load] ✅ Finished loading all ${totalItems} items`)
       setAllItemsLoaded(true)
       setIsLoadingAllItems(false)
+
+      // Now trigger pricing jobs for all loaded items
+      console.log(`[Background Load] Triggering pricing jobs for all items...`)
+      triggerPricingJobs(projectId)
     } catch (error) {
       console.error('[Background Load] Error loading remaining items:', error)
       setIsLoadingAllItems(false)
+    }
+  }
+
+  // Trigger pricing jobs for all loaded items
+  const triggerPricingJobs = async (projectId: string) => {
+    try {
+      console.log('[Pricing Jobs] All items loaded. Triggering pricing by fetching items without skip_pricing_jobs flag...')
+
+      // Call getProjectItems WITHOUT skip_pricing_jobs to trigger backend pricing jobs
+      const response = await getProjectItems(projectId, { limit: 1 })
+
+      console.log('[Pricing Jobs] Response:', response)
+
+      // Handle Digikey status
+      if (response.digikey_status === 'background_job_started') {
+        const uncachedCount = response.digikey_uncached_count || 0
+        const jobId = response.digikey_job_id
+
+        console.log(`🔄 Digikey background job started for ${uncachedCount} items`)
+
+        setDigikeyJob({
+          job_id: jobId,
+          status: 'processing',
+          uncached_count: uncachedCount,
+          progress_percentage: 0,
+          total_items: uncachedCount,
+          processed_items: 0,
+          successful_items: 0,
+          failed_items: 0
+        })
+
+        // Start polling
+        if (jobId) {
+          pollDigikeyJobProgress(jobId)
+        }
+      } else {
+        console.log('✅ Digikey pricing already cached')
+      }
+
+      // Handle Mouser status
+      if (response.mouser_status === 'background_job_started') {
+        const uncachedCount = response.mouser_uncached_count || 0
+        const jobId = response.mouser_job_id
+
+        console.log(`🔄 Mouser background job started for ${uncachedCount} items`)
+
+        setMouserJob({
+          job_id: jobId,
+          status: 'processing',
+          uncached_count: uncachedCount,
+          progress_percentage: 0,
+          total_items: uncachedCount,
+          processed_items: 0,
+          successful_items: 0,
+          failed_items: 0
+        })
+
+        // Start polling
+        if (jobId) {
+          pollMouserJobProgress(jobId)
+        }
+      } else {
+        console.log('✅ Mouser pricing already cached')
+      }
+
+      if (response.digikey_status === 'background_job_started' || response.mouser_status === 'background_job_started') {
+        toast({
+          title: "Pricing Jobs Started",
+          description: "Fetching Digikey and Mouser pricing for all items...",
+        })
+      }
+
+    } catch (error) {
+      console.error('[Pricing Jobs] Error triggering pricing jobs:', error)
+      toast({
+        title: "Error",
+        description: "Failed to start pricing jobs",
+        variant: "destructive",
+      })
     }
   }
 
@@ -662,7 +684,7 @@ export default function ProcurementDashboard() {
 
             while (retryCount < maxRetries) {
               console.log(`[Digikey Poll] Attempt ${retryCount + 1}/${maxRetries} - Fetching items...`)
-              itemsResponse = await getProjectItems(projectId, { limit: 10000 })
+              itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
 
               if (!itemsResponse.items || itemsResponse.items.length === 0) {
                 console.error('[Digikey Poll] ERROR: No items in response!', itemsResponse)
@@ -829,7 +851,7 @@ export default function ProcurementDashboard() {
             })
 
             // Refresh items to get the new pricing
-            const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
+            const itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
 
             // Extract specs
             const specNamesSet = new Set<string>()
