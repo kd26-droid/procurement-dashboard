@@ -595,7 +595,8 @@ export default function ProcurementDashboard() {
       console.log('[Pricing Jobs] All items loaded. Triggering pricing by fetching items without skip_pricing_jobs flag...')
 
       // Call getProjectItems WITHOUT skip_pricing_jobs to trigger backend pricing jobs
-      const response = await getProjectItems(projectId, { limit: 1 })
+      // Use high limit to ensure backend processes ALL items in project
+      const response = await getProjectItems(projectId, { limit: 10000 })
 
       console.log('[Pricing Jobs] Response:', response)
 
