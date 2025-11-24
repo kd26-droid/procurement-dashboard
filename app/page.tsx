@@ -1400,7 +1400,7 @@ export default function ProcurementDashboard() {
 
       if (result.success) {
         // Refresh items from API
-        const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
+        const itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
         const transformedItems = itemsResponse.items.map((item, index) => ({
           id: index + 1,
           project_item_id: item.project_item_id,
@@ -1514,7 +1514,7 @@ export default function ProcurementDashboard() {
         console.log('[Manual Assign] Successfully assigned users to item')
 
         // Refresh items from API to get latest data
-        const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
+        const itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
         const transformedItems = itemsResponse.items.map((item, index) => ({
           id: index + 1,
           project_item_id: item.project_item_id,
@@ -1756,7 +1756,7 @@ export default function ProcurementDashboard() {
         }
 
         // Refresh items from API to get latest data
-        const itemsResponse = await getProjectItems(projectId, { limit: 10000 })
+        const itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
         const transformedItems = itemsResponse.items.map((item, index) => ({
           id: index + 1,
           project_item_id: item.project_item_id,
@@ -2102,7 +2102,7 @@ export default function ProcurementDashboard() {
         console.log(`[Edit Users] Complete: ${successCount} succeeded, ${failCount} failed`)
 
         // Refresh items from API with chunked loading
-        const itemsResponse = await getProjectItems(projectId, { limit: 100, offset: 0 })
+        const itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
         const transformedItems = itemsResponse.items.map((item, index) => ({
           id: index + 1,
           project_item_id: item.project_item_id,
@@ -2225,7 +2225,7 @@ export default function ProcurementDashboard() {
         console.log(`[Edit Tags] Complete: ${successCount} succeeded, ${failCount} failed`)
 
         // Refresh items from API with chunked loading
-        const itemsResponse = await getProjectItems(projectId, { limit: 100, offset: 0 })
+        const itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
         const transformedItems = itemsResponse.items.map((item, index) => ({
           id: index + 1,
           project_item_id: item.project_item_id,
