@@ -2022,6 +2022,8 @@ export default function ProcurementDashboard() {
       const item = itemsToEdit[0]
       // Filter out "Uncategorized" placeholder - it's not a real tag
       const actualCategory = item.category === 'Uncategorized' ? '' : (item.category || '')
+      const assignedToValue = item.assignedTo || ''
+      const assignedUserIds = item.assigned_user_ids || []
       setEditFormData({
         isBulk: false,
         itemCount: 1,
@@ -2029,7 +2031,9 @@ export default function ProcurementDashboard() {
         category: actualCategory,
         originalCategory: actualCategory, // Track original tags
         vendor: item.vendor || '',
-        assignedTo: item.assignedTo || '',
+        assignedTo: assignedToValue,
+        originalAssignedTo: assignedToValue, // Track original users for single item too
+        originalAssignedUserIds: assignedUserIds, // Track original user IDs
         action: item.action || '',
         unitPrice: item.unitPrice || 0,
         rate: item.unitPrice || 0,
@@ -2115,15 +2119,11 @@ export default function ProcurementDashboard() {
     console.log('[Edit] Saving changes for', selectedItems.length, 'items')
     console.log('[Edit] Form data:', editFormData)
 
-    // Check if assignedTo changed - for bulk edit, compare with original
-    const assignedToChanged = editFormData.isBulk
-      ? editFormData.assignedTo !== editFormData.originalAssignedTo
-      : editFormData.assignedTo !== undefined && editFormData.assignedTo !== null && editFormData.assignedTo !== ''
+    // Check if assignedTo changed - compare with original for both single and bulk
+    const assignedToChanged = editFormData.assignedTo !== editFormData.originalAssignedTo
 
-    // Check if category changed - for bulk edit, compare with original
-    const categoryChanged = editFormData.isBulk
-      ? editFormData.category !== editFormData.originalCategory
-      : editFormData.category !== undefined && editFormData.category !== null
+    // Check if category changed - compare with original for both single and bulk
+    const categoryChanged = editFormData.category !== editFormData.originalCategory
 
     // If either users or tags changed, update via API
     if (assignedToChanged || categoryChanged) {
