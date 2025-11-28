@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useMemo, useEffect } from "react"
+import { useState, useMemo, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -219,6 +219,9 @@ export default function ProcurementDashboard() {
   const [projectUsers, setProjectUsers] = useState<Array<{user_id: string, name: string, email: string, role: string}>>([])
   const [availableTags, setAvailableTags] = useState<string[]>([])
   const [tagSearchTerm, setTagSearchTerm] = useState("")
+
+  // Ref to prevent double loading in React Strict Mode
+  const loadingStartedRef = useRef(false)
   const [vendorSearchTerm, setVendorSearchTerm] = useState("")
   const [userSearchTerm, setUserSearchTerm] = useState("")
   const [selectedItems, setSelectedItems] = useState<number[]>([])
@@ -332,6 +335,13 @@ export default function ProcurementDashboard() {
 
   // Load project data from API
   useEffect(() => {
+    // Prevent double loading in React Strict Mode
+    if (loadingStartedRef.current) {
+      console.log('[Dashboard] Skipping duplicate load (Strict Mode)')
+      return
+    }
+    loadingStartedRef.current = true
+
     async function loadProjectData() {
       try {
         setLoading(true)
@@ -2049,13 +2059,35 @@ export default function ProcurementDashboard() {
         .map(([tag, _]) => tag)
         .join(', ')
 
+      // Get all user IDs from selected items
+      const allUserIdsFromSelected = itemsToEdit
+        .flatMap((item: any) => item.assigned_user_ids || [])
+
+      // Find user IDs that are common to ALL selected items
+      const userIdCounts = allUserIdsFromSelected.reduce((acc: any, userId: string) => {
+        acc[userId] = (acc[userId] || 0) + 1
+        return acc
+      }, {})
+
+      const commonUserIds = Object.entries(userIdCounts)
+        .filter(([_, count]) => count === selectedItems.length)
+        .map(([userId, _]) => userId)
+
+      // Convert user IDs to names
+      const commonUserNames = projectUsers
+        .filter((u: any) => commonUserIds.includes(u.user_id))
+        .map((u: any) => u.name)
+        .join(', ')
+
       setEditFormData({
         isBulk: true,
         itemCount: selectedItems.length,
         category: commonTags,  // Show common tags
         originalCategory: commonTags, // Track original tags
         vendor: '',
-        assignedTo: '',
+        assignedTo: commonUserNames, // Show common users
+        originalAssignedTo: commonUserNames, // Track original users
+        originalAssignedUserIds: commonUserIds, // Track original user IDs
         action: '',
         unitPrice: 0,
         rate: 0,
@@ -2083,120 +2115,176 @@ export default function ProcurementDashboard() {
     console.log('[Edit] Saving changes for', selectedItems.length, 'items')
     console.log('[Edit] Form data:', editFormData)
 
-    // If assignedTo is being changed, update via API
-    if (editFormData.assignedTo !== undefined && editFormData.assignedTo !== null && editFormData.assignedTo !== '') {
+    // Check if assignedTo changed - for bulk edit, compare with original
+    const assignedToChanged = editFormData.isBulk
+      ? editFormData.assignedTo !== editFormData.originalAssignedTo
+      : editFormData.assignedTo !== undefined && editFormData.assignedTo !== null && editFormData.assignedTo !== ''
+
+    // Check if category changed - for bulk edit, compare with original
+    const categoryChanged = editFormData.isBulk
+      ? editFormData.category !== editFormData.originalCategory
+      : editFormData.category !== undefined && editFormData.category !== null
+
+    // If either users or tags changed, update via API
+    if (assignedToChanged || categoryChanged) {
       try {
-        // Convert assigned user names to user IDs
-        const assignedUserNames = editFormData.assignedTo
-          .split(',')
-          .map((name: string) => name.trim())
-          .filter(Boolean)
-
-        const selectedUserIds = assignedUserNames
-          .map((userName: string) => {
-            const user = projectUsers.find(u => u.name === userName)
-            return user?.user_id
-          })
-          .filter((id: string | undefined): id is string => id !== undefined)
-
-        console.log('[Edit] New users from form:', assignedUserNames, 'IDs:', selectedUserIds)
-
-        // Update items in batches to avoid timeout
         const itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
         const BATCH_SIZE = 50
         let successCount = 0
         let failCount = 0
 
+        // Prepare user data if changed
+        let newUserIdsFromForm: string[] = []
+        let originalCommonUserIds: string[] = []
+        if (assignedToChanged) {
+          const assignedUserNames = (editFormData.assignedTo || '')
+            .split(',')
+            .map((name: string) => name.trim())
+            .filter(Boolean)
+
+          newUserIdsFromForm = assignedUserNames
+            .map((userName: string) => {
+              const user = projectUsers.find(u => u.name === userName)
+              return user?.user_id
+            })
+            .filter((id: string | undefined): id is string => id !== undefined)
+
+          originalCommonUserIds = editFormData.originalAssignedUserIds || []
+          console.log('[Edit] Users changed - original:', originalCommonUserIds, 'new:', newUserIdsFromForm)
+        }
+
+        // Prepare tag data if changed
+        let newTagsFromForm: string[] = []
+        let originalCommonTags: string[] = []
+        if (categoryChanged) {
+          newTagsFromForm = (editFormData.category || '')
+            .split(',')
+            .map((t: string) => t.trim())
+            .filter(Boolean)
+            .filter((t: string) => t !== 'Uncategorized')
+
+          originalCommonTags = (editFormData.originalCategory || '')
+            .split(',')
+            .map((t: string) => t.trim())
+            .filter(Boolean)
+          console.log('[Edit] Tags changed - original:', originalCommonTags, 'new:', newTagsFromForm)
+        }
+
+        console.log(`[Edit] Updating ${itemsToUpdate.length} items (users: ${assignedToChanged}, tags: ${categoryChanged})`)
+
         for (let i = 0; i < itemsToUpdate.length; i += BATCH_SIZE) {
           const batch = itemsToUpdate.slice(i, i + BATCH_SIZE)
-          console.log(`[Edit Users] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(itemsToUpdate.length / BATCH_SIZE)} (${batch.length} items)`)
+          console.log(`[Edit] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(itemsToUpdate.length / BATCH_SIZE)} (${batch.length} items)`)
 
-          // Update all items in this batch in parallel
-          const batchPromises = batch.map(item => {
-            // Merge new users with existing users for this item
-            const existingUserIds = item.assigned_user_ids || []
+          // Update all items in this batch in parallel - BOTH users and tags at once
+          const batchPromises = batch.map(async item => {
+            const promises: Promise<any>[] = []
 
-            // Combine and deduplicate
-            const mergedUserIds = Array.from(new Set([...existingUserIds, ...selectedUserIds]))
+            // Update users if changed
+            if (assignedToChanged) {
+              const existingUserIds = item.assigned_user_ids || []
+              const itemSpecificUserIds = existingUserIds.filter((id: string) => !originalCommonUserIds.includes(id))
+              const finalUserIds = Array.from(new Set([...itemSpecificUserIds, ...newUserIdsFromForm]))
 
-            console.log(`[Edit Users] Item ${item.itemId}: ${existingUserIds.length} existing + ${selectedUserIds.length} new = ${mergedUserIds.length} total users`)
+              promises.push(
+                updateProjectItem(projectId, item.project_item_id, {
+                  assigned_user_ids: finalUserIds,
+                  custom_fields: { manually_edited: true, last_manual_edit: new Date().toISOString() }
+                })
+              )
+            }
 
-            return updateProjectItem(projectId, item.project_item_id, {
-              assigned_user_ids: mergedUserIds,
-              custom_fields: {
-                manually_edited: true,
-                last_manual_edit: new Date().toISOString()
-              }
-            }).then(result => {
-              if (result.success) {
-                successCount++
-                return { success: true, itemId: item.itemId }
-              } else {
-                failCount++
-                console.error('[Edit Users] Failed to update item:', item.itemId, result)
-                return { success: false, itemId: item.itemId }
-              }
-            }).catch(error => {
-              failCount++
-              console.error('[Edit Users] Error updating item:', item.itemId, error)
+            // Update tags if changed
+            if (categoryChanged) {
+              const existingTags = item.category && item.category !== 'Uncategorized'
+                ? item.category.split(',').map((t: string) => t.trim()).filter(Boolean)
+                : []
+              const itemSpecificTags = existingTags.filter((t: string) => !originalCommonTags.includes(t))
+              const finalTags = Array.from(new Set([...itemSpecificTags, ...newTagsFromForm]))
+
+              promises.push(
+                updateItemTags(projectId, item.project_item_id, undefined, finalTags)
+              )
+            }
+
+            // Run both in parallel for this item
+            try {
+              await Promise.all(promises)
+              return { success: true, itemId: item.itemId }
+            } catch (error) {
+              console.error('[Edit] Error updating item:', item.itemId, error)
               return { success: false, itemId: item.itemId, error }
-            })
+            }
           })
 
-          await Promise.all(batchPromises)
+          const results = await Promise.all(batchPromises)
+          successCount += results.filter(r => r.success).length
+          failCount += results.filter(r => !r.success).length
 
           // Show progress
           toast({
-            title: "Assigning Users...",
+            title: "Updating Items...",
             description: `Progress: ${Math.min(i + BATCH_SIZE, itemsToUpdate.length)}/${itemsToUpdate.length} items`,
           })
 
-          // Small delay between batches to avoid overwhelming the API
+          // Small delay between batches
           if (i + BATCH_SIZE < itemsToUpdate.length) {
-            await new Promise(resolve => setTimeout(resolve, 500))
+            await new Promise(resolve => setTimeout(resolve, 300))
           }
         }
 
-        console.log(`[Edit Users] Complete: ${successCount} succeeded, ${failCount} failed`)
+        console.log(`[Edit] Complete: ${successCount} succeeded, ${failCount} failed`)
 
-        // Refresh items from API with chunked loading
-        const itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
-        const transformedItems = itemsResponse.items.map((item, index) => ({
-          id: index + 1,
-          project_item_id: item.project_item_id,
-          customer: '',
-          itemId: item.item_code,
-          description: item.item_name,
-          quantity: item.quantity,
-          unit: item.measurement_unit?.abbreviation || '',
-          category: (item.custom_tags || []).length > 0
-            ? (item.custom_tags || []).join(', ')
-            : 'Uncategorized',
-          assignedTo: item.assigned_users.map(u => u.name).join(', '),
-          assigned_user_ids: item.assigned_users.map(u => u.user_id),
-          unitPrice: item.rate || 0,
-          totalPrice: item.amount || 0,
-          vendor: '',
-          action: '',
-          dueDate: '',
-          source: '',
-          pricePO: 0,
-          priceContract: 0,
-          priceQuote: 0,
-          priceDigikey: 0,
-          priceEXIM: 0,
-          manuallyEdited: item.custom_fields?.manually_edited || false,
-        }))
+        // Update local state directly instead of refetching
+        const updatedLineItems = lineItems.map((item: any) => {
+          if (!selectedItems.includes(item.id)) return item
 
-        setLineItems(transformedItems)
+          const updates: any = { ...item }
+
+          if (assignedToChanged) {
+            const existingUserIds = item.assigned_user_ids || []
+            const itemSpecificUserIds = existingUserIds.filter((id: string) => !originalCommonUserIds.includes(id))
+            const finalUserIds = Array.from(new Set([...itemSpecificUserIds, ...newUserIdsFromForm]))
+            updates.assigned_user_ids = finalUserIds
+            updates.assignedTo = projectUsers
+              .filter((u: any) => finalUserIds.includes(u.user_id))
+              .map((u: any) => u.name)
+              .join(', ')
+          }
+
+          if (categoryChanged) {
+            const existingTags = item.category && item.category !== 'Uncategorized'
+              ? item.category.split(',').map((t: string) => t.trim()).filter(Boolean)
+              : []
+            const itemSpecificTags = existingTags.filter((t: string) => !originalCommonTags.includes(t))
+            const finalTags = Array.from(new Set([...itemSpecificTags, ...newTagsFromForm]))
+            updates.category = finalTags.length > 0 ? finalTags.join(', ') : 'Uncategorized'
+          }
+
+          updates.manuallyEdited = true
+          return updates
+        })
+
+        setLineItems(updatedLineItems)
 
         // Notify Factwise parent
         const updatedItemIds = itemsToUpdate.map(item => item.project_item_id)
-        notifyItemsAssigned(updatedItemIds, selectedUserIds)
+        if (assignedToChanged) {
+          notifyItemsAssigned(updatedItemIds, newUserIdsFromForm)
+        }
+        if (categoryChanged) {
+          window.parent.postMessage({
+            type: 'PROJECT_ITEM_UPDATED',
+            project_item_ids: updatedItemIds,
+            project_id: projectId,
+            updated_fields: ['tags'],
+            timestamp: new Date().toISOString()
+          }, '*')
+        }
 
         toast({
-          title: "Users Assigned",
-          description: `Successfully assigned users to ${successCount} item(s)${failCount > 0 ? `, ${failCount} failed` : ''}`,
+          title: "Items Updated",
+          description: `Successfully updated ${successCount} item(s)${failCount > 0 ? `, ${failCount} failed` : ''}`,
         })
 
       } catch (error) {
@@ -2207,138 +2295,10 @@ export default function ProcurementDashboard() {
           variant: "destructive",
         })
       }
-    } else if (editFormData.category !== undefined && editFormData.category !== null) {
-      // Category/tags are being changed - update via API
-      try {
-        console.log('[Edit Tags] Updating tags for', selectedItems.length, 'items')
+    }
 
-        const itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
-
-        // Get new tags from edit form
-        const newTagsFromForm = editFormData.category
-          .split(',')
-          .map((t: string) => t.trim())
-          .filter(Boolean)
-          .filter((t: string) => t !== 'Uncategorized') // Never send "Uncategorized" placeholder
-
-        console.log('[Edit Tags] New tags from form:', newTagsFromForm)
-        console.log('[Edit Tags] Updating', itemsToUpdate.length, 'items - merging with existing tags')
-
-        // Update items in batches to avoid timeout
-        const BATCH_SIZE = 50
-        let successCount = 0
-        let failCount = 0
-
-        for (let i = 0; i < itemsToUpdate.length; i += BATCH_SIZE) {
-          const batch = itemsToUpdate.slice(i, i + BATCH_SIZE)
-          console.log(`[Edit Tags] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(itemsToUpdate.length / BATCH_SIZE)} (${batch.length} items)`)
-
-          // Update all items in this batch in parallel
-          const batchPromises = batch.map(item => {
-            // Merge new tags with existing tags for this item
-            const existingTags = item.category && item.category !== 'Uncategorized'
-              ? item.category.split(',').map((t: string) => t.trim()).filter(Boolean)
-              : []
-
-            // Combine and deduplicate
-            const mergedTags = Array.from(new Set([...existingTags, ...newTagsFromForm]))
-
-            console.log(`[Edit Tags] Item ${item.itemId}: ${existingTags.join(', ')} → ${mergedTags.join(', ')}`)
-
-            return updateItemTags(
-              projectId,
-              item.project_item_id,
-              undefined,      // tags (enterprise-level, never modified from Strategy Dashboard)
-              mergedTags      // custom_tags (merged with existing)
-            ).then(result => {
-              if (result.success) {
-                successCount++
-                return { success: true, itemId: item.itemId }
-              } else {
-                failCount++
-                console.error('[Edit Tags] Failed to update item:', item.itemId, result)
-                return { success: false, itemId: item.itemId }
-              }
-            }).catch(error => {
-              failCount++
-              console.error('[Edit Tags] Error updating item:', item.itemId, error)
-              return { success: false, itemId: item.itemId, error }
-            })
-          })
-
-          await Promise.all(batchPromises)
-
-          // Show progress
-          toast({
-            title: "Updating Tags...",
-            description: `Progress: ${Math.min(i + BATCH_SIZE, itemsToUpdate.length)}/${itemsToUpdate.length} items`,
-          })
-
-          // Small delay between batches to avoid overwhelming the API
-          if (i + BATCH_SIZE < itemsToUpdate.length) {
-            await new Promise(resolve => setTimeout(resolve, 500))
-          }
-        }
-
-        console.log(`[Edit Tags] Complete: ${successCount} succeeded, ${failCount} failed`)
-
-        // Refresh items from API with chunked loading
-        const itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
-        const transformedItems = itemsResponse.items.map((item, index) => ({
-          id: index + 1,
-          project_item_id: item.project_item_id,
-          customer: '',
-          itemId: item.item_code,
-          description: item.item_name,
-          quantity: item.quantity,
-          unit: item.measurement_unit?.abbreviation || '',
-          category: (item.custom_tags || []).length > 0
-            ? (item.custom_tags || []).join(', ')
-            : 'Uncategorized',
-          assignedTo: item.assigned_users.map(u => u.name).join(', '),
-          assigned_user_ids: item.assigned_users.map(u => u.user_id),
-          unitPrice: item.rate || 0,
-          totalPrice: item.amount || 0,
-          currency: item.currency,
-          vendor: '',
-          action: '',
-          dueDate: '',
-          source: '',
-          pricePO: 0,
-          priceContract: 0,
-          priceQuote: 0,
-          priceDigikey: 0,
-          priceEXIM: 0,
-          manuallyEdited: item.custom_fields?.manually_edited || false,
-        }))
-
-        setLineItems(transformedItems)
-
-        // Notify Factwise parent to refetch items
-        const updatedItemIds = itemsToUpdate.map(item => item.project_item_id)
-        window.parent.postMessage({
-          type: 'PROJECT_ITEM_UPDATED',
-          project_item_ids: updatedItemIds,
-          project_id: projectId,
-          updated_fields: ['tags'],
-          timestamp: new Date().toISOString()
-        }, '*')
-
-        toast({
-          title: "Tags Updated",
-          description: `Successfully updated ${successCount} item(s)${failCount > 0 ? `, ${failCount} failed` : ''}`,
-        })
-
-      } catch (error) {
-        console.error('[Edit Tags] Error:', error)
-        toast({
-          title: "Error",
-          description: error instanceof Error ? error.message : "Failed to update tags",
-          variant: "destructive",
-        })
-      }
-    } else {
-      // No assignedTo or category change, just update local state for other fields
+    // If neither users nor tags changed, just update local state for other fields
+    if (!assignedToChanged && !categoryChanged) {
       const updatedItems = lineItems.map((item: any) => {
         if (!selectedItems.includes(item.id)) return item
 
