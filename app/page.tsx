@@ -1823,37 +1823,36 @@ export default function ProcurementDashboard() {
           }
         }
 
-        // Refresh items from API to get latest data
-        const itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
-        const transformedItems = itemsResponse.items.map((item, index) => ({
-          id: index + 1,
-          project_item_id: item.project_item_id,
-          customer: '',
-          itemId: item.item_code,
-          description: item.item_name,
-          quantity: item.quantity,
-          unit: item.measurement_unit?.abbreviation || '',
-          category: (item.custom_tags || []).length > 0
-            ? (item.custom_tags || []).join(', ')
-            : 'Uncategorized',
-          assignedTo: item.assigned_users.map(u => u.name).join(', '),
-          assigned_user_ids: item.assigned_users.map(u => u.user_id),
-          unitPrice: item.rate || 0,
-          totalPrice: item.amount || 0,
-          currency: item.currency,
-          vendor: '',
-          action: '',
-          dueDate: '',
-          source: '',
-          pricePO: 0,
-          priceContract: 0,
-          priceQuote: 0,
-          priceDigikey: 0,
-          priceEXIM: 0,
-          manuallyEdited: item.custom_fields?.manually_edited || false,
-        }))
+        // Update local state directly instead of refetching all items
+        setLineItems((prevItems: any[]) => prevItems.map((item: any) => {
+          if (item.project_item_id !== editFormData.project_item_id) return item
 
-        setLineItems(transformedItems)
+          const updatedItem = { ...item, manuallyEdited: true }
+
+          if (updatePayload.rate !== undefined) {
+            updatedItem.unitPrice = updatePayload.rate
+            updatedItem.totalPrice = updatePayload.rate * (updatePayload.quantity ?? item.quantity)
+          }
+
+          if (updatePayload.quantity !== undefined) {
+            updatedItem.quantity = updatePayload.quantity
+            updatedItem.totalPrice = (updatePayload.rate ?? item.unitPrice) * updatePayload.quantity
+          }
+
+          if (userIdsChanged && updatePayload.assigned_user_ids) {
+            updatedItem.assigned_user_ids = updatePayload.assigned_user_ids
+            updatedItem.assignedTo = projectUsers
+              .filter((u: any) => updatePayload.assigned_user_ids.includes(u.user_id))
+              .map((u: any) => u.name)
+              .join(', ')
+          }
+
+          if (tagsChanged && newTags) {
+            updatedItem.category = newTags.length > 0 ? newTags.join(', ') : 'Uncategorized'
+          }
+
+          return updatedItem
+        }))
 
         // Notify Factwise parent - only send what changed
         const changedFields: any = {}
