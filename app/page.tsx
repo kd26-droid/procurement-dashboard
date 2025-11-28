@@ -67,16 +67,40 @@ function formatCachedDate(isoString: string | null | undefined): string {
 
 /**
  * Convert distributor pricing from USD to item currency
+ * NEW STRUCTURE: { status, status_message, data: { unit_price, price_breaks, ... } }
  * Handles: unit_price, quantity_price, price_breaks, savings_info, next_tier_info
  */
-function convertDistributorPricing(pricingData: any, itemCurrency: any, exchangeRates: Record<string, number>) {
-  if (!pricingData) return null;
+function convertDistributorPricing(pricingWrapper: any, itemCurrency: any, exchangeRates: Record<string, number>) {
+  if (!pricingWrapper) return null;
+
+  // NEW: Handle the new wrapper structure with status field
+  // Status values: available, fetching, pending, not_found, error, no_mpn
+  const status = pricingWrapper.status;
+  const statusMessage = pricingWrapper.status_message;
+  const pricingData = pricingWrapper.data;
+
+  // If status is not 'available', return wrapper with status info only
+  if (status !== 'available' || !pricingData) {
+    return {
+      status,
+      status_message: statusMessage,
+      data: null,
+      // Flatten for backward compatibility when no data
+      unit_price: null,
+      currency: null,
+      stock: null
+    };
+  }
 
   const distributorCurrency = pricingData.currency; // Always "USD"
 
   // If item is already in USD, no conversion needed
   if (itemCurrency?.code === 'USD') {
     return {
+      status,
+      status_message: statusMessage,
+      data: pricingData,
+      // Flatten data for backward compatibility
       ...pricingData,
       needsConversion: false
     };
@@ -89,6 +113,10 @@ function convertDistributorPricing(pricingData: any, itemCurrency: any, exchange
   if (!exchangeRate) {
     console.warn(`No exchange rate for ${rateKey}`);
     return {
+      status,
+      status_message: statusMessage,
+      data: pricingData,
+      // Flatten data for backward compatibility
       ...pricingData,
       needsConversion: true,
       conversionFailed: true
@@ -96,7 +124,7 @@ function convertDistributorPricing(pricingData: any, itemCurrency: any, exchange
   }
 
   // Convert all pricing fields
-  const converted = {
+  const convertedData = {
     ...pricingData,
 
     // Original USD values (keep for reference)
@@ -144,7 +172,13 @@ function convertDistributorPricing(pricingData: any, itemCurrency: any, exchange
     wasConverted: true
   };
 
-  return converted;
+  return {
+    status,
+    status_message: statusMessage,
+    data: convertedData,
+    // Flatten data for backward compatibility
+    ...convertedData
+  };
 }
 
 /**
@@ -3411,14 +3445,14 @@ export default function ProcurementDashboard() {
           </div>
 
           {/* Digikey Progress Banner */}
-          {digikeyJob && digikeyJob.status === 'processing' && (
+          {digikeyJob && (digikeyJob.status === 'processing' || digikeyJob.status === 'pending') && (
             <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="animate-spin h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full" />
                   <div>
                     <div className="font-medium text-blue-900">
-                      Fetching Digikey pricing...
+                      {digikeyJob.status === 'pending' ? 'Preparing Digikey pricing...' : 'Fetching Digikey pricing...'}
                     </div>
                     <div className="text-sm text-blue-700">
                       {digikeyJob.processed_items || 0}/{digikeyJob.total_items} items processed
@@ -3439,14 +3473,14 @@ export default function ProcurementDashboard() {
           )}
 
           {/* Mouser Progress Banner */}
-          {mouserJob && mouserJob.status === 'processing' && (
+          {mouserJob && (mouserJob.status === 'processing' || mouserJob.status === 'pending') && (
             <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="animate-spin h-5 w-5 border-2 border-green-600 border-t-transparent rounded-full" />
                   <div>
                     <div className="font-medium text-green-900">
-                      Fetching Mouser pricing...
+                      {mouserJob.status === 'pending' ? 'Preparing Mouser pricing...' : 'Fetching Mouser pricing...'}
                     </div>
                     <div className="text-sm text-green-700">
                       {mouserJob.processed_items || 0}/{mouserJob.total_items} items processed
@@ -3794,123 +3828,152 @@ export default function ProcurementDashboard() {
                           return symbols[currency] || '$'
                         }
 
-                        // Use quantity-based price if available, otherwise fall back to unit_price
+                        // Handle new status-based pricing structure
+                        const pricingStatus = pricing?.status
                         const displayPrice = pricing?.quantity_price ?? pricing?.unit_price
-                        const currencySymbol = pricing ? getCurrencySymbol(pricing.currency) : '$'
+                        const currencySymbol = pricing?.currency ? getCurrencySymbol(pricing.currency) : '$'
+
+                        // Render based on status
+                        const renderPricingContent = () => {
+                          if (!pricing) {
+                            return <span className="text-xs text-gray-400">-</span>
+                          }
+
+                          switch (pricingStatus) {
+                            case 'fetching':
+                              return <span className="text-xs text-blue-500 animate-pulse">Fetching...</span>
+                            case 'pending':
+                              return <span className="text-xs text-orange-500">Pending...</span>
+                            case 'not_found':
+                              return <span className="text-xs text-gray-400">N/A</span>
+                            case 'error':
+                              return <span className="text-xs text-red-500">Error</span>
+                            case 'no_mpn':
+                              return <span className="text-xs text-gray-400">-</span>
+                            case 'available':
+                              // Show price with tooltip
+                              return displayPrice ? (
+                                <UiTooltip>
+                                  <UiTooltipTrigger asChild>
+                                    <div className="text-xs cursor-help">
+                                      <div className="font-semibold text-green-700 flex items-center justify-end gap-1">
+                                        {currencySymbol}
+                                        {typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
+                                        {pricing.savings_info && (
+                                          <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">
+                                            -{pricing.savings_info.discount_percent.toFixed(0)}%
+                                          </span>
+                                        )}
+                                      </div>
+                                      {pricing.stock !== null && pricing.stock !== undefined && (
+                                        <div className="text-gray-500" title={`Stock: ${pricing.stock.toLocaleString()}`}>
+                                          Stock: {pricing.stock > 1000 ? `${(pricing.stock / 1000).toFixed(1)}k` : pricing.stock}
+                                        </div>
+                                      )}
+                                      {pricing.next_tier_info && (
+                                        <div className="text-blue-600 text-[10px]">
+                                          +{pricing.next_tier_info.additional_qty_needed} → {currencySymbol}{pricing.next_tier_info.next_tier_price.toFixed(3)}
+                                        </div>
+                                      )}
+                                      {pricing.is_stale && (
+                                        <div className="text-orange-500">Stale</div>
+                                      )}
+                                    </div>
+                                  </UiTooltipTrigger>
+                                  <UiTooltipContent side="left" className="max-w-sm bg-white border border-gray-300 shadow-lg">
+                                    <div className="space-y-2 text-sm p-2">
+                                      <div className="font-semibold text-base text-gray-900 border-b border-gray-300 pb-1.5">Digi-Key Pricing</div>
+
+                                      {pricing.cached_at && (
+                                        <div className="flex justify-between text-xs text-gray-500 italic">
+                                          <span>Last updated:</span>
+                                          <span>{formatCachedDate(pricing.cached_at)}</span>
+                                        </div>
+                                      )}
+
+                                      {pricing.item_quantity && (
+                                        <div className="flex justify-between text-xs">
+                                          <span className="text-gray-600">Order Quantity:</span>
+                                          <span className="font-medium text-gray-900">{pricing.item_quantity} units</span>
+                                        </div>
+                                      )}
+
+                                      {displayPrice && (
+                                        <div className="flex justify-between items-center py-1">
+                                          <span className="text-gray-600 text-xs">Unit Price:</span>
+                                          <span className="font-bold text-base text-gray-900">{currencySymbol}{typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}</span>
+                                        </div>
+                                      )}
+
+                                      {pricing.quantity_tier && (
+                                        <div className="flex justify-between text-xs">
+                                          <span className="text-gray-600">Price Tier:</span>
+                                          <span className="font-medium text-gray-900">{pricing.quantity_tier}+ units</span>
+                                        </div>
+                                      )}
+
+                                      {pricing.savings_info && (
+                                        <div className="flex justify-between text-xs pt-1 border-t border-gray-200">
+                                          <span className="text-gray-600">Discount:</span>
+                                          <span className="font-medium text-green-700">{pricing.savings_info.discount_percent.toFixed(1)}% ({currencySymbol}{pricing.savings_info.total_savings.toFixed(2)} total)</span>
+                                        </div>
+                                      )}
+
+                                      {pricing.price_breaks && pricing.price_breaks.length > 0 && (
+                                        <div className="border-t border-gray-200 pt-2 space-y-1">
+                                          <div className="font-medium text-xs text-gray-700">Price Tiers:</div>
+                                          <div className="grid grid-cols-2 gap-1.5 text-xs">
+                                            {pricing.price_breaks.map((tier: any, idx: number) => {
+                                              const isCurrentTier = pricing.quantity_tier === tier.quantity
+                                              return (
+                                                <div
+                                                  key={idx}
+                                                  className={`px-2 py-1 rounded ${
+                                                    isCurrentTier
+                                                      ? 'bg-blue-50 border border-blue-300 font-semibold'
+                                                      : 'bg-gray-50 border border-gray-200'
+                                                  }`}
+                                                >
+                                                  <div className="text-gray-600">{tier.quantity}+</div>
+                                                  <div className="text-gray-900">
+                                                    {currencySymbol}{typeof tier.price === 'number' ? tier.price.toFixed(3) : parseFloat(tier.price).toFixed(3)}
+                                                  </div>
+                                                </div>
+                                              )
+                                            })}
+                                          </div>
+                                        </div>
+                                      )}
+
+                                      {pricing.stock !== null && pricing.stock !== undefined && (
+                                        <div className="flex justify-between text-xs pt-1 border-t border-gray-200">
+                                          <span className="text-gray-600">Stock:</span>
+                                          <span className="font-medium text-gray-900">{pricing.stock.toLocaleString()} units</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </UiTooltipContent>
+                                </UiTooltip>
+                              ) : <span className="text-xs text-gray-400">N/A</span>
+                            default:
+                              // Backward compatibility: if no status, check if price exists
+                              if (displayPrice) {
+                                return (
+                                  <div className="text-xs">
+                                    <div className="font-semibold text-green-700">
+                                      {currencySymbol}
+                                      {typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
+                                    </div>
+                                  </div>
+                                )
+                              }
+                              return <span className="text-xs text-gray-400">-</span>
+                          }
+                        }
 
                         return (
                           <td key={columnKey} className="p-2 text-right" style={{ width: (columnWidths as any)[columnKey] }}>
-                            {pricing ? (
-                              <UiTooltip>
-                                <UiTooltipTrigger asChild>
-                                  <div className="text-xs cursor-help">
-                                    <div className="font-semibold text-green-700 flex items-center justify-end gap-1">
-                                      {displayPrice ? (
-                                        <>
-                                          {currencySymbol}
-                                          {typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
-                                          {pricing.savings_info && (
-                                            <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">
-                                              -{pricing.savings_info.discount_percent.toFixed(0)}%
-                                            </span>
-                                          )}
-                                        </>
-                                      ) : 'N/A'}
-                                    </div>
-                                    {pricing.stock !== null && pricing.stock !== undefined && (
-                                      <div className="text-gray-500" title={`Stock: ${pricing.stock.toLocaleString()}`}>
-                                        Stock: {pricing.stock > 1000 ? `${(pricing.stock / 1000).toFixed(1)}k` : pricing.stock}
-                                      </div>
-                                    )}
-                                    {pricing.next_tier_info && (
-                                      <div className="text-blue-600 text-[10px]">
-                                        +{pricing.next_tier_info.additional_qty_needed} → {currencySymbol}{pricing.next_tier_info.next_tier_price.toFixed(3)}
-                                      </div>
-                                    )}
-                                    {pricing.is_stale && (
-                                      <div className="text-orange-500">⚠️ Stale</div>
-                                    )}
-                                  </div>
-                                </UiTooltipTrigger>
-                                <UiTooltipContent side="left" className="max-w-sm bg-white border border-gray-300 shadow-lg">
-                                  <div className="space-y-2 text-sm p-2">
-                                    <div className="font-semibold text-base text-gray-900 border-b border-gray-300 pb-1.5">Digi-Key Pricing</div>
-
-                                    {pricing.cached_at && (
-                                      <div className="flex justify-between text-xs text-gray-500 italic">
-                                        <span>Last updated:</span>
-                                        <span>{formatCachedDate(pricing.cached_at)}</span>
-                                      </div>
-                                    )}
-
-                                    {pricing.item_quantity && (
-                                      <div className="flex justify-between text-xs">
-                                        <span className="text-gray-600">Order Quantity:</span>
-                                        <span className="font-medium text-gray-900">{pricing.item_quantity} units</span>
-                                      </div>
-                                    )}
-
-                                    {displayPrice && (
-                                      <div className="flex justify-between items-center py-1">
-                                        <span className="text-gray-600 text-xs">Unit Price:</span>
-                                        <span className="font-bold text-base text-gray-900">{currencySymbol}{typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}</span>
-                                      </div>
-                                    )}
-
-                                    {pricing.quantity_tier && (
-                                      <div className="flex justify-between text-xs">
-                                        <span className="text-gray-600">Price Tier:</span>
-                                        <span className="font-medium text-gray-900">{pricing.quantity_tier}+ units</span>
-                                      </div>
-                                    )}
-
-                                    {pricing.savings_info && (
-                                      <div className="flex justify-between text-xs pt-1 border-t border-gray-200">
-                                        <span className="text-gray-600">Discount:</span>
-                                        <span className="font-medium text-green-700">{pricing.savings_info.discount_percent.toFixed(1)}% ({currencySymbol}{pricing.savings_info.total_savings.toFixed(2)} total)</span>
-                                      </div>
-                                    )}
-
-                                    {pricing.price_breaks && pricing.price_breaks.length > 0 && (
-                                      <div className="border-t border-gray-200 pt-2 space-y-1">
-                                        <div className="font-medium text-xs text-gray-700">Price Tiers:</div>
-                                        <div className="grid grid-cols-2 gap-1.5 text-xs">
-                                          {pricing.price_breaks.map((tier: any, idx: number) => {
-                                            const isCurrentTier = pricing.quantity_tier === tier.quantity
-                                            return (
-                                              <div
-                                                key={idx}
-                                                className={`px-2 py-1 rounded ${
-                                                  isCurrentTier
-                                                    ? 'bg-blue-50 border border-blue-300 font-semibold'
-                                                    : 'bg-gray-50 border border-gray-200'
-                                                }`}
-                                              >
-                                                <div className="text-gray-600">{tier.quantity}+</div>
-                                                <div className="text-gray-900">
-                                                  {currencySymbol}{typeof tier.price === 'number' ? tier.price.toFixed(3) : parseFloat(tier.price).toFixed(3)}
-                                                </div>
-                                              </div>
-                                            )
-                                          })}
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {pricing.stock !== null && pricing.stock !== undefined && (
-                                      <div className="flex justify-between text-xs pt-1 border-t border-gray-200">
-                                        <span className="text-gray-600">Stock:</span>
-                                        <span className="font-medium text-gray-900">{pricing.stock.toLocaleString()} units</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                </UiTooltipContent>
-                              </UiTooltip>
-                            ) : (
-                              <span className="text-xs text-gray-400">
-                                {digikeyJob?.status === 'processing' ? '...' : 'N/A'}
-                              </span>
-                            )}
+                            {renderPricingContent()}
                           </td>
                         )
                       }
@@ -3932,135 +3995,163 @@ export default function ProcurementDashboard() {
                           return symbols[currency] || '$'
                         }
 
-                        // Pricing is already converted to item currency by processItemPricing()
+                        // Handle new status-based pricing structure
+                        const pricingStatus = pricing?.status
                         const displayPrice = pricing?.quantity_price ?? pricing?.unit_price
                         const displayCurrency = pricing?.currency || 'USD'
                         const displaySavings = pricing?.savings_info
                         const displayNextTier = pricing?.next_tier_info
                         const wasConverted = pricing?.wasConverted || false
                         const originalPrice = pricing?.original_quantity_price ?? pricing?.original_unit_price
-
                         const currencySymbol = getCurrencySymbol(displayCurrency)
+
+                        // Render based on status
+                        const renderMouserContent = () => {
+                          if (!pricing) {
+                            return <span className="text-xs text-gray-400">-</span>
+                          }
+
+                          switch (pricingStatus) {
+                            case 'fetching':
+                              return <span className="text-xs text-blue-500 animate-pulse">Fetching...</span>
+                            case 'pending':
+                              return <span className="text-xs text-orange-500">Pending...</span>
+                            case 'not_found':
+                              return <span className="text-xs text-gray-400">N/A</span>
+                            case 'error':
+                              return <span className="text-xs text-red-500">Error</span>
+                            case 'no_mpn':
+                              return <span className="text-xs text-gray-400">-</span>
+                            case 'available':
+                              // Show price with tooltip
+                              return displayPrice ? (
+                                <UiTooltip>
+                                  <UiTooltipTrigger asChild>
+                                    <div className="text-xs cursor-help">
+                                      <div className="font-semibold text-green-700 flex items-center justify-end gap-1">
+                                        {currencySymbol}
+                                        {typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
+                                        {displaySavings && (
+                                          <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">
+                                            -{displaySavings.discount_percent.toFixed(0)}%
+                                          </span>
+                                        )}
+                                      </div>
+                                      {pricing.stock !== null && pricing.stock !== undefined && (
+                                        <div className="text-gray-500" title={`Stock: ${pricing.stock.toLocaleString()}`}>
+                                          Stock: {pricing.stock > 1000 ? `${(pricing.stock / 1000).toFixed(1)}k` : pricing.stock}
+                                        </div>
+                                      )}
+                                      {displayNextTier && (
+                                        <div className="text-blue-600 text-[10px]">
+                                          +{displayNextTier.additional_qty_needed} → {currencySymbol}{displayNextTier.next_tier_price.toFixed(3)}
+                                        </div>
+                                      )}
+                                      {pricing.is_stale && (
+                                        <div className="text-orange-500">Stale</div>
+                                      )}
+                                    </div>
+                                  </UiTooltipTrigger>
+                                  <UiTooltipContent side="left" className="max-w-sm bg-white border border-gray-300 shadow-lg">
+                                    <div className="space-y-2 text-sm p-2">
+                                      <div className="font-semibold text-base text-gray-900 border-b border-gray-300 pb-1.5">Mouser Pricing</div>
+
+                                      {pricing.cached_at && (
+                                        <div className="flex justify-between text-xs text-gray-500 italic">
+                                          <span>Last updated:</span>
+                                          <span>{formatCachedDate(pricing.cached_at)}</span>
+                                        </div>
+                                      )}
+
+                                      {pricing.item_quantity && (
+                                        <div className="flex justify-between text-xs">
+                                          <span className="text-gray-600">Order Quantity:</span>
+                                          <span className="font-medium text-gray-900">{pricing.item_quantity} units</span>
+                                        </div>
+                                      )}
+
+                                      {displayPrice && (
+                                        <div className="flex justify-between items-center py-1">
+                                          <span className="text-gray-600 text-xs">Unit Price:</span>
+                                          <span className="font-bold text-base text-gray-900">{currencySymbol}{typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}</span>
+                                        </div>
+                                      )}
+
+                                      {wasConverted && originalPrice && (
+                                        <div className="flex justify-between text-xs">
+                                          <span className="text-gray-600">Original (USD):</span>
+                                          <span className="text-gray-500">${originalPrice.toFixed(3)} × {pricing.exchange_rate?.toFixed(2)}</span>
+                                        </div>
+                                      )}
+
+                                      {pricing.quantity_tier && (
+                                        <div className="flex justify-between text-xs">
+                                          <span className="text-gray-600">Price Tier:</span>
+                                          <span className="font-medium text-gray-900">{pricing.quantity_tier}+ units</span>
+                                        </div>
+                                      )}
+
+                                      {displaySavings && (
+                                        <div className="flex justify-between text-xs pt-1 border-t border-gray-200">
+                                          <span className="text-gray-600">Discount:</span>
+                                          <span className="font-medium text-green-700">{displaySavings.discount_percent.toFixed(1)}% ({currencySymbol}{displaySavings.total_savings.toFixed(2)} total)</span>
+                                        </div>
+                                      )}
+
+                                      {pricing.price_breaks && pricing.price_breaks.length > 0 && (
+                                        <div className="border-t border-gray-200 pt-2 space-y-1">
+                                          <div className="font-medium text-xs text-gray-700">Price Tiers:</div>
+                                          <div className="grid grid-cols-2 gap-1.5 text-xs">
+                                            {pricing.price_breaks.map((tier: any, idx: number) => {
+                                              const tierPrice = typeof tier.price === 'number' ? tier.price : parseFloat(tier.price)
+                                              const isCurrentTier = pricing.quantity_tier === tier.quantity
+                                              return (
+                                                <div
+                                                  key={idx}
+                                                  className={`px-2 py-1 rounded ${
+                                                    isCurrentTier
+                                                      ? 'bg-blue-50 border border-blue-300 font-semibold'
+                                                      : 'bg-gray-50 border border-gray-200'
+                                                  }`}
+                                                >
+                                                  <div className="text-gray-600">{tier.quantity}+</div>
+                                                  <div className="text-gray-900">{currencySymbol}{tierPrice.toFixed(3)}</div>
+                                                </div>
+                                              )
+                                            })}
+                                          </div>
+                                        </div>
+                                      )}
+
+                                      {pricing.stock !== null && pricing.stock !== undefined && (
+                                        <div className="flex justify-between text-xs pt-1 border-t border-gray-200">
+                                          <span className="text-gray-600">Stock:</span>
+                                          <span className="font-medium text-gray-900">{pricing.stock.toLocaleString()} units</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </UiTooltipContent>
+                                </UiTooltip>
+                              ) : <span className="text-xs text-gray-400">N/A</span>
+                            default:
+                              // Backward compatibility: if no status, check if price exists
+                              if (displayPrice) {
+                                return (
+                                  <div className="text-xs">
+                                    <div className="font-semibold text-green-700">
+                                      {currencySymbol}
+                                      {typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
+                                    </div>
+                                  </div>
+                                )
+                              }
+                              return <span className="text-xs text-gray-400">-</span>
+                          }
+                        }
 
                         return (
                           <td key={columnKey} className="p-2 text-right" style={{ width: (columnWidths as any)[columnKey] }}>
-                            {pricing ? (
-                              <UiTooltip>
-                                <UiTooltipTrigger asChild>
-                                  <div className="text-xs cursor-help">
-                                    <div className="font-semibold text-green-700 flex items-center justify-end gap-1">
-                                      {displayPrice ? (
-                                        <>
-                                          {currencySymbol}
-                                          {displayPrice.toFixed(3)}
-                                          {displaySavings && (
-                                            <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">
-                                              -{displaySavings.discount_percent.toFixed(0)}%
-                                            </span>
-                                          )}
-                                        </>
-                                      ) : 'N/A'}
-                                    </div>
-                                    {pricing.stock !== null && pricing.stock !== undefined && (
-                                      <div className="text-gray-500" title={`Stock: ${pricing.stock.toLocaleString()}`}>
-                                        Stock: {pricing.stock > 1000 ? `${(pricing.stock / 1000).toFixed(1)}k` : pricing.stock}
-                                      </div>
-                                    )}
-                                    {displayNextTier && (
-                                      <div className="text-blue-600 text-[10px]">
-                                        +{displayNextTier.additional_qty_needed} → {currencySymbol}{displayNextTier.next_tier_price.toFixed(3)}
-                                      </div>
-                                    )}
-                                    {pricing.is_stale && (
-                                      <div className="text-orange-500">⚠️ Stale</div>
-                                    )}
-                                  </div>
-                                </UiTooltipTrigger>
-                                <UiTooltipContent side="left" className="max-w-sm bg-white border border-gray-300 shadow-lg">
-                                  <div className="space-y-2 text-sm p-2">
-                                    <div className="font-semibold text-base text-gray-900 border-b border-gray-300 pb-1.5">Mouser Pricing</div>
-
-                                    {pricing.cached_at && (
-                                      <div className="flex justify-between text-xs text-gray-500 italic">
-                                        <span>Last updated:</span>
-                                        <span>{formatCachedDate(pricing.cached_at)}</span>
-                                      </div>
-                                    )}
-
-                                    {pricing.item_quantity && (
-                                      <div className="flex justify-between text-xs">
-                                        <span className="text-gray-600">Order Quantity:</span>
-                                        <span className="font-medium text-gray-900">{pricing.item_quantity} units</span>
-                                      </div>
-                                    )}
-
-                                    {displayPrice && (
-                                      <div className="flex justify-between items-center py-1">
-                                        <span className="text-gray-600 text-xs">Unit Price:</span>
-                                        <span className="font-bold text-base text-gray-900">{currencySymbol}{displayPrice.toFixed(3)}</span>
-                                      </div>
-                                    )}
-
-                                    {wasConverted && originalPrice && (
-                                      <div className="flex justify-between text-xs">
-                                        <span className="text-gray-600">Original (USD):</span>
-                                        <span className="text-gray-500">${originalPrice.toFixed(3)} × {pricing.exchange_rate.toFixed(2)}</span>
-                                      </div>
-                                    )}
-
-                                    {pricing.quantity_tier && (
-                                      <div className="flex justify-between text-xs">
-                                        <span className="text-gray-600">Price Tier:</span>
-                                        <span className="font-medium text-gray-900">{pricing.quantity_tier}+ units</span>
-                                      </div>
-                                    )}
-
-                                    {displaySavings && (
-                                      <div className="flex justify-between text-xs pt-1 border-t border-gray-200">
-                                        <span className="text-gray-600">Discount:</span>
-                                        <span className="font-medium text-green-700">{displaySavings.discount_percent.toFixed(1)}% ({currencySymbol}{displaySavings.total_savings.toFixed(2)} total)</span>
-                                      </div>
-                                    )}
-
-                                    {pricing.price_breaks && pricing.price_breaks.length > 0 && (
-                                      <div className="border-t border-gray-200 pt-2 space-y-1">
-                                        <div className="font-medium text-xs text-gray-700">Price Tiers:</div>
-                                        <div className="grid grid-cols-2 gap-1.5 text-xs">
-                                          {pricing.price_breaks.map((tier: any, idx: number) => {
-                                            const tierPrice = typeof tier.price === 'number' ? tier.price : parseFloat(tier.price)
-                                            const isCurrentTier = pricing.quantity_tier === tier.quantity
-                                            return (
-                                              <div
-                                                key={idx}
-                                                className={`px-2 py-1 rounded ${
-                                                  isCurrentTier
-                                                    ? 'bg-blue-50 border border-blue-300 font-semibold'
-                                                    : 'bg-gray-50 border border-gray-200'
-                                                }`}
-                                              >
-                                                <div className="text-gray-600">{tier.quantity}+</div>
-                                                <div className="text-gray-900">{currencySymbol}{tierPrice.toFixed(3)}</div>
-                                              </div>
-                                            )
-                                          })}
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {pricing.stock !== null && pricing.stock !== undefined && (
-                                      <div className="flex justify-between text-xs pt-1 border-t border-gray-200">
-                                        <span className="text-gray-600">Stock:</span>
-                                        <span className="font-medium text-gray-900">{pricing.stock.toLocaleString()} units</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                </UiTooltipContent>
-                              </UiTooltip>
-                            ) : (
-                              <span className="text-xs text-gray-400">
-                                {mouserJob?.status === 'processing' ? '...' : 'N/A'}
-                              </span>
-                            )}
+                            {renderMouserContent()}
                           </td>
                         )
                       }
@@ -4071,13 +4162,21 @@ export default function ProcurementDashboard() {
 
                         // Calculate cheapest price (pricing is already converted to item currency)
                         // Use quantity_price if available, otherwise fall back to unit_price
-                        const digikeyBasePrice = (item as any).digikey_pricing?.quantity_price ?? (item as any).digikey_pricing?.unit_price
+                        // NEW: Only use pricing if status is 'available'
+                        const digikeyPricing = (item as any).digikey_pricing
+                        const digikeyBasePrice = digikeyPricing?.status === 'available'
+                          ? (digikeyPricing?.quantity_price ?? digikeyPricing?.unit_price)
+                          : undefined
                         const digikeyPrice = digikeyBasePrice ?
                           (typeof digikeyBasePrice === 'number' ? digikeyBasePrice : parseFloat(digikeyBasePrice)) :
                           undefined
 
                         // Mouser pricing is already converted to item currency by processItemPricing()
-                        const mouserBasePrice = (item as any).mouser_pricing?.quantity_price ?? (item as any).mouser_pricing?.unit_price
+                        // NEW: Only use pricing if status is 'available'
+                        const mouserPricing = (item as any).mouser_pricing
+                        const mouserBasePrice = mouserPricing?.status === 'available'
+                          ? (mouserPricing?.quantity_price ?? mouserPricing?.unit_price)
+                          : undefined
                         const mouserPrice = mouserBasePrice ?
                           (typeof mouserBasePrice === 'number' ? mouserBasePrice : parseFloat(mouserBasePrice)) :
                           undefined
@@ -4115,14 +4214,22 @@ export default function ProcurementDashboard() {
                       if (columnKey === "source") {
                         // Find cheapest price source (including Digikey and Mouser pricing with quantity-based prices)
                         // Use quantity_price if available, otherwise fall back to unit_price
-                        const digikeyBasePrice = (item as any).digikey_pricing?.quantity_price ?? (item as any).digikey_pricing?.unit_price
+                        // NEW: Only use pricing if status is 'available'
+                        const digikeyPricingForSource = (item as any).digikey_pricing
+                        const digikeyBasePrice = digikeyPricingForSource?.status === 'available'
+                          ? (digikeyPricingForSource?.quantity_price ?? digikeyPricingForSource?.unit_price)
+                          : undefined
                         const digikeyPrice = digikeyBasePrice ?
                           (typeof digikeyBasePrice === 'number' ? digikeyBasePrice : parseFloat(digikeyBasePrice)) :
                           undefined
 
                         // Convert Mouser USD price to item's currency for comparison (use quantity_price if available)
+                        // NEW: Only use pricing if status is 'available'
                         let mouserPrice = undefined
-                        const mouserBasePrice = (item as any).mouser_pricing?.quantity_price ?? (item as any).mouser_pricing?.unit_price
+                        const mouserPricingForSource = (item as any).mouser_pricing
+                        const mouserBasePrice = mouserPricingForSource?.status === 'available'
+                          ? (mouserPricingForSource?.quantity_price ?? mouserPricingForSource?.unit_price)
+                          : undefined
                         if (mouserBasePrice) {
                           const mouserUsdPrice = typeof mouserBasePrice === 'number' ? mouserBasePrice : parseFloat(mouserBasePrice)
 
@@ -4155,7 +4262,7 @@ export default function ProcurementDashboard() {
                         return (
                           <td key={columnKey} className="p-2 text-center" style={{ width: columnWidths.source }}>
                             <span className="text-xs font-medium text-gray-900">
-                              {cheapest ? cheapest.source : '-'}
+                              {cheapest ? cheapest.source : 'Project'}
                             </span>
                           </td>
                         )
