@@ -2105,7 +2105,7 @@ export default function ProcurementDashboard() {
         }
 
         // Process in smaller batches with retry
-        const SAFE_BATCH_SIZE = 20 // Reduced from 50 to avoid overwhelming API
+        const SAFE_BATCH_SIZE = 25 // Balance between speed and API reliability
         for (let i = 0; i < itemsToUpdate.length; i += SAFE_BATCH_SIZE) {
           const batch = itemsToUpdate.slice(i, i + SAFE_BATCH_SIZE)
           console.log(`[Edit] Processing batch ${Math.floor(i / SAFE_BATCH_SIZE) + 1}/${Math.ceil(itemsToUpdate.length / SAFE_BATCH_SIZE)} (${batch.length} items)`)
