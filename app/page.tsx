@@ -314,6 +314,137 @@ export default function ProcurementDashboard() {
   const [settingsProfiles, setSettingsProfiles] = useState<Record<string, AppSettings>>({})
   const [currentSettingsKey, setCurrentSettingsKey] = useState<string>('Default')
 
+  // Helper function to refresh pricing data in chunks (avoids timeout)
+  const refreshPricingDataInChunks = async (projectId: string, pricingType: 'digikey' | 'mouser' | 'both') => {
+    console.log(`[Pricing Refresh] Starting chunked refresh for ${pricingType}...`)
+    const CHUNK_SIZE = 200
+    let offset = 0
+    let hasMore = true
+    const pricingUpdates: Map<string, any> = new Map()
+
+    while (hasMore) {
+      try {
+        const chunkResponse = await getProjectItems(projectId, {
+          limit: CHUNK_SIZE,
+          offset,
+          skip_pricing_jobs: true
+        })
+
+        if (!chunkResponse.items || chunkResponse.items.length === 0) {
+          hasMore = false
+          break
+        }
+
+        // Collect pricing data from this chunk
+        chunkResponse.items.forEach((item: any) => {
+          const update: any = { project_item_id: item.project_item_id }
+          if (pricingType === 'digikey' || pricingType === 'both') {
+            update.digikey_pricing = item.digikey_pricing
+          }
+          if (pricingType === 'mouser' || pricingType === 'both') {
+            update.mouser_pricing = item.mouser_pricing
+          }
+          pricingUpdates.set(item.project_item_id, update)
+        })
+
+        console.log(`[Pricing Refresh] Fetched chunk ${offset}-${offset + chunkResponse.items.length}`)
+
+        offset += CHUNK_SIZE
+        if (chunkResponse.items.length < CHUNK_SIZE) {
+          hasMore = false
+        }
+
+        // Small delay between chunks
+        await new Promise(resolve => setTimeout(resolve, 200))
+      } catch (error) {
+        console.error(`[Pricing Refresh] Error fetching chunk at offset ${offset}:`, error)
+        hasMore = false
+      }
+    }
+
+    console.log(`[Pricing Refresh] Collected pricing for ${pricingUpdates.size} items`)
+
+    // Update local state with new pricing data
+    setLineItems((prevItems: any[]) => prevItems.map((item: any) => {
+      const update = pricingUpdates.get(item.project_item_id)
+      if (!update) return item
+
+      const updatedItem = { ...item }
+      if (update.digikey_pricing !== undefined) {
+        updatedItem.digikey_pricing = update.digikey_pricing
+      }
+      if (update.mouser_pricing !== undefined) {
+        updatedItem.mouser_pricing = update.mouser_pricing
+      }
+      // Re-process pricing with currency conversion
+      return processItemPricing(updatedItem, exchangeRates)
+    }))
+
+    console.log(`[Pricing Refresh] Updated local state with new pricing`)
+  }
+
+  // Helper function to refresh user assignments in chunks (avoids timeout)
+  const refreshUserAssignmentsInChunks = async (projectId: string) => {
+    console.log(`[User Refresh] Starting chunked refresh for user assignments...`)
+    const CHUNK_SIZE = 200
+    let offset = 0
+    let hasMore = true
+    const userUpdates: Map<string, any> = new Map()
+
+    while (hasMore) {
+      try {
+        const chunkResponse = await getProjectItems(projectId, {
+          limit: CHUNK_SIZE,
+          offset,
+          skip_pricing_jobs: true
+        })
+
+        if (!chunkResponse.items || chunkResponse.items.length === 0) {
+          hasMore = false
+          break
+        }
+
+        // Collect user assignment data from this chunk
+        chunkResponse.items.forEach((item: any) => {
+          userUpdates.set(item.project_item_id, {
+            assigned_user_ids: item.assigned_users.map((u: any) => u.user_id),
+            assignedTo: item.assigned_users.map((u: any) => u.name).join(', ')
+          })
+        })
+
+        console.log(`[User Refresh] Fetched chunk ${offset}-${offset + chunkResponse.items.length}`)
+
+        offset += CHUNK_SIZE
+        if (chunkResponse.items.length < CHUNK_SIZE) {
+          hasMore = false
+        }
+
+        // Small delay between chunks
+        await new Promise(resolve => setTimeout(resolve, 200))
+      } catch (error) {
+        console.error(`[User Refresh] Error fetching chunk at offset ${offset}:`, error)
+        hasMore = false
+      }
+    }
+
+    console.log(`[User Refresh] Collected user assignments for ${userUpdates.size} items`)
+
+    // Update local state with new user assignments
+    setLineItems((prevItems: any[]) => prevItems.map((item: any) => {
+      const update = userUpdates.get(item.project_item_id)
+      if (!update) return item
+
+      return {
+        ...item,
+        assigned_user_ids: update.assigned_user_ids,
+        assignedTo: update.assignedTo
+      }
+    }))
+
+    console.log(`[User Refresh] Updated local state with new user assignments`)
+    return userUpdates
+  }
+
   // Initialize savedViews from localStorage on client side
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -639,8 +770,9 @@ export default function ProcurementDashboard() {
       console.log('[Pricing Jobs] All items loaded. Triggering pricing by fetching items without skip_pricing_jobs flag...')
 
       // Call getProjectItems WITHOUT skip_pricing_jobs to trigger backend pricing jobs
-      // Use high limit to ensure backend processes ALL items in project
-      const response = await getProjectItems(projectId, { limit: 10000 })
+      // Use limit: 1 since we just need to trigger the jobs, not load all items
+      // Backend will still process ALL items in the project for pricing jobs
+      const response = await getProjectItems(projectId, { limit: 1 })
 
       console.log('[Pricing Jobs] Response:', response)
 
@@ -745,141 +877,14 @@ export default function ProcurementDashboard() {
               description: `Pricing loaded for ${data.job.successful_items}/${data.job.total_items} items`,
             })
 
-            // Retry fetching items until pricing data is available (max 5 tries)
-            let itemsResponse: any = null
-            let retryCount = 0
-            const maxRetries = 5
+            // Wait a moment for backend to finish caching, then refresh pricing in chunks
+            await new Promise(resolve => setTimeout(resolve, 1000))
 
-            while (retryCount < maxRetries) {
-              console.log(`[Digikey Poll] Attempt ${retryCount + 1}/${maxRetries} - Fetching items...`)
-              itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
+            // Refresh pricing data using chunked loading (avoids timeout)
+            await refreshPricingDataInChunks(projectId, 'digikey')
 
-              if (!itemsResponse.items || itemsResponse.items.length === 0) {
-                console.error('[Digikey Poll] ERROR: No items in response!', itemsResponse)
-                break
-              }
-
-              // Log first item to see what data we're getting
-              console.log('[Digikey Poll] Sample item from response:', {
-                item_code: itemsResponse.items[0].item_code,
-                digikey_pricing: itemsResponse.items[0].digikey_pricing,
-                has_digikey_field: 'digikey_pricing' in itemsResponse.items[0]
-              })
-
-              // Check if ANY item has digikey_pricing
-              const itemsWithPricing = itemsResponse.items.filter((item: any) => item.digikey_pricing !== null)
-              console.log(`[Digikey Poll] Found ${itemsWithPricing.length}/${itemsResponse.items.length} items with Digikey pricing`)
-
-              if (itemsWithPricing.length > 0) {
-                console.log('[Digikey Poll] ✅ Pricing data found!')
-                console.log('[Digikey Poll] Sample pricing:', itemsWithPricing[0].digikey_pricing)
-                break
-              }
-
-              // Wait 1 second before retry
-              console.log('[Digikey Poll] Pricing data not ready, waiting 1 second...')
-              await new Promise(resolve => setTimeout(resolve, 1000))
-              retryCount++
-            }
-
-            if (!itemsResponse || !itemsResponse.items || itemsResponse.items.length === 0) {
-              console.error('[Digikey Poll] ERROR: Failed to get items after retries')
-              clearInterval(pollInterval)
-              toast({
-                title: "Error",
-                description: "Failed to refresh items after Digikey pricing completed",
-                variant: "destructive"
-              })
-              setDigikeyJob(null)
-              return
-            }
-
-            const itemsWithPricing = itemsResponse.items.filter((item: any) => item.digikey_pricing !== null)
-            if (itemsWithPricing.length === 0) {
-              console.error('[Digikey Poll] ERROR: No items have Digikey pricing after', retryCount + 1, 'attempts')
-              toast({
-                title: "Warning",
-                description: "Digikey pricing job completed but no pricing data found. Please refresh the page.",
-                variant: "destructive"
-              })
-              setDigikeyJob(null)
-              return
-            }
-
-            // Extract specs
-            const specNamesSet = new Set<string>()
-            itemsResponse.items.forEach((item: ProjectItem) => {
-              item.specifications?.forEach(spec => {
-                specNamesSet.add(spec.spec_name)
-              })
-            })
-            const uniqueSpecNames = Array.from(specNamesSet).sort()
-            setSpecColumns(uniqueSpecNames)
-
-            // Transform items with Digikey pricing
-            console.log('[Digikey Poll] Transforming items...')
-            const transformedItems = itemsResponse.items.map((item: ProjectItem, index: number) => {
-              const baseItem: any = {
-                id: index + 1,
-                project_item_id: item.project_item_id,
-                customer: '',
-                itemId: item.item_code,
-                description: item.item_name,
-                quantity: item.quantity,
-                unit: item.measurement_unit?.abbreviation || '',
-                category: (item.custom_tags || []).length > 0
-                  ? (item.custom_tags || []).join(', ')
-                  : 'Uncategorized',
-                assignedTo: item.assigned_users.map(u => u.name).join(', '),
-                assigned_user_ids: item.assigned_users.map(u => u.user_id),
-                unitPrice: item.rate || 0,
-                totalPrice: item.amount || 0,
-                currency: item.currency,
-                vendor: '',
-                action: '',
-                dueDate: '',
-                source: '',
-                pricePO: 0,
-                priceContract: 0,
-                priceQuote: 0,
-                priceDigikey: 0,
-                priceEXIM: 0,
-                manuallyEdited: item.custom_fields?.manually_edited || false,
-                bom_info: item.bom_info || {
-                  is_bom_item: false,
-                  bom_id: null,
-                  bom_code: null,
-                  bom_name: null,
-                  bom_item_id: null,
-                  bom_module_linkage_id: null,
-                },
-                digikey_pricing: item.digikey_pricing || null,
-                mouser_pricing: item.mouser_pricing || null,
-              }
-
-              // Add dynamic spec columns
-              uniqueSpecNames.forEach(specName => {
-                const spec = item.specifications?.find(s => s.spec_name === specName)
-                baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
-              })
-
-              return baseItem
-            })
-
-            console.log('[Digikey Poll] Transformed', transformedItems.length, 'items')
-            console.log('[Digikey Poll] Sample item pricing:', transformedItems[0]?.digikey_pricing, transformedItems[0]?.mouser_pricing)
-
-            // Convert distributor pricing from USD to item currency
-            const itemsWithConvertedPricing = transformedItems.map((item: any) =>
-              processItemPricing(item, itemsResponse.exchange_rates || exchangeRates)
-            )
-
-            console.log('[Digikey Poll] Applied currency conversion to all items')
-
-            setLineItems(itemsWithConvertedPricing)
             setDigikeyJob(null)
-
-            console.log('[Digikey Poll] Items updated in state')
+            console.log('[Digikey Poll] Pricing refresh complete')
           }
         }
       } catch (error) {
@@ -918,78 +923,14 @@ export default function ProcurementDashboard() {
               description: `Pricing loaded for ${data.job.successful_items}/${data.job.total_items} items`,
             })
 
-            // Refresh items to get the new pricing
-            const itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
+            // Wait a moment for backend to finish caching, then refresh pricing in chunks
+            await new Promise(resolve => setTimeout(resolve, 1000))
 
-            // Extract specs
-            const specNamesSet = new Set<string>()
-            itemsResponse.items.forEach((item: ProjectItem) => {
-              item.specifications?.forEach(spec => {
-                specNamesSet.add(spec.spec_name)
-              })
-            })
-            const uniqueSpecNames = Array.from(specNamesSet).sort()
-            setSpecColumns(uniqueSpecNames)
+            // Refresh pricing data using chunked loading (avoids timeout)
+            await refreshPricingDataInChunks(projectId, 'mouser')
 
-            // Transform items with Mouser pricing
-            const transformedItems = itemsResponse.items.map((item: ProjectItem, index: number) => {
-              const baseItem: any = {
-                id: index + 1,
-                project_item_id: item.project_item_id,
-                customer: '',
-                itemId: item.item_code,
-                description: item.item_name,
-                quantity: item.quantity,
-                unit: item.measurement_unit?.abbreviation || '',
-                category: (item.custom_tags || []).length > 0
-                  ? (item.custom_tags || []).join(', ')
-                  : 'Uncategorized',
-                assignedTo: item.assigned_users.map(u => u.name).join(', '),
-                assigned_user_ids: item.assigned_users.map(u => u.user_id),
-                unitPrice: item.rate || 0,
-                totalPrice: item.amount || 0,
-                currency: item.currency,
-                vendor: '',
-                action: '',
-                dueDate: '',
-                source: '',
-                pricePO: 0,
-                priceContract: 0,
-                priceQuote: 0,
-                priceDigikey: 0,
-                priceMouser: 0,
-                priceEXIM: 0,
-                manuallyEdited: item.custom_fields?.manually_edited || false,
-                bom_info: item.bom_info || {
-                  is_bom_item: false,
-                  bom_id: null,
-                  bom_code: null,
-                  bom_name: null,
-                  bom_item_id: null,
-                  bom_module_linkage_id: null,
-                },
-                digikey_pricing: item.digikey_pricing || null,
-                mouser_pricing: item.mouser_pricing || null,
-              }
-
-              // Add dynamic spec columns
-              uniqueSpecNames.forEach(specName => {
-                const spec = item.specifications?.find(s => s.spec_name === specName)
-                baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
-              })
-
-              return baseItem
-            })
-
-            // Convert distributor pricing from USD to item currency
-            const itemsWithConvertedPricing = transformedItems.map((item: any) =>
-              processItemPricing(item, itemsResponse.exchange_rates || exchangeRates)
-            )
-
-            console.log('[Mouser Poll] Applied currency conversion to all items')
-
-            setLineItems(itemsWithConvertedPricing)
             setMouserJob(null)
+            console.log('[Mouser Poll] Pricing refresh complete')
           }
         }
       } catch (error) {
@@ -1467,41 +1408,13 @@ export default function ProcurementDashboard() {
       console.log('[Auto-Assign] Result:', result)
 
       if (result.success) {
-        // Refresh items from API
-        const itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
-        const transformedItems = itemsResponse.items.map((item, index) => ({
-          id: index + 1,
-          project_item_id: item.project_item_id,
-          customer: '',
-          itemId: item.item_code,
-          description: item.item_name,
-          quantity: item.quantity,
-          unit: item.measurement_unit?.abbreviation || '',
-          category: (item.custom_tags || []).length > 0
-            ? (item.custom_tags || []).join(', ')
-            : 'Uncategorized',
-          assignedTo: item.assigned_users.map(u => u.name).join(', '),
-          assigned_user_ids: item.assigned_users.map(u => u.user_id),
-          unitPrice: item.rate || 0,
-          totalPrice: item.amount || 0,
-          vendor: '',
-          action: '',
-          dueDate: '',
-          source: '',
-          pricePO: 0,
-          priceContract: 0,
-          priceQuote: 0,
-          priceDigikey: 0,
-          priceEXIM: 0,
-          manuallyEdited: item.custom_fields?.manually_edited || false,
-        }))
-
-        setLineItems(transformedItems)
+        // Refresh user assignments using chunked loading (avoids timeout)
+        const userUpdates = await refreshUserAssignmentsInChunks(projectId)
 
         // Notify Factwise parent
-        const updatedItemIds = itemsResponse.items.map(item => item.project_item_id)
+        const updatedItemIds = Array.from(userUpdates.keys())
         const allUserIds = Array.from(new Set(
-          itemsResponse.items.flatMap(item => item.assigned_users.map(u => u.user_id))
+          Array.from(userUpdates.values()).flatMap((u: any) => u.assigned_user_ids)
         ))
         notifyItemsAssigned(updatedItemIds, allUserIds)
 
@@ -1581,36 +1494,16 @@ export default function ProcurementDashboard() {
       if (result.success) {
         console.log('[Manual Assign] Successfully assigned users to item')
 
-        // Refresh items from API to get latest data
-        const itemsResponse = await getProjectItems(projectId, { limit: 10000, skip_pricing_jobs: true })
-        const transformedItems = itemsResponse.items.map((item, index) => ({
-          id: index + 1,
-          project_item_id: item.project_item_id,
-          customer: '',
-          itemId: item.item_code,
-          description: item.item_name,
-          quantity: item.quantity,
-          unit: item.measurement_unit?.abbreviation || '',
-          category: (item.custom_tags || []).length > 0
-            ? (item.custom_tags || []).join(', ')
-            : 'Uncategorized',
-          assignedTo: item.assigned_users.map(u => u.name).join(', '),
-          assigned_user_ids: item.assigned_users.map(u => u.user_id),
-          unitPrice: item.rate || 0,
-          totalPrice: item.amount || 0,
-          vendor: '',
-          action: '',
-          dueDate: '',
-          source: '',
-          pricePO: 0,
-          priceContract: 0,
-          priceQuote: 0,
-          priceDigikey: 0,
-          priceEXIM: 0,
-          manuallyEdited: item.custom_fields?.manually_edited || false,
+        // Update local state directly instead of refetching all items
+        setLineItems((prevItems: any[]) => prevItems.map((item: any) => {
+          if (item.project_item_id !== editingItem.project_item_id) return item
+          return {
+            ...item,
+            assigned_user_ids: selectedUserIds,
+            assignedTo: editingUsers.join(', '),
+            manuallyEdited: true
+          }
         }))
-
-        setLineItems(transformedItems)
 
         // Notify Factwise parent
         notifyItemsAssigned([editingItem.project_item_id], selectedUserIds)
