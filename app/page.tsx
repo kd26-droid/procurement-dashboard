@@ -2064,64 +2064,74 @@ export default function ProcurementDashboard() {
 
         console.log(`[Edit] Updating ${itemsToUpdate.length} items (users: ${assignedToChanged}, tags: ${categoryChanged})`)
 
-        for (let i = 0; i < itemsToUpdate.length; i += BATCH_SIZE) {
-          const batch = itemsToUpdate.slice(i, i + BATCH_SIZE)
-          console.log(`[Edit] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(itemsToUpdate.length / BATCH_SIZE)} (${batch.length} items)`)
+        // Helper to update a single item with retry logic
+        const updateItemWithRetry = async (item: any, maxRetries = 3): Promise<{ success: boolean; itemId: string; error?: any }> => {
+          for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+              // Update users first (if changed)
+              if (assignedToChanged) {
+                const existingUserIds = item.assigned_user_ids || []
+                const itemSpecificUserIds = existingUserIds.filter((id: string) => !originalCommonUserIds.includes(id))
+                const finalUserIds = Array.from(new Set([...itemSpecificUserIds, ...newUserIdsFromForm]))
 
-          // Update all items in this batch in parallel - BOTH users and tags at once
-          const batchPromises = batch.map(async item => {
-            const promises: Promise<any>[] = []
-
-            // Update users if changed
-            if (assignedToChanged) {
-              const existingUserIds = item.assigned_user_ids || []
-              const itemSpecificUserIds = existingUserIds.filter((id: string) => !originalCommonUserIds.includes(id))
-              const finalUserIds = Array.from(new Set([...itemSpecificUserIds, ...newUserIdsFromForm]))
-
-              promises.push(
-                updateProjectItem(projectId, item.project_item_id, {
+                await updateProjectItem(projectId, item.project_item_id, {
                   assigned_user_ids: finalUserIds,
                   custom_fields: { manually_edited: true, last_manual_edit: new Date().toISOString() }
                 })
-              )
-            }
+              }
 
-            // Update tags if changed
-            if (categoryChanged) {
-              const existingTags = item.category && item.category !== 'Uncategorized'
-                ? item.category.split(',').map((t: string) => t.trim()).filter(Boolean)
-                : []
-              const itemSpecificTags = existingTags.filter((t: string) => !originalCommonTags.includes(t))
-              const finalTags = Array.from(new Set([...itemSpecificTags, ...newTagsFromForm]))
+              // Then update tags (if changed) - sequential to avoid overwhelming API
+              if (categoryChanged) {
+                const existingTags = item.category && item.category !== 'Uncategorized'
+                  ? item.category.split(',').map((t: string) => t.trim()).filter(Boolean)
+                  : []
+                const itemSpecificTags = existingTags.filter((t: string) => !originalCommonTags.includes(t))
+                const finalTags = Array.from(new Set([...itemSpecificTags, ...newTagsFromForm]))
 
-              promises.push(
-                updateItemTags(projectId, item.project_item_id, undefined, finalTags)
-              )
-            }
+                await updateItemTags(projectId, item.project_item_id, undefined, finalTags)
+              }
 
-            // Run both in parallel for this item
-            try {
-              await Promise.all(promises)
               return { success: true, itemId: item.itemId }
-            } catch (error) {
-              console.error('[Edit] Error updating item:', item.itemId, error)
-              return { success: false, itemId: item.itemId, error }
+            } catch (error: any) {
+              console.error(`[Edit] Attempt ${attempt}/${maxRetries} failed for item:`, item.itemId, error?.message || error)
+              if (attempt === maxRetries) {
+                return { success: false, itemId: item.itemId, error }
+              }
+              // Wait before retry (exponential backoff)
+              await new Promise(resolve => setTimeout(resolve, 500 * attempt))
             }
-          })
+          }
+          return { success: false, itemId: item.itemId }
+        }
 
+        // Process in smaller batches with retry
+        const SAFE_BATCH_SIZE = 20 // Reduced from 50 to avoid overwhelming API
+        for (let i = 0; i < itemsToUpdate.length; i += SAFE_BATCH_SIZE) {
+          const batch = itemsToUpdate.slice(i, i + SAFE_BATCH_SIZE)
+          console.log(`[Edit] Processing batch ${Math.floor(i / SAFE_BATCH_SIZE) + 1}/${Math.ceil(itemsToUpdate.length / SAFE_BATCH_SIZE)} (${batch.length} items)`)
+
+          // Update all items in this batch in parallel (but each item updates sequentially)
+          const batchPromises = batch.map(item => updateItemWithRetry(item))
           const results = await Promise.all(batchPromises)
+
           successCount += results.filter(r => r.success).length
           failCount += results.filter(r => !r.success).length
+
+          // Log any failures
+          const failures = results.filter(r => !r.success)
+          if (failures.length > 0) {
+            console.error(`[Edit] Batch had ${failures.length} failures:`, failures.map(f => f.itemId))
+          }
 
           // Show progress
           toast({
             title: "Updating Items...",
-            description: `Progress: ${Math.min(i + BATCH_SIZE, itemsToUpdate.length)}/${itemsToUpdate.length} items`,
+            description: `Progress: ${Math.min(i + SAFE_BATCH_SIZE, itemsToUpdate.length)}/${itemsToUpdate.length} items`,
           })
 
-          // Small delay between batches
-          if (i + BATCH_SIZE < itemsToUpdate.length) {
-            await new Promise(resolve => setTimeout(resolve, 300))
+          // Delay between batches to prevent rate limiting
+          if (i + SAFE_BATCH_SIZE < itemsToUpdate.length) {
+            await new Promise(resolve => setTimeout(resolve, 500))
           }
         }
 
