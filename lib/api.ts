@@ -303,6 +303,7 @@ export interface DigikeyJobStatus {
     started_at?: string;
     completed_at?: string;
     estimated_completion?: string;
+    error_message?: string;
   };
 }
 
