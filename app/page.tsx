@@ -75,9 +75,22 @@ function convertDistributorPricing(pricingWrapper: any, itemCurrency: any, excha
 
   // NEW: Handle the new wrapper structure with status field
   // Status values: available, fetching, pending, not_found, error, no_mpn
-  const status = pricingWrapper.status;
+  let status = pricingWrapper.status;
   const statusMessage = pricingWrapper.status_message;
   const pricingData = pricingWrapper.data;
+
+  // IMPORTANT: Detect MPN not found from data (stock === -1 means MPN doesn't exist on distributor)
+  // This is a cached "not found" result - stop polling and show "Not Listed"
+  if (pricingData && pricingData.stock === -1) {
+    return {
+      status: 'not_found',
+      status_message: 'Not Listed',
+      data: null,
+      unit_price: null,
+      currency: null,
+      stock: -1
+    };
+  }
 
   // If status is not 'available', return wrapper with status info only
   if (status !== 'available' || !pricingData) {
@@ -92,10 +105,10 @@ function convertDistributorPricing(pricingWrapper: any, itemCurrency: any, excha
     };
   }
 
-  const distributorCurrency = pricingData.currency; // Always "USD"
+  const distributorCurrency = pricingData.currency; // USD for Digikey, can be INR/USD/etc for Mouser
 
-  // If item is already in USD, no conversion needed
-  if (itemCurrency?.code === 'USD') {
+  // If distributor already returns price in item's currency, no conversion needed
+  if (distributorCurrency === itemCurrency?.code) {
     return {
       status,
       status_message: statusMessage,
@@ -106,12 +119,22 @@ function convertDistributorPricing(pricingWrapper: any, itemCurrency: any, excha
     };
   }
 
-  // Get exchange rate
+  // Get exchange rate - try direct rate first, then inverse
   const rateKey = `${distributorCurrency}_TO_${itemCurrency?.code}`;
-  const exchangeRate = exchangeRates[rateKey];
+  let exchangeRate = exchangeRates[rateKey];
+
+  // If direct rate not available, try inverse rate (e.g., INR_TO_USD = 1 / USD_TO_INR)
+  if (!exchangeRate) {
+    const inverseRateKey = `${itemCurrency?.code}_TO_${distributorCurrency}`;
+    const inverseRate = exchangeRates[inverseRateKey];
+    if (inverseRate) {
+      exchangeRate = 1 / inverseRate;
+      console.log(`[Currency] Using inverse rate: 1/${inverseRateKey} = ${exchangeRate}`);
+    }
+  }
 
   if (!exchangeRate) {
-    console.warn(`No exchange rate for ${rateKey}`);
+    console.warn(`No exchange rate for ${rateKey} or inverse`);
     return {
       status,
       status_message: statusMessage,
@@ -886,6 +909,19 @@ export default function ProcurementDashboard() {
             setDigikeyJob(null)
             console.log('[Digikey Poll] Pricing refresh complete')
           }
+          else if (data.job.status === 'failed') {
+            // API error (rate limit, auth failure, etc) - stop polling
+            clearInterval(pollInterval)
+            setDigikeyJob(null)
+
+            console.log('[Digikey Poll] Job failed:', data.job.error_message)
+
+            toast({
+              title: "Digikey Pricing Failed",
+              description: "API rate limit reached - please try again in a few minutes",
+              variant: "destructive"
+            })
+          }
         }
       } catch (error) {
         console.error('Failed to poll job status:', error)
@@ -931,6 +967,19 @@ export default function ProcurementDashboard() {
 
             setMouserJob(null)
             console.log('[Mouser Poll] Pricing refresh complete')
+          }
+          else if (data.job.status === 'failed') {
+            // API error (rate limit, auth failure, etc) - stop polling
+            clearInterval(pollInterval)
+            setMouserJob(null)
+
+            console.log('[Mouser Poll] Job failed:', data.job.error_message)
+
+            toast({
+              title: "Mouser Pricing Failed",
+              description: "API rate limit reached - please try again in a few minutes",
+              variant: "destructive"
+            })
           }
         }
       } catch (error) {
@@ -3693,7 +3742,9 @@ export default function ProcurementDashboard() {
                         // Handle new status-based pricing structure
                         const pricingStatus = pricing?.status
                         const displayPrice = pricing?.quantity_price ?? pricing?.unit_price
-                        const currencySymbol = pricing?.currency ? getCurrencySymbol(pricing.currency) : '$'
+                        // Use item's currency (after conversion) or fall back to item.currency
+                        const itemCurrencyCode = (item as any).currency?.code || (item as any).currency?.symbol || 'USD'
+                        const currencySymbol = pricing?.currency ? getCurrencySymbol(pricing.currency) : getCurrencySymbol(itemCurrencyCode)
 
                         // Render based on status
                         const renderPricingContent = () => {
@@ -3707,7 +3758,7 @@ export default function ProcurementDashboard() {
                             case 'pending':
                               return <span className="text-xs text-orange-500">Pending...</span>
                             case 'not_found':
-                              return <span className="text-xs text-gray-400">N/A</span>
+                              return <span className="text-xs text-gray-400">Not Listed</span>
                             case 'error':
                               return <span className="text-xs text-red-500">Error</span>
                             case 'no_mpn':
@@ -3860,7 +3911,9 @@ export default function ProcurementDashboard() {
                         // Handle new status-based pricing structure
                         const pricingStatus = pricing?.status
                         const displayPrice = pricing?.quantity_price ?? pricing?.unit_price
-                        const displayCurrency = pricing?.currency || 'USD'
+                        // Use item's currency (after conversion) or fall back to item.currency
+                        const itemCurrencyCode = (item as any).currency?.code || (item as any).currency?.symbol || 'USD'
+                        const displayCurrency = pricing?.currency || itemCurrencyCode
                         const displaySavings = pricing?.savings_info
                         const displayNextTier = pricing?.next_tier_info
                         const wasConverted = pricing?.wasConverted || false
@@ -3879,7 +3932,7 @@ export default function ProcurementDashboard() {
                             case 'pending':
                               return <span className="text-xs text-orange-500">Pending...</span>
                             case 'not_found':
-                              return <span className="text-xs text-gray-400">N/A</span>
+                              return <span className="text-xs text-gray-400">Not Listed</span>
                             case 'error':
                               return <span className="text-xs text-red-500">Error</span>
                             case 'no_mpn':
