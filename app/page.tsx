@@ -3879,6 +3879,23 @@ export default function ProcurementDashboard() {
                         const itemCurrencyCode = (item as any).currency?.code || (item as any).currency?.symbol || 'USD'
                         const currencySymbol = pricing?.currency ? getCurrencySymbol(pricing.currency) : getCurrencySymbol(itemCurrencyCode)
 
+                        // Calculate if this is the cheapest price
+                        const digikeyPrice = displayPrice ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
+                        const mouserPricing = (item as any).mouser_pricing
+                        const mouserPrice = mouserPricing?.status === 'available'
+                          ? (mouserPricing?.quantity_price ?? mouserPricing?.unit_price)
+                          : null
+                        const allPricesForCheapest = [
+                          (item as any).pricePO,
+                          (item as any).priceContract,
+                          (item as any).priceQuote,
+                          digikeyPrice,
+                          mouserPrice ? (typeof mouserPrice === 'number' ? mouserPrice : parseFloat(mouserPrice)) : null,
+                          (item as any).priceEXIM,
+                        ].filter((p): p is number => p !== null && p !== undefined && !isNaN(p) && p > 0)
+                        const cheapestPrice = allPricesForCheapest.length > 0 ? Math.min(...allPricesForCheapest) : null
+                        const isDigikeyCheapest = digikeyPrice !== null && cheapestPrice !== null && Math.abs(digikeyPrice - cheapestPrice) < 0.001
+
                         // Render based on status
                         const renderPricingContent = () => {
                           if (!pricing) {
@@ -3897,12 +3914,12 @@ export default function ProcurementDashboard() {
                             case 'no_mpn':
                               return <span className="text-xs text-gray-400">-</span>
                             case 'available':
-                              // Show price with tooltip
+                              // Show price with tooltip - green only if cheapest
                               return displayPrice ? (
                                 <UiTooltip>
                                   <UiTooltipTrigger asChild>
                                     <div className="text-xs cursor-help">
-                                      <div className="font-semibold text-green-700 flex items-center justify-end gap-1">
+                                      <div className={`font-semibold flex items-center justify-end gap-1 ${isDigikeyCheapest ? 'text-green-700 bg-green-50 px-1 rounded' : 'text-gray-900'}`}>
                                         {currencySymbol}
                                         {typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
                                         {pricing.savings_info && (
@@ -4053,6 +4070,23 @@ export default function ProcurementDashboard() {
                         const originalPrice = pricing?.original_quantity_price ?? pricing?.original_unit_price
                         const currencySymbol = getCurrencySymbol(displayCurrency)
 
+                        // Calculate if this is the cheapest price
+                        const mouserPrice = displayPrice ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
+                        const digikeyPricing = (item as any).digikey_pricing
+                        const digikeyPrice = digikeyPricing?.status === 'available'
+                          ? (digikeyPricing?.quantity_price ?? digikeyPricing?.unit_price)
+                          : null
+                        const allPricesForCheapest = [
+                          (item as any).pricePO,
+                          (item as any).priceContract,
+                          (item as any).priceQuote,
+                          digikeyPrice ? (typeof digikeyPrice === 'number' ? digikeyPrice : parseFloat(digikeyPrice)) : null,
+                          mouserPrice,
+                          (item as any).priceEXIM,
+                        ].filter((p): p is number => p !== null && p !== undefined && !isNaN(p) && p > 0)
+                        const cheapestPrice = allPricesForCheapest.length > 0 ? Math.min(...allPricesForCheapest) : null
+                        const isMouserCheapest = mouserPrice !== null && cheapestPrice !== null && Math.abs(mouserPrice - cheapestPrice) < 0.001
+
                         // Render based on status
                         const renderMouserContent = () => {
                           if (!pricing) {
@@ -4071,12 +4105,12 @@ export default function ProcurementDashboard() {
                             case 'no_mpn':
                               return <span className="text-xs text-gray-400">-</span>
                             case 'available':
-                              // Show price with tooltip
+                              // Show price with tooltip - green only if cheapest
                               return displayPrice ? (
                                 <UiTooltip>
                                   <UiTooltipTrigger asChild>
                                     <div className="text-xs cursor-help">
-                                      <div className="font-semibold text-green-700 flex items-center justify-end gap-1">
+                                      <div className={`font-semibold flex items-center justify-end gap-1 ${isMouserCheapest ? 'text-green-700 bg-green-50 px-1 rounded' : 'text-gray-900'}`}>
                                         {currencySymbol}
                                         {typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
                                         {displaySavings && (
@@ -4241,6 +4275,9 @@ export default function ProcurementDashboard() {
                         const cheapestPrice = allPrices.length > 0 ? Math.min(...allPrices) : null
                         const isCheapest = hasPrice && cheapestPrice !== null && priceValue === cheapestPrice
 
+                        // Use item's currency symbol
+                        const itemCurrencySymbol = (item as any).currency?.symbol || '₹'
+
                         return (
                           <td key={columnKey} className="p-2 text-right" style={{ width: (columnWidths as any)[columnKey] }}>
                             <span
@@ -4251,9 +4288,9 @@ export default function ProcurementDashboard() {
                                     ? "text-green-700 bg-green-50 px-2 py-1 rounded"
                                     : "text-gray-900"
                               }`}
-                              title={hasPrice ? `$${priceValue.toFixed(2)}` : "N/A"}
+                              title={hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(2)}` : "N/A"}
                             >
-                              {hasPrice ? `$${priceValue.toFixed(2)}` : "-"}
+                              {hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(2)}` : "-"}
                             </span>
                           </td>
                         )
