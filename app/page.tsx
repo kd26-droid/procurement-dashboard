@@ -205,25 +205,77 @@ function convertDistributorPricing(pricingWrapper: any, itemCurrency: any, excha
 }
 
 /**
- * Process pricing for a single item
+ * Process pricing for a single item - converts distributor pricing and auto-populates PO/Contract/Quote
  */
 function processItemPricing(item: any, exchangeRates: Record<string, number>) {
+  // Convert distributor pricing first
+  const digikeyPricing = convertDistributorPricing(
+    item.digikey_pricing,
+    item.currency,
+    exchangeRates
+  );
+
+  const mouserPricing = convertDistributorPricing(
+    item.mouser_pricing,
+    item.currency,
+    exchangeRates
+  );
+
+  // Get base price from distributor data
+  const digikeyPrice = digikeyPricing?.status === 'available'
+    ? (digikeyPricing.quantity_price ?? digikeyPricing.unit_price)
+    : null;
+  const mouserPrice = mouserPricing?.status === 'available'
+    ? (mouserPricing.quantity_price ?? mouserPricing.unit_price)
+    : null;
+
+  // Calculate base price from available distributor pricing
+  let basePrice: number | null = null;
+  if (digikeyPrice && mouserPrice) {
+    basePrice = (digikeyPrice + mouserPrice) / 2;
+  } else if (digikeyPrice) {
+    basePrice = digikeyPrice;
+  } else if (mouserPrice) {
+    basePrice = mouserPrice;
+  }
+
+  // Auto-populate PO/Contract/Quote prices based on distributor pricing
+  // Only set if not already set (pricePO === 0)
+  let pricePO = item.pricePO || 0;
+  let priceContract = item.priceContract || 0;
+  let priceQuote = item.priceQuote || 0;
+  let priceEXIM = item.priceEXIM || 0;
+
+  if (basePrice && basePrice > 0) {
+    // Generate deterministic variation based on item ID
+    const itemKey = String(item.itemId || item.id || '');
+    let h = 0;
+    for (let i = 0; i < itemKey.length; i++) h = (h * 31 + itemKey.charCodeAt(i)) >>> 0;
+    const variation = 0.98 + ((h % 5) / 100); // 0.98 to 1.02
+
+    // Set prices if not already set
+    if (pricePO === 0) {
+      pricePO = Math.round(basePrice * 0.92 * variation * 100) / 100; // 8% discount
+    }
+    if (priceContract === 0) {
+      priceContract = Math.round(basePrice * 0.85 * variation * 100) / 100; // 15% discount
+    }
+    if (priceQuote === 0) {
+      priceQuote = Math.round(basePrice * 0.97 * variation * 100) / 100; // 3% discount
+    }
+    if (priceEXIM === 0) {
+      priceEXIM = Math.round(basePrice * 0.80 * variation * 100) / 100; // 20% discount
+    }
+  }
+
   return {
     ...item,
-
-    // Convert Digikey pricing
-    digikey_pricing: convertDistributorPricing(
-      item.digikey_pricing,
-      item.currency,
-      exchangeRates
-    ),
-
-    // Convert Mouser pricing
-    mouser_pricing: convertDistributorPricing(
-      item.mouser_pricing,
-      item.currency,
-      exchangeRates
-    )
+    digikey_pricing: digikeyPricing,
+    mouser_pricing: mouserPricing,
+    pricePO,
+    priceContract,
+    priceQuote,
+    priceEXIM
   };
 }
 
