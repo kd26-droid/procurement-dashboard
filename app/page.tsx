@@ -285,9 +285,8 @@ export default function ProcurementDashboard() {
     "priceQuote",
     "priceDigikey",
     "priceMouser",
-    "priceEXIM",
   ])
-  const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer"]) // Hide customer column by default
+  const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer", "priceEXIM"]) // Hide customer and EXIM columns by default
   const [savedViews, setSavedViews] = useState<{ [key: string]: { order: string[]; hidden: string[] } }>({})
   const [currentView, setCurrentView] = useState("default")
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null)
@@ -2343,24 +2342,44 @@ export default function ProcurementDashboard() {
   }
 
   function mockPriceForSource(item: any, source: PriceSource): number {
-    // Deterministic pseudo-price based on itemId and source for realistic electronic component pricing
-    const key = String(item.itemId || '') + '|' + source
-    let h = 0
-    for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
+    // Get reference price from Digikey or Mouser (whichever is available)
+    const digikeyPricing = item.digikey_pricing
+    const mouserPricing = item.mouser_pricing
 
-    // Generate realistic electronic component prices ($0.01 - $2.00)
-    const basePrice = 0.01 + ((h % 200) / 100) // 0.01 to 2.01
+    // Get actual price from distributors (use quantity_price if available, otherwise unit_price)
+    const digikeyPrice = digikeyPricing?.status === 'available'
+      ? (digikeyPricing.quantity_price ?? digikeyPricing.unit_price)
+      : null
+    const mouserPrice = mouserPricing?.status === 'available'
+      ? (mouserPricing.quantity_price ?? mouserPricing.unit_price)
+      : null
 
-    // Source-based price adjustments (percentage)
+    // Use average of available prices, or fall back to deterministic mock
+    let basePrice: number
+    if (digikeyPrice && mouserPrice) {
+      basePrice = (digikeyPrice + mouserPrice) / 2
+    } else if (digikeyPrice) {
+      basePrice = digikeyPrice
+    } else if (mouserPrice) {
+      basePrice = mouserPrice
+    } else {
+      // Fallback: deterministic pseudo-price if no distributor pricing available
+      const key = String(item.itemId || item.id || '') + '|' + source
+      let h = 0
+      for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
+      basePrice = 0.50 + ((h % 500) / 100) // 0.50 to 5.50
+    }
+
+    // Source-based price adjustments (percentage relative to distributor prices)
     const adj: Record<PriceSource, number> = {
-      'PO': 0.95,          // 5% discount
-      'Contract': 0.90,    // 10% discount
-      'Quote': 1.00,       // No adjustment
-      'Online - Digikey': 1.15,  // 15% premium
-      'Online - Mouser': 1.12,   // 12% premium
-      'Online - LCSC': 0.85,     // 15% discount
-      'Online - Farnell': 1.18,  // 18% premium
-      'EXIM': 0.88,        // 12% discount
+      'PO': 0.92,          // 8% discount from distributor price
+      'Contract': 0.85,    // 15% discount from distributor price
+      'Quote': 0.97,       // 3% discount from distributor price
+      'Online - Digikey': 1.00,  // Same as base
+      'Online - Mouser': 1.00,   // Same as base
+      'Online - LCSC': 0.75,     // 25% discount
+      'Online - Farnell': 1.05,  // 5% premium
+      'EXIM': 0.80,        // 20% discount
     }
 
     const finalPrice = basePrice * (adj[source] || 1.00)
