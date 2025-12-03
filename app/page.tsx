@@ -3882,13 +3882,13 @@ export default function ProcurementDashboard() {
                         const mouserPrice = mouserPricing?.status === 'available'
                           ? (mouserPricing?.quantity_price ?? mouserPricing?.unit_price)
                           : null
+                        // Note: EXIM excluded since column is hidden
                         const allPricesForCheapest = [
                           (item as any).pricePO,
                           (item as any).priceContract,
                           (item as any).priceQuote,
                           digikeyPrice,
                           mouserPrice ? (typeof mouserPrice === 'number' ? mouserPrice : parseFloat(mouserPrice)) : null,
-                          (item as any).priceEXIM,
                         ].filter((p): p is number => p !== null && p !== undefined && !isNaN(p) && p > 0)
                         const cheapestPrice = allPricesForCheapest.length > 0 ? Math.min(...allPricesForCheapest) : null
                         const isDigikeyCheapest = digikeyPrice !== null && cheapestPrice !== null && Math.abs(digikeyPrice - cheapestPrice) < 0.001
@@ -4073,13 +4073,13 @@ export default function ProcurementDashboard() {
                         const digikeyPrice = digikeyPricing?.status === 'available'
                           ? (digikeyPricing?.quantity_price ?? digikeyPricing?.unit_price)
                           : null
+                        // Note: EXIM excluded since column is hidden
                         const allPricesForCheapest = [
                           (item as any).pricePO,
                           (item as any).priceContract,
                           (item as any).priceQuote,
                           digikeyPrice ? (typeof digikeyPrice === 'number' ? digikeyPrice : parseFloat(digikeyPrice)) : null,
                           mouserPrice,
-                          (item as any).priceEXIM,
                         ].filter((p): p is number => p !== null && p !== undefined && !isNaN(p) && p > 0)
                         const cheapestPrice = allPricesForCheapest.length > 0 ? Math.min(...allPricesForCheapest) : null
                         const isMouserCheapest = mouserPrice !== null && cheapestPrice !== null && Math.abs(mouserPrice - cheapestPrice) < 0.001
@@ -4260,13 +4260,13 @@ export default function ProcurementDashboard() {
                           (typeof mouserBasePrice === 'number' ? mouserBasePrice : parseFloat(mouserBasePrice)) :
                           undefined
 
+                        // Note: EXIM excluded since column is hidden
                         const allPrices = [
                           (item as any).pricePO,
                           (item as any).priceContract,
                           (item as any).priceQuote,
                           digikeyPrice,
                           mouserPrice,
-                          (item as any).priceEXIM,
                         ].filter((p): p is number => p !== undefined && !isNaN(p) && p > 0)
 
                         const cheapestPrice = allPrices.length > 0 ? Math.min(...allPrices) : null
@@ -4328,13 +4328,13 @@ export default function ProcurementDashboard() {
                           }
                         }
 
+                        // Note: EXIM excluded since column is hidden
                         const prices = [
                           { source: 'PO', value: (item as any).pricePO },
                           { source: 'Contract', value: (item as any).priceContract },
                           { source: 'Quote', value: (item as any).priceQuote },
                           { source: 'Digi-Key', value: digikeyPrice },
                           { source: 'Mouser', value: mouserPrice },
-                          { source: 'EXIM', value: (item as any).priceEXIM },
                         ].filter((p): p is { source: string; value: number } => p.value !== undefined && !isNaN(p.value) && p.value > 0)
 
                         const cheapest = prices.length > 0
