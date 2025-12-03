@@ -239,26 +239,31 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
     basePrice = mouserPrice;
   }
 
-  // Auto-populate PO/Contract/Quote prices based on distributor pricing
-  // These should be DISCOUNTS from distributor prices (lower, not higher)
+  // Auto-populate PO/Contract/Quote prices - always generate mock data
+  // Use distributor price as base if available, otherwise use deterministic fallback
   let pricePO = 0;
   let priceContract = 0;
   let priceQuote = 0;
   let priceEXIM = 0;
 
-  if (basePrice && basePrice > 0) {
-    // Generate deterministic variation based on item ID (small variation: 0.98 to 1.02)
-    const itemKey = String(item.itemId || item.id || '');
-    let h = 0;
-    for (let i = 0; i < itemKey.length; i++) h = (h * 31 + itemKey.charCodeAt(i)) >>> 0;
-    const variation = 0.98 + ((h % 5) / 100); // 0.98 to 1.02
+  // Generate deterministic variation based on item ID
+  const itemKey = String(item.itemId || item.id || '');
+  let h = 0;
+  for (let i = 0; i < itemKey.length; i++) h = (h * 31 + itemKey.charCodeAt(i)) >>> 0;
+  const variation = 0.98 + ((h % 5) / 100); // 0.98 to 1.02
 
-    // Prices are DISCOUNTS from distributor price - so they should be lower
-    pricePO = Math.round(basePrice * 0.92 * variation * 1000) / 1000; // 8% discount
-    priceContract = Math.round(basePrice * 0.85 * variation * 1000) / 1000; // 15% discount (best deal)
-    priceQuote = Math.round(basePrice * 0.97 * variation * 1000) / 1000; // 3% discount
-    priceEXIM = Math.round(basePrice * 0.80 * variation * 1000) / 1000; // 20% discount
+  // Use distributor price if available, otherwise generate a mock base price
+  let mockBasePrice = basePrice;
+  if (!mockBasePrice || mockBasePrice <= 0) {
+    // Generate deterministic mock price based on item ID (realistic range)
+    mockBasePrice = 50 + ((h % 500)); // 50 to 550 in item's currency
   }
+
+  // Prices are DISCOUNTS from base price
+  pricePO = Math.round(mockBasePrice * 0.92 * variation * 100) / 100; // 8% discount
+  priceContract = Math.round(mockBasePrice * 0.85 * variation * 100) / 100; // 15% discount (best deal)
+  priceQuote = Math.round(mockBasePrice * 0.97 * variation * 100) / 100; // 3% discount
+  priceEXIM = Math.round(mockBasePrice * 0.80 * variation * 100) / 100; // 20% discount
 
   return {
     ...item,
@@ -3902,9 +3907,9 @@ export default function ProcurementDashboard() {
                             case 'not_found':
                               return <span className="text-xs text-gray-400">Not Listed</span>
                             case 'error':
-                              return <span className="text-xs text-red-500">Error</span>
+                              return <span className="text-xs text-red-500">API Limit</span>
                             case 'no_mpn':
-                              return <span className="text-xs text-gray-400">-</span>
+                              return <span className="text-xs text-gray-400">No MPN</span>
                             case 'available':
                               // Show price with tooltip - green only if cheapest
                               return displayPrice ? (
@@ -4093,9 +4098,9 @@ export default function ProcurementDashboard() {
                             case 'not_found':
                               return <span className="text-xs text-gray-400">Not Listed</span>
                             case 'error':
-                              return <span className="text-xs text-red-500">Error</span>
+                              return <span className="text-xs text-red-500">API Limit</span>
                             case 'no_mpn':
-                              return <span className="text-xs text-gray-400">-</span>
+                              return <span className="text-xs text-gray-400">No MPN</span>
                             case 'available':
                               // Show price with tooltip - green only if cheapest
                               return displayPrice ? (
