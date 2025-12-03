@@ -240,32 +240,24 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
   }
 
   // Auto-populate PO/Contract/Quote prices based on distributor pricing
-  // Only set if not already set (pricePO === 0)
-  let pricePO = item.pricePO || 0;
-  let priceContract = item.priceContract || 0;
-  let priceQuote = item.priceQuote || 0;
-  let priceEXIM = item.priceEXIM || 0;
+  // These should be DISCOUNTS from distributor prices (lower, not higher)
+  let pricePO = 0;
+  let priceContract = 0;
+  let priceQuote = 0;
+  let priceEXIM = 0;
 
   if (basePrice && basePrice > 0) {
-    // Generate deterministic variation based on item ID
+    // Generate deterministic variation based on item ID (small variation: 0.98 to 1.02)
     const itemKey = String(item.itemId || item.id || '');
     let h = 0;
     for (let i = 0; i < itemKey.length; i++) h = (h * 31 + itemKey.charCodeAt(i)) >>> 0;
     const variation = 0.98 + ((h % 5) / 100); // 0.98 to 1.02
 
-    // Set prices if not already set
-    if (pricePO === 0) {
-      pricePO = Math.round(basePrice * 0.92 * variation * 100) / 100; // 8% discount
-    }
-    if (priceContract === 0) {
-      priceContract = Math.round(basePrice * 0.85 * variation * 100) / 100; // 15% discount
-    }
-    if (priceQuote === 0) {
-      priceQuote = Math.round(basePrice * 0.97 * variation * 100) / 100; // 3% discount
-    }
-    if (priceEXIM === 0) {
-      priceEXIM = Math.round(basePrice * 0.80 * variation * 100) / 100; // 20% discount
-    }
+    // Prices are DISCOUNTS from distributor price - so they should be lower
+    pricePO = Math.round(basePrice * 0.92 * variation * 1000) / 1000; // 8% discount
+    priceContract = Math.round(basePrice * 0.85 * variation * 1000) / 1000; // 15% discount (best deal)
+    priceQuote = Math.round(basePrice * 0.97 * variation * 1000) / 1000; // 3% discount
+    priceEXIM = Math.round(basePrice * 0.80 * variation * 1000) / 1000; // 20% discount
   }
 
   return {
