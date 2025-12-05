@@ -16,7 +16,7 @@ const getApiBaseUrl = (): string => {
     const urlParams = new URLSearchParams(window.location.search);
     const apiEnv = urlParams.get('api_env');
     if (apiEnv === 'prod') {
-      return 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/prod';
+      return 'https://qc9s5bz8d7.execute-api.us-east-1.amazonaws.com/prod';
     }
     if (apiEnv === 'dev') {
       return 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
