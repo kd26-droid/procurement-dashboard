@@ -26,8 +26,6 @@ const getApiBaseUrl = (): string => {
   return process.env.NEXT_PUBLIC_API_URL || 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
 };
 
-const API_BASE_URL = getApiBaseUrl();
-
 /**
  * Get API token from URL parameters
  */
@@ -65,7 +63,7 @@ async function apiRequest<T>(
     ...options.headers,
   };
 
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+  const response = await fetch(`${getApiBaseUrl()}${endpoint}`, {
     ...options,
     headers,
   });
