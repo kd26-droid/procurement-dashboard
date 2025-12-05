@@ -16,8 +16,11 @@ const getApiBaseUrl = () => {
     return process.env.NEXT_PUBLIC_API_URL;
   }
 
-  // On Vercel production, use prod API
-  if (process.env.VERCEL_ENV === 'production' || process.env.NODE_ENV === 'production') {
+  // Check NEXT_PUBLIC_VERCEL_ENV (exposed to client) or NODE_ENV for production
+  const vercelEnv = process.env.NEXT_PUBLIC_VERCEL_ENV;
+  const nodeEnv = process.env.NODE_ENV;
+
+  if (vercelEnv === 'production' || nodeEnv === 'production') {
     return 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/prod';
   }
 
