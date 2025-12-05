@@ -8,9 +8,24 @@
 // API Configuration
 // Environment-based API URLs:
 // - Local dev: http://localhost:8000 (from .env.local)
-// - Vercel dev: AWS Dev API Gateway (from .env.development)
-// - Vercel prod: AWS Prod API Gateway (from .env.production)
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
+// - Vercel preview/dev: AWS Dev API Gateway
+// - Vercel prod: AWS Prod API Gateway
+const getApiBaseUrl = () => {
+  // If explicitly set via env var, use that
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    return process.env.NEXT_PUBLIC_API_URL;
+  }
+
+  // On Vercel production, use prod API
+  if (process.env.VERCEL_ENV === 'production' || process.env.NODE_ENV === 'production') {
+    return 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/prod';
+  }
+
+  // Default to dev API
+  return 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 /**
  * Get API token from URL parameters
