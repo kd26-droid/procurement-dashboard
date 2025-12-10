@@ -252,18 +252,62 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
   for (let i = 0; i < itemKey.length; i++) h = (h * 31 + itemKey.charCodeAt(i)) >>> 0;
   const variation = 0.98 + ((h % 5) / 100); // 0.98 to 1.02
 
-  // Use distributor price if available, otherwise generate a mock base price
+  // Use Digikey/Mouser price if available, then item.unitPrice (Price column), otherwise generate mock
   let mockBasePrice = basePrice;
   if (!mockBasePrice || mockBasePrice <= 0) {
-    // Generate deterministic mock price based on item ID (realistic range)
+    // Fall back to item.unitPrice (the Price column from Factwise)
+    mockBasePrice = item.unitPrice || 0;
+  }
+  if (!mockBasePrice || mockBasePrice <= 0) {
+    // Last resort: Generate deterministic mock price based on item ID
     mockBasePrice = 50 + ((h % 500)); // 50 to 550 in item's currency
   }
 
-  // Prices are DISCOUNTS from base price
-  pricePO = Math.round(mockBasePrice * 0.92 * variation * 100) / 100; // 8% discount
-  priceContract = Math.round(mockBasePrice * 0.85 * variation * 100) / 100; // 15% discount (best deal)
-  priceQuote = Math.round(mockBasePrice * 0.97 * variation * 100) / 100; // 3% discount
-  priceEXIM = Math.round(mockBasePrice * 0.80 * variation * 100) / 100; // 20% discount
+  // Prices with per-item variation so cheapest source varies
+  // Each source uses a different formula to ensure prices are never identical
+  // XOR with source-specific salt + different prime multipliers
+  const poHash = (h ^ 0xA5A5) * 7;
+  const contractHash = (h ^ 0x5A5A) * 13;
+  const quoteHash = (h ^ 0x3C3C) * 17;
+  const eximHash = (h ^ 0xC3C3) * 23;
+
+  const poVariation = 0.85 + (Math.abs(poHash) % 21) / 100;       // 0.85 to 1.05
+  const contractVariation = 0.85 + (Math.abs(contractHash) % 21) / 100; // 0.85 to 1.05
+  const quoteVariation = 0.85 + (Math.abs(quoteHash) % 21) / 100;    // 0.85 to 1.05
+  const eximVariation = 0.85 + (Math.abs(eximHash) % 21) / 100;     // 0.85 to 1.05
+
+  pricePO = Math.round(mockBasePrice * poVariation * variation * 100) / 100;
+  priceContract = Math.round(mockBasePrice * contractVariation * variation * 100) / 100;
+  priceQuote = Math.round(mockBasePrice * quoteVariation * variation * 100) / 100;
+  priceEXIM = Math.round(mockBasePrice * eximVariation * variation * 100) / 100;
+
+  // Determine cheapest source from all available prices
+  const priceOptions: { source: string; price: number }[] = [
+    { source: 'PO', price: pricePO },
+    { source: 'Contract', price: priceContract },
+    { source: 'Quote', price: priceQuote },
+    { source: 'EXIM', price: priceEXIM },
+  ];
+
+  // Add Digikey/Mouser if available
+  if (digikeyPricing?.status === 'available') {
+    const dkPrice = digikeyPricing.quantity_price ?? digikeyPricing.unit_price;
+    if (dkPrice && dkPrice > 0) {
+      priceOptions.push({ source: 'Digi-Key', price: dkPrice });
+    }
+  }
+  if (mouserPricing?.status === 'available') {
+    const mPrice = mouserPricing.quantity_price ?? mouserPricing.unit_price;
+    if (mPrice && mPrice > 0) {
+      priceOptions.push({ source: 'Mouser', price: mPrice });
+    }
+  }
+
+  // Find cheapest source
+  const validPrices = priceOptions.filter(p => p.price > 0);
+  const cheapestSource = validPrices.length > 0
+    ? validPrices.reduce((min, p) => p.price < min.price ? p : min).source
+    : '';
 
   return {
     ...item,
@@ -272,7 +316,8 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
     pricePO,
     priceContract,
     priceQuote,
-    priceEXIM
+    priceEXIM,
+    source: cheapestSource,
   };
 }
 
@@ -334,8 +379,9 @@ export default function ProcurementDashboard() {
     "priceQuote",
     "priceDigikey",
     "priceMouser",
+    "priceEXIM",
   ])
-  const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer", "priceEXIM"]) // Hide customer and EXIM columns by default
+  const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer"]) // Hide customer column by default
   const [savedViews, setSavedViews] = useState<{ [key: string]: { order: string[]; hidden: string[] } }>({})
   const [currentView, setCurrentView] = useState("default")
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null)
@@ -2391,11 +2437,15 @@ export default function ProcurementDashboard() {
   }
 
   function mockPriceForSource(item: any, source: PriceSource): number {
-    // Get reference price from Digikey or Mouser (whichever is available)
+    // Calculate hash for deterministic variation
+    const key = String(item.itemId || item.id || '') + '|' + source
+    let h = 0
+    for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
+
+    // Use Digikey/Mouser price if available
     const digikeyPricing = item.digikey_pricing
     const mouserPricing = item.mouser_pricing
 
-    // Get actual price from distributors (use quantity_price if available, otherwise unit_price)
     const digikeyPrice = digikeyPricing?.status === 'available'
       ? (digikeyPricing.quantity_price ?? digikeyPricing.unit_price)
       : null
@@ -2403,35 +2453,55 @@ export default function ProcurementDashboard() {
       ? (mouserPricing.quantity_price ?? mouserPricing.unit_price)
       : null
 
-    // Use average of available prices, or fall back to deterministic mock
-    let basePrice: number
+    let basePrice: number = 0
     if (digikeyPrice && mouserPrice) {
       basePrice = (digikeyPrice + mouserPrice) / 2
     } else if (digikeyPrice) {
       basePrice = digikeyPrice
     } else if (mouserPrice) {
       basePrice = mouserPrice
-    } else {
-      // Fallback: deterministic pseudo-price if no distributor pricing available
-      const key = String(item.itemId || item.id || '') + '|' + source
-      let h = 0
-      for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
+    }
+
+    if (!basePrice || basePrice <= 0) {
+      // Fall back to item.unitPrice (the Price column from Factwise)
+      basePrice = item.unitPrice || 0
+    }
+
+    if (!basePrice || basePrice <= 0) {
+      // Last resort: deterministic pseudo-price if no pricing available
       basePrice = 0.50 + ((h % 500) / 100) // 0.50 to 5.50
     }
 
-    // Source-based price adjustments (percentage relative to distributor prices)
-    const adj: Record<PriceSource, number> = {
-      'PO': 0.92,          // 8% discount from distributor price
-      'Contract': 0.85,    // 15% discount from distributor price
-      'Quote': 0.97,       // 3% discount from distributor price
-      'Online - Digikey': 1.00,  // Same as base
-      'Online - Mouser': 1.00,   // Same as base
-      'Online - LCSC': 0.75,     // 25% discount
-      'Online - Farnell': 1.05,  // 5% premium
-      'EXIM': 0.80,        // 20% discount
-    }
+    // Source-based price adjustments with variation per item
+    // Each source uses XOR with unique salt + prime multiplier to ensure different prices
+    const sourceSalts: Record<string, number> = {
+      'PO': 0xA5A5,
+      'Contract': 0x5A5A,
+      'Quote': 0x3C3C,
+      'EXIM': 0xC3C3,
+      'Online - Digikey': 0x1234,
+      'Online - Mouser': 0x5678,
+      'Online - LCSC': 0x9ABC,
+      'Online - Farnell': 0xDEF0,
+    };
+    const primeMultipliers: Record<string, number> = {
+      'PO': 7,
+      'Contract': 13,
+      'Quote': 17,
+      'EXIM': 23,
+      'Online - Digikey': 29,
+      'Online - Mouser': 31,
+      'Online - LCSC': 37,
+      'Online - Farnell': 41,
+    };
+    const salt = sourceSalts[source] || 0xFFFF;
+    const prime = primeMultipliers[source] || 11;
+    const sourceHash = (h ^ salt) * prime;
+    const sourceVariation = 0.85 + (Math.abs(sourceHash) % 21) / 100; // 0.85 to 1.05
 
-    const finalPrice = basePrice * (adj[source] || 1.00)
+    // Apply variation to make cheapest source vary per item
+    const adjustedMultiplier = sourceVariation;
+    const finalPrice = basePrice * adjustedMultiplier
     return Math.max(0.01, Math.round(finalPrice * 1000) / 1000) // Round to 3 decimal places, min $0.01
   }
 
@@ -3882,13 +3952,13 @@ export default function ProcurementDashboard() {
                         const mouserPrice = mouserPricing?.status === 'available'
                           ? (mouserPricing?.quantity_price ?? mouserPricing?.unit_price)
                           : null
-                        // Note: EXIM excluded since column is hidden
                         const allPricesForCheapest = [
                           (item as any).pricePO,
                           (item as any).priceContract,
                           (item as any).priceQuote,
                           digikeyPrice,
                           mouserPrice ? (typeof mouserPrice === 'number' ? mouserPrice : parseFloat(mouserPrice)) : null,
+                          (item as any).priceEXIM,
                         ].filter((p): p is number => p !== null && p !== undefined && !isNaN(p) && p > 0)
                         const cheapestPrice = allPricesForCheapest.length > 0 ? Math.min(...allPricesForCheapest) : null
                         const isDigikeyCheapest = digikeyPrice !== null && cheapestPrice !== null && Math.abs(digikeyPrice - cheapestPrice) < 0.001
@@ -4260,11 +4330,12 @@ export default function ProcurementDashboard() {
                           (typeof mouserBasePrice === 'number' ? mouserBasePrice : parseFloat(mouserBasePrice)) :
                           undefined
 
-                        // Note: EXIM excluded since column is hidden
+                        // Include all price sources for cheapest calculation
                         const allPrices = [
                           (item as any).pricePO,
                           (item as any).priceContract,
                           (item as any).priceQuote,
+                          (item as any).priceEXIM,
                           digikeyPrice,
                           mouserPrice,
                         ].filter((p): p is number => p !== undefined && !isNaN(p) && p > 0)
@@ -4328,11 +4399,12 @@ export default function ProcurementDashboard() {
                           }
                         }
 
-                        // Note: EXIM excluded since column is hidden
+                        // Include all price sources for cheapest calculation
                         const prices = [
                           { source: 'PO', value: (item as any).pricePO },
                           { source: 'Contract', value: (item as any).priceContract },
                           { source: 'Quote', value: (item as any).priceQuote },
+                          { source: 'EXIM', value: (item as any).priceEXIM },
                           { source: 'Digi-Key', value: digikeyPrice },
                           { source: 'Mouser', value: mouserPrice },
                         ].filter((p): p is { source: string; value: number } => p.value !== undefined && !isNaN(p.value) && p.value > 0)
