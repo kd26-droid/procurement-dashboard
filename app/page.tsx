@@ -40,6 +40,7 @@ import {
   Globe,
   FileSignature,
   X,
+  Download,
 } from "lucide-react"
 
 /**
@@ -1429,6 +1430,165 @@ export default function ProcurementDashboard() {
   }, [filteredAndSortedItems, currentPage])
 
   const totalPages = Math.ceil(filteredAndSortedItems.length / itemsPerPage)
+
+  // Export to CSV function
+  const handleExportCSV = () => {
+    if (filteredAndSortedItems.length === 0) {
+      toast({
+        title: "Nothing to export",
+        description: "No items match your current filters",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Helper to escape CSV values
+    const escapeCSV = (value: any): string => {
+      if (value === null || value === undefined) return ''
+      const str = String(value)
+      // If contains comma, newline, or quote, wrap in quotes and escape internal quotes
+      if (str.includes(',') || str.includes('\n') || str.includes('"')) {
+        return `"${str.replace(/"/g, '""')}"`
+      }
+      return str
+    }
+
+    // Helper to format price
+    const formatPrice = (price: any): string => {
+      if (price === null || price === undefined || price === 0) return ''
+      return typeof price === 'number' ? price.toFixed(2) : String(price)
+    }
+
+    // Helper to get distributor price details
+    const getDistributorPrice = (pricing: any): { unitPrice: string; quantityPrice: string; stock: string; status: string } => {
+      if (!pricing) return { unitPrice: '', quantityPrice: '', stock: '', status: 'N/A' }
+
+      if (pricing.status === 'not_found') {
+        return { unitPrice: '', quantityPrice: '', stock: '', status: 'Not Listed' }
+      }
+      if (pricing.status === 'fetching' || pricing.status === 'pending') {
+        return { unitPrice: '', quantityPrice: '', stock: '', status: 'Fetching...' }
+      }
+      if (pricing.status !== 'available') {
+        return { unitPrice: '', quantityPrice: '', stock: '', status: pricing.status_message || pricing.status || 'N/A' }
+      }
+
+      return {
+        unitPrice: formatPrice(pricing.unit_price),
+        quantityPrice: formatPrice(pricing.quantity_price),
+        stock: pricing.stock !== null && pricing.stock !== undefined ? String(pricing.stock) : '',
+        status: 'Available'
+      }
+    }
+
+    // Build CSV headers - start with base columns
+    const headers: string[] = [
+      'Item ID',
+      'Description',
+      'BOM Code',
+      'BOM Name',
+      'Quantity',
+      'Unit',
+      'Tags',
+      'Action',
+      'Assigned To',
+      'Due Date',
+      'Vendor',
+      'Currency',
+      'Unit Price',
+      'Total Price',
+      'Source (Cheapest)',
+      'PO Price',
+      'Contract Price',
+      'Quote Price',
+      'EXIM Price',
+      'Digi-Key Unit Price',
+      'Digi-Key Qty Price',
+      'Digi-Key Stock',
+      'Digi-Key Status',
+      'Mouser Unit Price',
+      'Mouser Qty Price',
+      'Mouser Stock',
+      'Mouser Status',
+    ]
+
+    // Add dynamic spec columns
+    specColumns.forEach(specName => {
+      headers.push(specName)
+    })
+
+    // Build CSV rows
+    const rows: string[][] = filteredAndSortedItems.map((item: any) => {
+      const digikeyDetails = getDistributorPrice(item.digikey_pricing)
+      const mouserDetails = getDistributorPrice(item.mouser_pricing)
+
+      const row: string[] = [
+        escapeCSV(item.itemId),
+        escapeCSV(item.description),
+        escapeCSV(item.bom_info?.bom_code || ''),
+        escapeCSV(item.bom_info?.bom_name || ''),
+        escapeCSV(item.quantity),
+        escapeCSV(item.unit),
+        escapeCSV(item.category),
+        escapeCSV(item.action),
+        escapeCSV(item.assignedTo),
+        escapeCSV(item.dueDate),
+        escapeCSV(item.vendor),
+        escapeCSV(item.currency?.code || ''),
+        formatPrice(item.unitPrice),
+        formatPrice(item.totalPrice),
+        escapeCSV(item.source),
+        formatPrice(item.pricePO),
+        formatPrice(item.priceContract),
+        formatPrice(item.priceQuote),
+        formatPrice(item.priceEXIM),
+        digikeyDetails.unitPrice,
+        digikeyDetails.quantityPrice,
+        digikeyDetails.stock,
+        escapeCSV(digikeyDetails.status),
+        mouserDetails.unitPrice,
+        mouserDetails.quantityPrice,
+        mouserDetails.stock,
+        escapeCSV(mouserDetails.status),
+      ]
+
+      // Add dynamic spec values
+      specColumns.forEach(specName => {
+        const key = `spec_${specName.replace(/\s+/g, '_')}`
+        row.push(escapeCSV(item[key] || ''))
+      })
+
+      return row
+    })
+
+    // Build CSV content
+    const csvContent = [
+      headers.map(h => escapeCSV(h)).join(','),
+      ...rows.map(row => row.join(','))
+    ].join('\n')
+
+    // Create and download file
+    const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' }) // BOM for Excel UTF-8
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+
+    // Generate filename with project name and date
+    const date = new Date().toISOString().split('T')[0]
+    const projectName = projectData.name || 'procurement'
+    const sanitizedName = projectName.replace(/[^a-z0-9]/gi, '_').substring(0, 30)
+    link.download = `${sanitizedName}_export_${date}.csv`
+
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+
+    toast({
+      title: "Export successful",
+      description: `Exported ${filteredAndSortedItems.length} items to CSV`,
+    })
+  }
 
   const handleSelectAll = () => {
     if (selectedItems.length === filteredAndSortedItems.length) {
@@ -3471,6 +3631,17 @@ export default function ProcurementDashboard() {
               >
                 <Edit className="h-3 w-3" />
                 Edit {selectedItems.length > 0 ? `(${selectedItems.length})` : ''}
+              </Button>
+
+              {/* Export CSV Button */}
+              <Button
+                variant="outline"
+                className="flex items-center gap-2 bg-transparent"
+                onClick={handleExportCSV}
+                title={`Export ${filteredAndSortedItems.length} items to CSV`}
+              >
+                <Download className="h-4 w-4" />
+                Export CSV {filteredAndSortedItems.length > 0 ? `(${filteredAndSortedItems.length})` : ''}
               </Button>
             </div>
             <div className="flex items-center gap-2">
