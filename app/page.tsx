@@ -681,9 +681,14 @@ export default function ProcurementDashboard() {
             description: item.item_name,
             quantity: item.quantity,
             unit: item.measurement_unit?.abbreviation || '',
-            category: (item.custom_tags || []).length > 0
-              ? (item.custom_tags || []).join(', ')
-              : 'Uncategorized',
+            category: (() => {
+              const allTags = [...(item.tags || []), ...(item.custom_tags || [])];
+              const uniqueTags = [...new Set(allTags)]; // Remove duplicates
+              return uniqueTags.length > 0 ? uniqueTags.join(', ') : 'Uncategorized';
+            })(),
+            // Store original tags separately for proper update logic
+            original_tags: item.tags || [],
+            original_custom_tags: item.custom_tags || [],
             assignedTo: item.assigned_users.map(u => u.name).join(', '),
             assigned_user_ids: item.assigned_users.map(u => u.user_id),
             unitPrice: item.rate || 0,
@@ -802,9 +807,14 @@ export default function ProcurementDashboard() {
             description: item.item_name,
             quantity: item.quantity,
             unit: item.measurement_unit?.abbreviation || '',
-            category: (item.custom_tags || []).length > 0
-              ? (item.custom_tags || []).join(', ')
-              : 'Uncategorized',
+            category: (() => {
+              const allTags = [...(item.tags || []), ...(item.custom_tags || [])];
+              const uniqueTags = [...new Set(allTags)]; // Remove duplicates
+              return uniqueTags.length > 0 ? uniqueTags.join(', ') : 'Uncategorized';
+            })(),
+            // Store original tags separately for proper update logic
+            original_tags: item.tags || [],
+            original_custom_tags: item.custom_tags || [],
             assignedTo: item.assigned_users.map(u => u.name).join(', '),
             assigned_user_ids: item.assigned_users.map(u => u.user_id),
             unitPrice: item.rate || 0,
@@ -2000,22 +2010,35 @@ export default function ProcurementDashboard() {
         console.log('[Edit Rate/Qty] Successfully updated rate and quantity')
 
         // Update tags if they changed
+        // Logic: tags can only be removed (not added), custom_tags can be added/removed
         if (tagsChanged && newTags) {
-          console.log('[Edit Rate/Qty] Updating custom_tags:', newTags)
+          const originalTagsArr = originalItem?.original_tags || []
+          const originalCustomTagsArr = originalItem?.original_custom_tags || []
+
+          // Tags to keep = original tags that are still in newTags (can only remove, not add)
+          const tagsToKeep = originalTagsArr.filter((t: string) => newTags.includes(t))
+
+          // Custom tags = all newTags that are not in original_tags
+          // This includes: existing custom_tags that weren't removed + newly added tags
+          const newCustomTags = newTags.filter((t: string) => !originalTagsArr.includes(t))
+
+          console.log('[Edit Rate/Qty] Tag update - original_tags:', originalTagsArr, 'original_custom_tags:', originalCustomTagsArr)
+          console.log('[Edit Rate/Qty] Tag update - newTags:', newTags, 'tagsToKeep:', tagsToKeep, 'newCustomTags:', newCustomTags)
+
           try {
             const tagsResult = await updateItemTags(
               projectId,
               editFormData.project_item_id,
-              undefined,  // tags (enterprise-level, never modified from Strategy Dashboard)
-              newTags     // custom_tags (complete list to replace existing)
+              tagsToKeep,      // tags (only kept ones, removed ones will be gone)
+              newCustomTags    // custom_tags (new + existing that weren't removed)
             )
             if (tagsResult.success) {
-              console.log('[Edit Rate/Qty] Successfully updated custom_tags')
+              console.log('[Edit Rate/Qty] Successfully updated tags and custom_tags')
             } else {
-              console.error('[Edit Rate/Qty] Failed to update custom_tags:', tagsResult)
+              console.error('[Edit Rate/Qty] Failed to update tags:', tagsResult)
             }
           } catch (tagError) {
-            console.error('[Edit Rate/Qty] Error updating custom_tags:', tagError)
+            console.error('[Edit Rate/Qty] Error updating tags:', tagError)
           }
         }
 
@@ -2044,7 +2067,15 @@ export default function ProcurementDashboard() {
           }
 
           if (tagsChanged && newTags) {
+            const originalTagsArr = item.original_tags || []
+            // Tags to keep = original tags that are still in newTags
+            const tagsToKeep = originalTagsArr.filter((t: string) => newTags.includes(t))
+            // Custom tags = all newTags that are not in original_tags
+            const newCustomTags = newTags.filter((t: string) => !originalTagsArr.includes(t))
+
             updatedItem.category = newTags.length > 0 ? newTags.join(', ') : 'Uncategorized'
+            updatedItem.original_tags = tagsToKeep
+            updatedItem.original_custom_tags = newCustomTags
           }
 
           return updatedItem
@@ -2384,6 +2415,7 @@ export default function ProcurementDashboard() {
               }
 
               // Then update tags (if changed) - sequential to avoid overwhelming API
+              // Logic: tags can only be removed (not added), custom_tags can be added/removed
               if (categoryChanged) {
                 const existingTags = item.category && item.category !== 'Uncategorized'
                   ? item.category.split(',').map((t: string) => t.trim()).filter(Boolean)
@@ -2391,7 +2423,16 @@ export default function ProcurementDashboard() {
                 const itemSpecificTags = existingTags.filter((t: string) => !originalCommonTags.includes(t))
                 const finalTags = Array.from(new Set([...itemSpecificTags, ...newTagsFromForm]))
 
-                await updateItemTags(projectId, item.project_item_id, undefined, finalTags)
+                // Get original tags vs custom_tags for this item
+                const originalTagsArr = item.original_tags || []
+
+                // Tags to keep = original tags that are still in finalTags (can only remove, not add)
+                const tagsToKeep = originalTagsArr.filter((t: string) => finalTags.includes(t))
+
+                // Custom tags = all finalTags that are not in original_tags
+                const newCustomTags = finalTags.filter((t: string) => !originalTagsArr.includes(t))
+
+                await updateItemTags(projectId, item.project_item_id, tagsToKeep, newCustomTags)
               }
 
               return { success: true, itemId: item.itemId }
@@ -2464,6 +2505,11 @@ export default function ProcurementDashboard() {
             const itemSpecificTags = existingTags.filter((t: string) => !originalCommonTags.includes(t))
             const finalTags = Array.from(new Set([...itemSpecificTags, ...newTagsFromForm]))
             updates.category = finalTags.length > 0 ? finalTags.join(', ') : 'Uncategorized'
+
+            // Update original_tags and original_custom_tags
+            const originalTagsArr = item.original_tags || []
+            updates.original_tags = originalTagsArr.filter((t: string) => finalTags.includes(t))
+            updates.original_custom_tags = finalTags.filter((t: string) => !originalTagsArr.includes(t))
           }
 
           updates.manuallyEdited = true
