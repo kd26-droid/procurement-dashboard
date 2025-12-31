@@ -426,6 +426,10 @@ export default function ProcurementDashboard() {
   const [showEditDialog, setShowEditDialog] = useState(false)
   const [editFormData, setEditFormData] = useState<any>({})
 
+  // Bulk update progress state
+  const [bulkUpdateInProgress, setBulkUpdateInProgress] = useState(false)
+  const [bulkUpdateProgress, setBulkUpdateProgress] = useState({ current: 0, total: 0, failed: 0 })
+
   // Settings state
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsInitialTab, setSettingsInitialTab] = useState<'users' | 'prices' | 'actions'>('users')
@@ -581,6 +585,19 @@ export default function ProcurementDashboard() {
       setCurrentSettingsKey(initial[curKey] ? curKey : 'Default')
     }
   }, [])
+
+  // Warn user before leaving page during bulk update
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (bulkUpdateInProgress) {
+        e.preventDefault()
+        e.returnValue = 'Bulk update is in progress. Are you sure you want to leave?'
+        return e.returnValue
+      }
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [bulkUpdateInProgress])
 
   // Load project data from API
   useEffect(() => {
@@ -2342,20 +2359,37 @@ export default function ProcurementDashboard() {
       return
     }
 
-    console.log('[Edit] Saving changes for', selectedItems.length, 'items')
-    console.log('[Edit] Form data:', editFormData)
-
     // Check if assignedTo changed - compare with original for both single and bulk
     const assignedToChanged = editFormData.assignedTo !== editFormData.originalAssignedTo
 
     // Check if category changed - compare with original for both single and bulk
     const categoryChanged = editFormData.category !== editFormData.originalCategory
 
+    // If no changes, don't proceed
+    if (!assignedToChanged && !categoryChanged) {
+      toast({
+        title: "No Changes",
+        description: "No fields were modified",
+      })
+      return
+    }
+
+    console.log('[Edit] Saving changes for', selectedItems.length, 'items')
+    console.log('[Edit] Form data:', editFormData)
+
     // If either users or tags changed, update via API
     if (assignedToChanged || categoryChanged) {
+      // Close dialog immediately and show progress
+      setShowEditDialog(false)
+      setEditFormData({})
+
+      const itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
+
+      // Start bulk update progress tracking
+      setBulkUpdateInProgress(true)
+      setBulkUpdateProgress({ current: 0, total: itemsToUpdate.length, failed: 0 })
+
       try {
-        const itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
-        const BATCH_SIZE = 50
         let successCount = 0
         let failCount = 0
 
@@ -2467,19 +2501,21 @@ export default function ProcurementDashboard() {
             console.error(`[Edit] Batch had ${failures.length} failures:`, failures.map(f => f.itemId))
           }
 
-          // Show progress
-          toast({
-            title: "Updating Items...",
-            description: `Progress: ${Math.min(i + SAFE_BATCH_SIZE, itemsToUpdate.length)}/${itemsToUpdate.length} items`,
+          // Update progress state
+          setBulkUpdateProgress({
+            current: Math.min(i + SAFE_BATCH_SIZE, itemsToUpdate.length),
+            total: itemsToUpdate.length,
+            failed: failCount
           })
 
           // Delay between batches to prevent rate limiting
           if (i + SAFE_BATCH_SIZE < itemsToUpdate.length) {
-            await new Promise(resolve => setTimeout(resolve, 500))
+            await new Promise(resolve => setTimeout(resolve, 300))
           }
         }
 
         console.log(`[Edit] Complete: ${successCount} succeeded, ${failCount} failed`)
+        setBulkUpdateInProgress(false)
 
         // Update local state directly instead of refetching
         const updatedLineItems = lineItems.map((item: any) => {
@@ -2540,6 +2576,7 @@ export default function ProcurementDashboard() {
 
       } catch (error) {
         console.error('[Edit] Error:', error)
+        setBulkUpdateInProgress(false)
         toast({
           title: "Error",
           description: error instanceof Error ? error.message : "Failed to save changes",
@@ -2547,34 +2584,15 @@ export default function ProcurementDashboard() {
         })
       }
     }
-
-    // If neither users nor tags changed, just update local state for other fields
-    if (!assignedToChanged && !categoryChanged) {
-      const updatedItems = lineItems.map((item: any) => {
-        if (!selectedItems.includes(item.id)) return item
-
-        const updates: any = { manuallyEdited: true }
-
-        if (editFormData.vendor && editFormData.vendor.trim()) {
-          updates.vendor = editFormData.vendor
-        }
-        if (editFormData.action && editFormData.action.trim()) {
-          updates.action = editFormData.action
-        }
-        if (editFormData.unitPrice && editFormData.unitPrice > 0) {
-          updates.unitPrice = editFormData.unitPrice
-          updates.totalPrice = editFormData.unitPrice * item.quantity
-        }
-
-        return { ...item, ...updates }
-      })
-
-      setLineItems(updatedItems)
-    }
-
-    setShowEditDialog(false)
-    setEditFormData({})
   }
+
+  // Computed: Check if edit form has changes (for disabling save button)
+  const editFormHasChanges = useMemo(() => {
+    if (!editFormData || Object.keys(editFormData).length === 0) return false
+    const assignedToChanged = editFormData.assignedTo !== editFormData.originalAssignedTo
+    const categoryChanged = editFormData.category !== editFormData.originalCategory
+    return assignedToChanged || categoryChanged
+  }, [editFormData])
 
   const handleColumnDrag = (draggedCol: string, targetCol: string) => {
     const draggedIndex = columnOrder.indexOf(draggedCol)
@@ -5173,10 +5191,39 @@ export default function ProcurementDashboard() {
           <Button onClick={() => setShowEditDialog(false)} variant="outline">
             Cancel
           </Button>
-          <Button onClick={handleEditRateQuantity}>Save changes</Button>
+          <Button
+            onClick={handleEditRateQuantity}
+            disabled={!editFormHasChanges}
+            className={!editFormHasChanges ? 'opacity-50 cursor-not-allowed' : ''}
+          >
+            Save changes
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+      {/* Bulk Update Progress Indicator */}
+      {bulkUpdateInProgress && (
+        <div className="fixed bottom-4 right-4 z-50 bg-white border-2 border-blue-500 rounded-lg shadow-lg p-4 min-w-[300px]">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="animate-spin rounded-full h-5 w-5 border-2 border-blue-500 border-t-transparent"></div>
+            <span className="font-medium text-gray-900">Updating Items...</span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
+            <div
+              className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${bulkUpdateProgress.total > 0 ? (bulkUpdateProgress.current / bulkUpdateProgress.total) * 100 : 0}%` }}
+            ></div>
+          </div>
+          <div className="flex justify-between text-sm text-gray-600">
+            <span>{bulkUpdateProgress.current} / {bulkUpdateProgress.total} items</span>
+            {bulkUpdateProgress.failed > 0 && (
+              <span className="text-red-500">{bulkUpdateProgress.failed} failed</span>
+            )}
+          </div>
+          <p className="text-xs text-gray-500 mt-2">Please don't refresh the page</p>
+        </div>
+      )}
 
       {/* Simple wide white popup for Settings */}
       {settingsOpen && (
