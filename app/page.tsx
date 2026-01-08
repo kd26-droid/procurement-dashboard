@@ -731,6 +731,12 @@ export default function ProcurementDashboard() {
               bom_item_id: null,
               bom_module_linkage_id: null,
             },
+            // BOM usages (multiple BOMs with quantities)
+            bom_usages: item.bom_usages || [],
+            // Event usages (RFQ/PO with quantities)
+            event_usages: item.event_usages || [],
+            // Delivery slabs
+            delivery_slabs: item.delivery_slabs || [],
           }
 
           // Add dynamic spec columns
@@ -856,6 +862,12 @@ export default function ProcurementDashboard() {
               bom_item_id: null,
               bom_module_linkage_id: null,
             },
+            // BOM usages (multiple BOMs with quantities)
+            bom_usages: item.bom_usages || [],
+            // Event usages (RFQ/PO with quantities)
+            event_usages: item.event_usages || [],
+            // Delivery slabs
+            delivery_slabs: item.delivery_slabs || [],
           }
 
           // Add dynamic spec columns
@@ -1512,10 +1524,14 @@ export default function ProcurementDashboard() {
     const headers: string[] = [
       'Item ID',
       'Description',
+      'Project Quantity',
+      'Unit',
       'BOM Code',
       'BOM Name',
-      'Quantity',
-      'Unit',
+      'BOM Slab Qty',
+      'BOM Quantity',
+      'Event Code',
+      'Event Quantity',
       'Tags',
       'Action',
       'Assigned To',
@@ -1544,48 +1560,81 @@ export default function ProcurementDashboard() {
       headers.push(specName)
     })
 
-    // Build CSV rows
-    const rows: string[][] = filteredAndSortedItems.map((item: any) => {
+    // Build CSV rows - flatten items with multiple BOMs/events into multiple rows
+    const rows: string[][] = []
+
+    filteredAndSortedItems.forEach((item: any) => {
       const digikeyDetails = getDistributorPrice(item.digikey_pricing)
       const mouserDetails = getDistributorPrice(item.mouser_pricing)
 
-      const row: string[] = [
-        escapeCSV(item.itemId),
-        escapeCSV(item.description),
-        escapeCSV(item.bom_info?.bom_code || ''),
-        escapeCSV(item.bom_info?.bom_name || ''),
-        escapeCSV(item.quantity),
-        escapeCSV(item.unit),
-        escapeCSV(item.category),
-        escapeCSV(item.action),
-        escapeCSV(item.assignedTo),
-        escapeCSV(item.dueDate),
-        escapeCSV(item.vendor),
-        escapeCSV(item.currency?.code || ''),
-        formatPrice(item.unitPrice),
-        formatPrice(item.totalPrice),
-        escapeCSV(item.source),
-        formatPrice(item.pricePO),
-        formatPrice(item.priceContract),
-        formatPrice(item.priceQuote),
-        formatPrice(item.priceEXIM),
-        digikeyDetails.unitPrice,
-        digikeyDetails.quantityPrice,
-        digikeyDetails.stock,
-        escapeCSV(digikeyDetails.status),
-        mouserDetails.unitPrice,
-        mouserDetails.quantityPrice,
-        mouserDetails.stock,
-        escapeCSV(mouserDetails.status),
-      ]
+      // Get BOM usages and event usages
+      const bomUsages = item.bom_usages || []
+      const eventUsages = item.event_usages || []
 
-      // Add dynamic spec values
-      specColumns.forEach(specName => {
-        const key = `spec_${specName.replace(/\s+/g, '_')}`
-        row.push(escapeCSV(item[key] || ''))
-      })
+      // Determine number of rows needed (max of bom_usages, event_usages, or 1)
+      const numRows = Math.max(bomUsages.length, eventUsages.length, 1)
 
-      return row
+      for (let i = 0; i < numRows; i++) {
+        const bomUsage = bomUsages[i] || {}
+        const eventUsage = eventUsages[i] || {}
+
+        // Use event_usages data if from_bom is true, otherwise fall back to bom_usages or bom_info
+        const fromBom = eventUsage.from_bom || false
+
+        // BOM data - prefer event_usages when from_bom, then bom_usages, then bom_info
+        const bomCode = bomUsage.bom_code || (i === 0 ? item.bom_info?.bom_code : '') || ''
+        const bomName = bomUsage.bom_name || (i === 0 ? item.bom_info?.bom_name : '') || ''
+
+        // BOM quantities - from event_usages if from_bom, else from bom_usages/bom_info
+        const bomSlabQty = fromBom
+          ? (eventUsage.bom_slab_quantity ?? '')
+          : (bomUsage.bom_slab_quantity ?? (i === 0 ? item.bom_info?.bom_slab_quantity : '') ?? '')
+        const bomQuantity = fromBom
+          ? (eventUsage.bom_quantity ?? '')
+          : (bomUsage.bom_quantity ?? (i === 0 ? item.bom_info?.bom_quantity : '') ?? '')
+
+        const row: string[] = [
+          escapeCSV(item.itemId),
+          escapeCSV(item.description),
+          escapeCSV(item.quantity),
+          escapeCSV(item.unit),
+          escapeCSV(bomCode),
+          escapeCSV(bomName),
+          bomSlabQty !== '' ? String(bomSlabQty) : '',
+          bomQuantity !== '' ? String(bomQuantity) : '',
+          escapeCSV(eventUsage.event_code || ''),
+          eventUsage.event_quantity !== undefined ? String(eventUsage.event_quantity) : '',
+          escapeCSV(item.category),
+          escapeCSV(item.action),
+          escapeCSV(item.assignedTo),
+          escapeCSV(item.dueDate),
+          escapeCSV(item.vendor),
+          escapeCSV(item.currency?.code || ''),
+          formatPrice(item.unitPrice),
+          formatPrice(item.totalPrice),
+          escapeCSV(item.source),
+          formatPrice(item.pricePO),
+          formatPrice(item.priceContract),
+          formatPrice(item.priceQuote),
+          formatPrice(item.priceEXIM),
+          digikeyDetails.unitPrice,
+          digikeyDetails.quantityPrice,
+          digikeyDetails.stock,
+          escapeCSV(digikeyDetails.status),
+          mouserDetails.unitPrice,
+          mouserDetails.quantityPrice,
+          mouserDetails.stock,
+          escapeCSV(mouserDetails.status),
+        ]
+
+        // Add dynamic spec values
+        specColumns.forEach(specName => {
+          const key = `spec_${specName.replace(/\s+/g, '_')}`
+          row.push(escapeCSV(item[key] || ''))
+        })
+
+        rows.push(row)
+      }
     })
 
     // Build CSV content
@@ -1613,7 +1662,7 @@ export default function ProcurementDashboard() {
 
     toast({
       title: "Export successful",
-      description: `Exported ${filteredAndSortedItems.length} items to CSV`,
+      description: `Exported ${filteredAndSortedItems.length} items (${rows.length} rows) to CSV`,
     })
   }
 

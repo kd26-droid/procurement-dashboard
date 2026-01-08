@@ -7,11 +7,22 @@
 
 // API Configuration
 // URL can be controlled via:
-// 1. ?api_env=prod or ?api_env=dev query param (from Factwise iframe)
-// 2. NEXT_PUBLIC_API_URL env var
+// 1. NEXT_PUBLIC_API_URL env var (if local address, always use it - for local dev)
+// 2. ?api_env=prod or ?api_env=dev query param (from Factwise iframe)
 // 3. Default fallback to /dev
 const getApiBaseUrl = (): string => {
-  // Check query param first (only in browser)
+  // Get env URL safely (process may not exist in some browser contexts)
+  const envUrl = typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_API_URL
+    ? process.env.NEXT_PUBLIC_API_URL
+    : undefined;
+
+  // If env var is set to local address, ALWAYS use it (local development priority)
+  const isLocalUrl = envUrl && (envUrl.includes('localhost') || envUrl.includes('192.168.') || envUrl.includes('127.0.0.1'));
+  if (isLocalUrl) {
+    return envUrl;
+  }
+
+  // Check query param (only in browser)
   if (typeof window !== 'undefined') {
     const urlParams = new URLSearchParams(window.location.search);
     const apiEnv = urlParams.get('api_env');
@@ -23,7 +34,7 @@ const getApiBaseUrl = (): string => {
     }
   }
   // Fall back to env var or default
-  return process.env.NEXT_PUBLIC_API_URL || 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
+  return envUrl || 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
 };
 
 /**
@@ -178,6 +189,10 @@ export interface ProjectItem {
     bom_name: string | null;
     bom_item_id: string | null;
     bom_module_linkage_id: string | null;
+    bom_quantity?: number | null;
+    bom_item_ratio?: number | null;
+    bom_slab_quantity?: number | null;
+    bom_measurement_unit?: string | null;
     // NEW: Full hierarchy support
     bom_hierarchy?: Array<{
       bom_id: string;
@@ -191,6 +206,54 @@ export interface ProjectItem {
     has_sub_bom?: boolean;
     sub_bom_id?: string | null;
   };
+  // BOM usages with quantities and delivery slabs
+  bom_usages?: Array<{
+    bom_id: string;
+    bom_code: string;
+    bom_name: string;
+    bom_quantity: number;
+    bom_item_ratio?: number;
+    bom_slab_quantity?: number;
+    bom_measurement_unit?: string;
+    delivery_schedule_item_quantity?: number;
+    delivery_date?: string | null;
+    bom_hierarchy?: Array<{
+      bom_id: string;
+      bom_code: string;
+      bom_name: string;
+      level: number;
+    }>;
+    bom_level?: number;
+  }>;
+  // Event usages (RFQ/PO) with quantities
+  event_usages?: Array<{
+    event_id: string;
+    event_code: string;
+    event_name?: string;
+    event_type: 'RFQ' | 'PurchaseOrder';
+    event_quantity: number;
+    rfq_entry_id?: string;
+    rfq_item_entry_id?: string;
+    rfq_status?: string;
+    purchase_order_id?: string;
+    purchase_order_item_id?: string;
+    po_status?: string;
+    delivery_schedule_item_quantity?: number;
+    delivery_date?: string | null;
+    from_bom?: boolean;
+    bom_quantity?: number;
+    bom_item_ratio?: number;
+    bom_slab_quantity?: number;
+    bom_module_linkage_id?: string;
+  }>;
+  // Delivery slabs
+  delivery_slabs?: Array<{
+    delivery_schedule_item_id: string;
+    quantity: number;
+    delivery_date: string;
+    has_bom: boolean;
+    has_event: boolean;
+  }>;
   // NEW: Specifications support
   specifications?: Array<{
     spec_id: string;
