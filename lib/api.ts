@@ -7,10 +7,21 @@
 
 // API Configuration
 // URL can be controlled via:
-// 1. NEXT_PUBLIC_API_URL env var (if local address, always use it - for local dev)
-// 2. ?api_env=prod or ?api_env=dev query param (from Factwise iframe)
-// 3. Default fallback to /dev
+// 1. ?api_url query param (passed from Factwise iframe - highest priority for local dev)
+// 2. NEXT_PUBLIC_API_URL env var (if local address, always use it - for local dev)
+// 3. ?api_env=prod or ?api_env=dev query param (from Factwise iframe)
+// 4. Default fallback to /dev
 const getApiBaseUrl = (): string => {
+  // Check for api_url query param first (passed from Factwise for local dev)
+  if (typeof window !== 'undefined') {
+    const urlParams = new URLSearchParams(window.location.search);
+    const apiUrlParam = urlParams.get('api_url');
+    // If api_url is a local address, use it (for local development)
+    if (apiUrlParam && (apiUrlParam.includes('localhost') || apiUrlParam.includes('192.168.') || apiUrlParam.includes('127.0.0.1'))) {
+      return apiUrlParam;
+    }
+  }
+
   // Get env URL safely (process may not exist in some browser contexts)
   const envUrl = typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_API_URL
     ? process.env.NEXT_PUBLIC_API_URL
@@ -265,6 +276,19 @@ export interface ProjectItem {
   digikey_pricing?: DigikeyPricing | null;
   // NEW: Mouser pricing support
   mouser_pricing?: MouserPricing | null;
+  // NEW: Alternate item information
+  alternate_info?: {
+    is_alternate: boolean;
+    alternate_parent_id: string | null;
+    alternate_parent_name: string | null;
+    alternate_parent_code: string | null;
+    has_alternates: boolean;
+    alternates: Array<{
+      item_id: string;
+      item_code: string | null;
+      item_name: string | null;
+    }>;
+  };
 }
 
 // Digikey Pricing Interfaces

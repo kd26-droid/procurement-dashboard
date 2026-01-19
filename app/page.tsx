@@ -737,6 +737,15 @@ export default function ProcurementDashboard() {
             event_usages: item.event_usages || [],
             // Delivery slabs
             delivery_slabs: item.delivery_slabs || [],
+            // Alternate item information
+            alternate_info: item.alternate_info || {
+              is_alternate: false,
+              alternate_parent_id: null,
+              alternate_parent_name: null,
+              alternate_parent_code: null,
+              has_alternates: false,
+              alternates: [],
+            },
           }
 
           // Add dynamic spec columns
@@ -868,6 +877,15 @@ export default function ProcurementDashboard() {
             event_usages: item.event_usages || [],
             // Delivery slabs
             delivery_slabs: item.delivery_slabs || [],
+            // Alternate item information
+            alternate_info: item.alternate_info || {
+              is_alternate: false,
+              alternate_parent_id: null,
+              alternate_parent_name: null,
+              alternate_parent_code: null,
+              has_alternates: false,
+              alternates: [],
+            },
           }
 
           // Add dynamic spec columns
@@ -1520,10 +1538,23 @@ export default function ProcurementDashboard() {
       }
     }
 
+    // Find max number of tags across all items
+    let maxTags = 0
+    filteredAndSortedItems.forEach((item: any) => {
+      const tags = item.category && item.category !== 'Uncategorized'
+        ? String(item.category).split(',').map((t: string) => t.trim()).filter(Boolean)
+        : []
+      if (tags.length > maxTags) maxTags = tags.length
+    })
+
     // Build CSV headers - start with base columns
     const headers: string[] = [
       'Item ID',
       'Description',
+      'Is Alternate',
+      'Alternate Parent Name',
+      'Has Alternates',
+      'Alternate Names',
       'Project Quantity',
       'Unit',
       'BOM Code',
@@ -1532,7 +1563,15 @@ export default function ProcurementDashboard() {
       'BOM Quantity',
       'Event Code',
       'Event Quantity',
-      'Tags',
+    ]
+
+    // Add dynamic tag columns (Tag 1, Tag 2, etc.)
+    for (let i = 1; i <= maxTags; i++) {
+      headers.push(`Tag ${i}`)
+    }
+
+    // Continue with remaining columns
+    headers.push(
       'Action',
       'Assigned To',
       'Due Date',
@@ -1553,7 +1592,7 @@ export default function ProcurementDashboard() {
       'Mouser Qty Price',
       'Mouser Stock',
       'Mouser Status',
-    ]
+    )
 
     // Add dynamic spec columns
     specColumns.forEach(specName => {
@@ -1593,9 +1632,25 @@ export default function ProcurementDashboard() {
           ? (eventUsage.bom_quantity ?? '')
           : (bomUsage.bom_quantity ?? (i === 0 ? item.bom_info?.bom_quantity : '') ?? '')
 
+        // Parse tags for this item
+        const itemTags = item.category && item.category !== 'Uncategorized'
+          ? String(item.category).split(',').map((t: string) => t.trim()).filter(Boolean)
+          : []
+
+        // Get alternate info
+        const altInfo = item.alternate_info || {}
+        const alternateNames = (altInfo.alternates || [])
+          .map((alt: any) => alt.item_name || '')
+          .filter(Boolean)
+          .join('; ')
+
         const row: string[] = [
           escapeCSV(item.itemId),
           escapeCSV(item.description),
+          altInfo.is_alternate ? 'Yes' : 'No',
+          escapeCSV(altInfo.alternate_parent_name || ''),
+          altInfo.has_alternates ? 'Yes' : 'No',
+          escapeCSV(alternateNames),
           escapeCSV(item.quantity),
           escapeCSV(item.unit),
           escapeCSV(bomCode),
@@ -1604,7 +1659,15 @@ export default function ProcurementDashboard() {
           bomQuantity !== '' ? String(bomQuantity) : '',
           escapeCSV(eventUsage.event_code || ''),
           eventUsage.event_quantity !== undefined ? String(eventUsage.event_quantity) : '',
-          escapeCSV(item.category),
+        ]
+
+        // Add individual tag columns
+        for (let t = 0; t < maxTags; t++) {
+          row.push(escapeCSV(itemTags[t] || ''))
+        }
+
+        // Add remaining columns
+        row.push(
           escapeCSV(item.action),
           escapeCSV(item.assignedTo),
           escapeCSV(item.dueDate),
@@ -1625,7 +1688,7 @@ export default function ProcurementDashboard() {
           mouserDetails.quantityPrice,
           mouserDetails.stock,
           escapeCSV(mouserDetails.status),
-        ]
+        )
 
         // Add dynamic spec values
         specColumns.forEach(specName => {
@@ -4045,15 +4108,63 @@ export default function ProcurementDashboard() {
                       }
 
                       if (columnKey === "description") {
+                        const altInfo = item.alternate_info || {}
+                        const isParent = altInfo.has_alternates
+                        const isAlternate = altInfo.is_alternate
+
                         return (
                           <td key={columnKey} className="p-2 text-left" style={{ width: columnWidths.description }}>
                             <div className="flex items-center gap-2">
+                              {/* Alternate indicator - show indent and icon */}
+                              {isAlternate && (
+                                <UiTooltip>
+                                  <UiTooltipTrigger>
+                                    <span className="text-blue-500 flex-shrink-0">
+                                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="16 3 21 3 21 8"></polyline>
+                                        <line x1="4" y1="20" x2="21" y2="3"></line>
+                                        <polyline points="21 16 21 21 16 21"></polyline>
+                                        <line x1="15" y1="15" x2="21" y2="21"></line>
+                                        <line x1="4" y1="4" x2="9" y2="9"></line>
+                                      </svg>
+                                    </span>
+                                  </UiTooltipTrigger>
+                                  <UiTooltipContent>
+                                    <p className="text-xs">Alternate for: <strong>{altInfo.alternate_parent_name || 'Unknown'}</strong></p>
+                                    {altInfo.alternate_parent_code && (
+                                      <p className="text-xs text-gray-400">({altInfo.alternate_parent_code})</p>
+                                    )}
+                                  </UiTooltipContent>
+                                </UiTooltip>
+                              )}
+                              {/* Item name - bold for parents */}
                               <span
-                                className="text-gray-900 font-medium text-xs truncate block"
+                                className={`text-gray-900 text-xs truncate block ${isParent ? 'font-bold' : 'font-medium'}`}
                                 title={item.description}
                               >
                                 {item.description}
                               </span>
+                              {/* Parent indicator - show count of alternates */}
+                              {isParent && altInfo.alternates && altInfo.alternates.length > 0 && (
+                                <UiTooltip>
+                                  <UiTooltipTrigger>
+                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 flex-shrink-0">
+                                      {altInfo.alternates.length} alt
+                                    </span>
+                                  </UiTooltipTrigger>
+                                  <UiTooltipContent side="bottom" align="start">
+                                    <div className="space-y-1">
+                                      <p className="text-xs font-medium">Alternates:</p>
+                                      {altInfo.alternates.map((alt: any, idx: number) => (
+                                        <div key={alt.item_id || idx} className="text-xs">
+                                          {idx + 1}. {alt.item_name || 'Unknown'}
+                                          {alt.item_code && <span className="text-gray-400 ml-1">({alt.item_code})</span>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </UiTooltipContent>
+                                </UiTooltip>
+                              )}
                               {item.manuallyEdited && (
                                 <UiTooltip>
                                   <UiTooltipTrigger>
