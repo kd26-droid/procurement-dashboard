@@ -913,8 +913,8 @@ export default function ProcurementDashboard() {
             baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
           })
 
-          // Add dynamic custom identification columns
-          uniqueCustomIdNames.forEach(idName => {
+          // Add dynamic custom identification columns (use state variable from initial load)
+          customIdColumns.forEach(idName => {
             const customId = item.custom_identifications?.find(id => id.identification_name === idName)
             baseItem[`customId_${idName.replace(/\s+/g, '_')}`] = customId?.identification_value || '-'
           })
