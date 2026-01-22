@@ -289,6 +289,13 @@ export interface ProjectItem {
       item_name: string | null;
     }>;
   };
+  // NEW: Custom Identifications (e.g., Manufacturer Part Number, Vendor Code)
+  custom_identifications?: Array<{
+    identification_id: string;
+    identification_name: string;
+    identification_type: string;
+    identification_value: string;
+  }>;
 }
 
 // Digikey Pricing Interfaces

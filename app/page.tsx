@@ -389,6 +389,8 @@ export default function ProcurementDashboard() {
 
   // Dynamic specification columns
   const [specColumns, setSpecColumns] = useState<string[]>([])
+  // Dynamic custom identification columns
+  const [customIdColumns, setCustomIdColumns] = useState<string[]>([])
 
   // Digikey job state
   const [digikeyJob, setDigikeyJob] = useState<any>(null)
@@ -687,6 +689,17 @@ export default function ProcurementDashboard() {
         setSpecColumns(uniqueSpecNames)
         console.log('[Dashboard] Found', uniqueSpecNames.length, 'unique specifications:', uniqueSpecNames)
 
+        // Extract all unique custom identification names for dynamic columns
+        const customIdNamesSet = new Set<string>()
+        initialItemsResponse.items.forEach(item => {
+          item.custom_identifications?.forEach(id => {
+            customIdNamesSet.add(id.identification_name)
+          })
+        })
+        const uniqueCustomIdNames = Array.from(customIdNamesSet).sort()
+        setCustomIdColumns(uniqueCustomIdNames)
+        console.log('[Dashboard] Found', uniqueCustomIdNames.length, 'unique custom identifications:', uniqueCustomIdNames)
+
         // Transform API data to match dashboard format
         const transformedItems = initialItemsResponse.items.map((item: ProjectItem, index: number) => {
           // Create base item
@@ -752,6 +765,12 @@ export default function ProcurementDashboard() {
           uniqueSpecNames.forEach(specName => {
             const spec = item.specifications?.find(s => s.spec_name === specName)
             baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
+          })
+
+          // Add dynamic custom identification columns
+          uniqueCustomIdNames.forEach(idName => {
+            const customId = item.custom_identifications?.find(id => id.identification_name === idName)
+            baseItem[`customId_${idName.replace(/\s+/g, '_')}`] = customId?.identification_value || '-'
           })
 
           // Add raw pricing data (will be converted below)
@@ -892,6 +911,12 @@ export default function ProcurementDashboard() {
           uniqueSpecNames.forEach(specName => {
             const spec = item.specifications?.find(s => s.spec_name === specName)
             baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
+          })
+
+          // Add dynamic custom identification columns
+          uniqueCustomIdNames.forEach(idName => {
+            const customId = item.custom_identifications?.find(id => id.identification_name === idName)
+            baseItem[`customId_${idName.replace(/\s+/g, '_')}`] = customId?.identification_value || '-'
           })
 
           // Add pricing data
@@ -1599,6 +1624,11 @@ export default function ProcurementDashboard() {
       headers.push(specName)
     })
 
+    // Add dynamic custom identification columns
+    customIdColumns.forEach(idName => {
+      headers.push(idName)
+    })
+
     // Build CSV rows - flatten items with multiple BOMs/events into multiple rows
     const rows: string[][] = []
 
@@ -1693,6 +1723,12 @@ export default function ProcurementDashboard() {
         // Add dynamic spec values
         specColumns.forEach(specName => {
           const key = `spec_${specName.replace(/\s+/g, '_')}`
+          row.push(escapeCSV(item[key] || ''))
+        })
+
+        // Add dynamic custom identification values
+        customIdColumns.forEach(idName => {
+          const key = `customId_${idName.replace(/\s+/g, '_')}`
           row.push(escapeCSV(item[key] || ''))
         })
 
