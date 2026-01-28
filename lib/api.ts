@@ -379,12 +379,12 @@ export interface ProjectItemsResponse {
   // Exchange rates for currency conversion (USD_TO_XXX format)
   exchange_rates?: Record<string, number>;
   // Digikey status fields
-  digikey_status?: 'all_cached' | 'background_job_started';
+  digikey_status?: 'all_cached' | 'background_job_started' | 'not_configured';
   digikey_uncached_count?: number;
   digikey_job_id?: string;
   digikey_estimated_duration_seconds?: number;
   // Mouser status fields
-  mouser_status?: 'all_cached' | 'background_job_started';
+  mouser_status?: 'all_cached' | 'background_job_started' | 'not_configured';
   mouser_uncached_count?: number;
   mouser_job_id?: string;
   mouser_estimated_duration_seconds?: number;

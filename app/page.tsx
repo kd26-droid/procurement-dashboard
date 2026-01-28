@@ -1556,6 +1556,9 @@ export default function ProcurementDashboard() {
     const getDistributorPrice = (pricing: any): { unitPrice: string; quantityPrice: string; stock: string; status: string } => {
       if (!pricing) return { unitPrice: '', quantityPrice: '', stock: '', status: 'N/A' }
 
+      if (pricing.status === 'not_configured') {
+        return { unitPrice: '', quantityPrice: '', stock: '', status: 'Not Configured' }
+      }
       if (pricing.status === 'not_found') {
         return { unitPrice: '', quantityPrice: '', stock: '', status: 'Not Listed' }
       }
@@ -4447,6 +4450,8 @@ export default function ProcurementDashboard() {
                               return <span className="text-xs text-red-500">API Limit</span>
                             case 'no_mpn':
                               return <span className="text-xs text-gray-400">No MPN</span>
+                            case 'not_configured':
+                              return <span className="text-xs text-gray-400">Not Configured</span>
                             case 'available':
                               // Show price with tooltip - green only if cheapest
                               return displayPrice ? (
@@ -4638,6 +4643,8 @@ export default function ProcurementDashboard() {
                               return <span className="text-xs text-red-500">API Limit</span>
                             case 'no_mpn':
                               return <span className="text-xs text-gray-400">No MPN</span>
+                            case 'not_configured':
+                              return <span className="text-xs text-gray-400">Not Configured</span>
                             case 'available':
                               // Show price with tooltip - green only if cheapest
                               return displayPrice ? (
