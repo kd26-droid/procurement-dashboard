@@ -392,6 +392,9 @@ export default function ProcurementDashboard() {
   // Dynamic custom identification columns
   const [customIdColumns, setCustomIdColumns] = useState<string[]>([])
 
+  // Distributor enabled flags (based on API keys configured in admin)
+  const [digikeyEnabled, setDigikeyEnabled] = useState(false)
+  const [mouserEnabled, setMouserEnabled] = useState(false)
   // Digikey job state
   const [digikeyJob, setDigikeyJob] = useState<any>(null)
   // Mouser job state
@@ -975,6 +978,14 @@ export default function ProcurementDashboard() {
       const response = await getProjectItems(projectId, { limit: 1 })
 
       console.log('[Pricing Jobs] Response:', response)
+
+      // Detect if Digikey/Mouser API keys are configured
+      // Only enable columns if backend returns a valid status (all_cached or background_job_started)
+      const digikeyConfigured = response.digikey_status === 'all_cached' || response.digikey_status === 'background_job_started'
+      const mouserConfigured = response.mouser_status === 'all_cached' || response.mouser_status === 'background_job_started'
+      setDigikeyEnabled(digikeyConfigured)
+      setMouserEnabled(mouserConfigured)
+      console.log('[Pricing Jobs] API keys configured - Digikey:', digikeyConfigured, 'Mouser:', mouserConfigured)
 
       // Handle Digikey status
       if (response.digikey_status === 'background_job_started') {
@@ -1609,15 +1620,16 @@ export default function ProcurementDashboard() {
       'Contract Price',
       'Quote Price',
       'EXIM Price',
-      'Digi-Key Unit Price',
-      'Digi-Key Qty Price',
-      'Digi-Key Stock',
-      'Digi-Key Status',
-      'Mouser Unit Price',
-      'Mouser Qty Price',
-      'Mouser Stock',
-      'Mouser Status',
     )
+
+    // Only add Digikey columns if API keys are configured
+    if (digikeyEnabled) {
+      headers.push('Digi-Key Unit Price', 'Digi-Key Qty Price', 'Digi-Key Stock', 'Digi-Key Status')
+    }
+    // Only add Mouser columns if API keys are configured
+    if (mouserEnabled) {
+      headers.push('Mouser Unit Price', 'Mouser Qty Price', 'Mouser Stock', 'Mouser Status')
+    }
 
     // Add dynamic spec columns
     specColumns.forEach(specName => {
@@ -1710,15 +1722,26 @@ export default function ProcurementDashboard() {
           formatPrice(item.priceContract),
           formatPrice(item.priceQuote),
           formatPrice(item.priceEXIM),
-          digikeyDetails.unitPrice,
-          digikeyDetails.quantityPrice,
-          digikeyDetails.stock,
-          escapeCSV(digikeyDetails.status),
-          mouserDetails.unitPrice,
-          mouserDetails.quantityPrice,
-          mouserDetails.stock,
-          escapeCSV(mouserDetails.status),
         )
+
+        // Only add Digikey values if enabled
+        if (digikeyEnabled) {
+          row.push(
+            digikeyDetails.unitPrice,
+            digikeyDetails.quantityPrice,
+            digikeyDetails.stock,
+            escapeCSV(digikeyDetails.status),
+          )
+        }
+        // Only add Mouser values if enabled
+        if (mouserEnabled) {
+          row.push(
+            mouserDetails.unitPrice,
+            mouserDetails.quantityPrice,
+            mouserDetails.stock,
+            escapeCSV(mouserDetails.status),
+          )
+        }
 
         // Add dynamic spec values
         specColumns.forEach(specName => {
@@ -2756,7 +2779,13 @@ export default function ProcurementDashboard() {
   // Add spec columns to column order dynamically (after "bom" column)
   const specColumnKeys = specColumns.map(specName => `spec_${specName.replace(/\s+/g, '_')}`)
   const allColumns = [...columnOrder.slice(0, 3), ...specColumnKeys, ...columnOrder.slice(3)] // Insert specs after itemId, description, bom
-  const visibleColumns = allColumns.filter((col) => !hiddenColumns.includes(col))
+
+  // Hide Digikey/Mouser columns if API keys not configured
+  const distributorHiddenCols = [
+    ...(!digikeyEnabled ? ['priceDigikey'] : []),
+    ...(!mouserEnabled ? ['priceMouser'] : []),
+  ]
+  const visibleColumns = allColumns.filter((col) => !hiddenColumns.includes(col) && !distributorHiddenCols.includes(col))
 
   // Build column labels dynamically with spec columns
   const columnLabels: Record<string, string> = {
@@ -3879,7 +3908,14 @@ export default function ProcurementDashboard() {
                   className="hidden absolute right-0 top-full mt-2 w-48 bg-white border border-gray-200 rounded-md shadow-lg z-50"
                 >
                   <div className="p-2 space-y-1">
-                    {Object.entries(columnLabels).map(([columnKey, label]) => {
+                    {Object.entries(columnLabels)
+                    .filter(([columnKey]) => {
+                      // Hide distributor columns from menu if API keys not configured
+                      if (columnKey === 'priceDigikey' && !digikeyEnabled) return false
+                      if (columnKey === 'priceMouser' && !mouserEnabled) return false
+                      return true
+                    })
+                    .map(([columnKey, label]) => {
                       const isAlwaysVisible = columnKey === 'totalPrice' || columnKey === 'source'
                       return (
                         <div
