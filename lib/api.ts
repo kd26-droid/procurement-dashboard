@@ -296,6 +296,9 @@ export interface ProjectItem {
     identification_type: string;
     identification_value: string;
   }>;
+  // NEW: Notes fields
+  notes?: string | null;
+  internal_notes?: string | null;
 }
 
 // Digikey Pricing Interfaces

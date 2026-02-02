@@ -365,6 +365,7 @@ export default function ProcurementDashboard() {
   const [columnOrder, setColumnOrder] = useState([
     "itemId",
     "description",
+    "internalNotes",
     "bom",
     "quantity",
     "unit",
@@ -738,6 +739,9 @@ export default function ProcurementDashboard() {
             priceMouser: 0,
             priceEXIM: 0,
             manuallyEdited: item.custom_fields?.manually_edited || false,
+            // Notes fields
+            notes: item.notes || '',
+            internalNotes: item.internal_notes || '',
             // BOM Information
             bom_info: item.bom_info || {
               is_bom_item: false,
@@ -885,6 +889,9 @@ export default function ProcurementDashboard() {
             priceMouser: 0,
             priceEXIM: 0,
             manuallyEdited: item.custom_fields?.manually_edited || false,
+            // Notes fields
+            notes: item.notes || '',
+            internalNotes: item.internal_notes || '',
             bom_info: item.bom_info || {
               is_bom_item: false,
               bom_id: null,
@@ -1590,6 +1597,7 @@ export default function ProcurementDashboard() {
     const headers: string[] = [
       'Item ID',
       'Description',
+      'Internal Notes',
       'Is Alternate',
       'Alternate Parent Name',
       'Has Alternates',
@@ -1692,6 +1700,7 @@ export default function ProcurementDashboard() {
         const row: string[] = [
           escapeCSV(item.itemId),
           escapeCSV(item.description),
+          escapeCSV(item.internalNotes || ''),
           altInfo.is_alternate ? 'Yes' : 'No',
           escapeCSV(altInfo.alternate_parent_name || ''),
           altInfo.has_alternates ? 'Yes' : 'No',
@@ -2795,6 +2804,7 @@ export default function ProcurementDashboard() {
     customer: "Customer",
     itemId: "Item ID",
     description: "Description",
+    internalNotes: "Internal Notes",
     bom: "BOM",
     quantity: "Qty",
     unit: "Unit",
@@ -4253,6 +4263,28 @@ export default function ProcurementDashboard() {
                                 </UiTooltip>
                               )}
                             </div>
+                          </td>
+                        )
+                      }
+
+                      if (columnKey === "internalNotes") {
+                        const internalNotesText = item.internalNotes || ''
+                        return (
+                          <td key={columnKey} className="p-2 text-left">
+                            {internalNotesText ? (
+                              <UiTooltip>
+                                <UiTooltipTrigger>
+                                  <span className="text-xs text-gray-700 truncate block max-w-[200px] cursor-help">
+                                    {internalNotesText.length > 30 ? internalNotesText.slice(0, 30) + '...' : internalNotesText}
+                                  </span>
+                                </UiTooltipTrigger>
+                                <UiTooltipContent side="bottom" className="max-w-[400px]">
+                                  <p className="text-xs whitespace-pre-wrap">{internalNotesText}</p>
+                                </UiTooltipContent>
+                              </UiTooltip>
+                            ) : (
+                              <span className="text-gray-400 text-xs">-</span>
+                            )}
                           </td>
                         )
                       }
