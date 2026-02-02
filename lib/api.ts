@@ -296,8 +296,7 @@ export interface ProjectItem {
     identification_type: string;
     identification_value: string;
   }>;
-  // NEW: Notes fields
-  notes?: string | null;
+  // NEW: Internal notes field
   internal_notes?: string | null;
 }
 
