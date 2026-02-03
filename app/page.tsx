@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
-import { getProjectId, getProjectItems, getProjectOverview, getProjectUsers, updateProjectItem, bulkAssignUsers, autoAssignUsersByTags, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, type ProjectItem } from '@/lib/api'
+import { getProjectId, getProjectItems, getProjectOverview, getProjectUsers, updateProjectItem, bulkAssignUsers, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, type ProjectItem } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -361,6 +361,7 @@ export default function ProcurementDashboard() {
   const [allItemsLoaded, setAllItemsLoaded] = useState(false)
   const [loadingProgress, setLoadingProgress] = useState({ loaded: 0, total: 0 })
   const [isLoadingAllItems, setIsLoadingAllItems] = useState(false)
+  const [autoAssignProgress, setAutoAssignProgress] = useState({ current: 0, total: 0, isRunning: false })
 
   const [columnOrder, setColumnOrder] = useState([
     "itemId",
@@ -1912,57 +1913,124 @@ export default function ProcurementDashboard() {
 
       console.log('[Auto-Assign] Tag-User ID Map:', tagUserIdMap)
 
-      let apiScope: 'all' | 'unassigned' | 'item_ids'
-      let itemIds: string[] | undefined
-
-      if (scope === 'selected') {
-        apiScope = 'item_ids'
-        itemIds = selectedItems.map(id => {
-          const item = lineItems.find((item: any) => item.id === id)
-          return item?.project_item_id
-        }).filter((id: string | undefined): id is string => id !== undefined)
-      } else {
-        apiScope = scope
-      }
-
-      console.log('[Auto-Assign] Calling API with scope:', apiScope, 'itemIds:', itemIds)
-
-      const result = await autoAssignUsersByTags(projectId, tagUserIdMap, apiScope, itemIds)
-
-      console.log('[Auto-Assign] Result:', result)
-
-      if (result.success) {
-        // Refresh user assignments using chunked loading (avoids timeout)
-        const userUpdates = await refreshUserAssignmentsInChunks(projectId)
-
-        // Notify Factwise parent
-        const updatedItemIds = Array.from(userUpdates.keys())
-        const allUserIds = Array.from(new Set(
-          Array.from(userUpdates.values()).flatMap((u: any) => u.assigned_user_ids)
-        ))
-        notifyItemsAssigned(updatedItemIds, allUserIds)
-
-        console.log(`[Auto-Assign] Successfully updated ${result.updated} items`)
-
-        // Show success toast
+      if (Object.keys(tagUserIdMap).length === 0) {
         toast({
-          title: "Users Assigned Successfully",
-          description: `Auto-assigned users to ${result.updated} item(s)${result.skipped > 0 ? `, skipped ${result.skipped} item(s)` : ''}`,
-        })
-      } else {
-        console.error('[Auto-Assign] Failed:', result.message)
-
-        // Show error toast
-        toast({
-          title: "Auto-Assign Failed",
-          description: result.message || "Failed to auto-assign users",
+          title: "No Mappings",
+          description: "No valid tag-to-user mappings found. Configure them in Settings first.",
           variant: "destructive",
         })
+        return
       }
+
+      // Determine which items to process based on scope
+      let itemsToProcess: any[]
+      if (scope === 'selected') {
+        itemsToProcess = lineItems.filter((item: any) => selectedItems.includes(item.id))
+      } else if (scope === 'unassigned') {
+        itemsToProcess = lineItems.filter((item: any) => !item.assigned_user_ids || item.assigned_user_ids.length === 0)
+      } else {
+        itemsToProcess = [...lineItems]
+      }
+
+      console.log(`[Auto-Assign] Processing ${itemsToProcess.length} items with scope: ${scope}`)
+
+      setAutoAssignProgress({ current: 0, total: itemsToProcess.length, isRunning: true })
+
+      // For each item, find matching tags and compute the user IDs to assign
+      let updated = 0
+      let skipped = 0
+      const updatedItemIds: string[] = []
+      const allAssignedUserIds = new Set<string>()
+
+      for (const item of itemsToProcess) {
+        // Get tags for this item (split category by comma, same as how allTags is built)
+        const itemTags = Array.isArray(item.category)
+          ? (item.category as string[])
+          : String(item.category || '').split(',').map((s: string) => s.trim()).filter(Boolean)
+
+        // Collect all user IDs from matching tag mappings
+        const userIdsToAssign = new Set<string>()
+        itemTags.forEach((tag: string) => {
+          const mappedUserIds = tagUserIdMap[tag]
+          if (mappedUserIds) {
+            mappedUserIds.forEach(uid => userIdsToAssign.add(uid))
+          }
+        })
+
+        if (userIdsToAssign.size === 0) {
+          skipped++
+          setAutoAssignProgress(prev => ({ ...prev, current: prev.current + 1 }))
+          continue
+        }
+
+        // Merge with existing assigned users (don't remove existing ones)
+        const existingIds = item.assigned_user_ids || []
+        const mergedIds = Array.from(new Set([...existingIds, ...userIdsToAssign]))
+
+        // Skip if no change
+        if (mergedIds.length === existingIds.length && mergedIds.every((id: string) => existingIds.includes(id))) {
+          skipped++
+          setAutoAssignProgress(prev => ({ ...prev, current: prev.current + 1 }))
+          continue
+        }
+
+        try {
+          const result = await updateProjectItem(projectId, item.project_item_id, {
+            assigned_user_ids: mergedIds,
+          })
+
+          if (result.success) {
+            // Get user names for display
+            const assignedNames = mergedIds
+              .map((uid: string) => projectUsers.find(u => u.user_id === uid)?.name || uid)
+              .join(', ')
+
+            // Update local state for this item
+            setLineItems((prevItems: any[]) => prevItems.map((prevItem: any) => {
+              if (prevItem.project_item_id !== item.project_item_id) return prevItem
+              return {
+                ...prevItem,
+                assigned_user_ids: mergedIds,
+                assignedTo: assignedNames,
+              }
+            }))
+
+            updatedItemIds.push(item.project_item_id)
+            mergedIds.forEach((uid: string) => allAssignedUserIds.add(uid))
+            updated++
+
+            console.log(`[Auto-Assign] Updated item ${item.itemId}: ${assignedNames}`)
+          } else {
+            console.error(`[Auto-Assign] Failed to update item ${item.itemId}:`, result)
+            skipped++
+          }
+        } catch (err) {
+          console.error(`[Auto-Assign] Error updating item ${item.itemId}:`, err)
+          skipped++
+        }
+
+        // Update progress and small delay to avoid hammering API
+        setAutoAssignProgress(prev => ({ ...prev, current: prev.current + 1 }))
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+
+      setAutoAssignProgress(prev => ({ ...prev, isRunning: false }))
+
+      // Notify Factwise parent about all updated items
+      if (updatedItemIds.length > 0) {
+        notifyItemsAssigned(updatedItemIds, Array.from(allAssignedUserIds))
+      }
+
+      console.log(`[Auto-Assign] Done: ${updated} updated, ${skipped} skipped`)
+
+      toast({
+        title: "Users Assigned Successfully",
+        description: `Auto-assigned users to ${updated} item(s)${skipped > 0 ? `, skipped ${skipped} item(s)` : ''}`,
+      })
     } catch (error) {
       console.error('[Auto-Assign] Error:', error)
+      setAutoAssignProgress(prev => ({ ...prev, isRunning: false }))
 
-      // Show error toast
       toast({
         title: "Error",
         description: error instanceof Error ? error.message : "An unexpected error occurred",
@@ -4076,6 +4144,32 @@ export default function ProcurementDashboard() {
                   <div
                     className="h-full bg-purple-600 transition-all duration-300"
                     style={{ width: `${(loadingProgress.loaded / loadingProgress.total) * 100}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {autoAssignProgress.isRunning && (
+            <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="animate-spin h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full" />
+                  <div>
+                    <div className="font-medium text-blue-900">
+                      Auto-assigning users...
+                    </div>
+                    <div className="text-sm text-blue-700">
+                      {autoAssignProgress.current}/{autoAssignProgress.total} items processed
+                      ({autoAssignProgress.total > 0 ? ((autoAssignProgress.current / autoAssignProgress.total) * 100).toFixed(0) : 0}%)
+                    </div>
+                  </div>
+                </div>
+
+                <div className="w-64 h-2 bg-blue-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-600 transition-all duration-300"
+                    style={{ width: `${autoAssignProgress.total > 0 ? (autoAssignProgress.current / autoAssignProgress.total) * 100 : 0}%` }}
                   />
                 </div>
               </div>
