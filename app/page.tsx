@@ -817,7 +817,7 @@ export default function ProcurementDashboard() {
         const totalItems = initialItemsResponse.total
         if (totalItems > 100) {
           console.log(`[Dashboard] Loading remaining ${totalItems - 100} items in background...`)
-          loadRemainingItems(projectId, initialItemsResponse.exchange_rates || {}, uniqueSpecNames, totalItems)
+          loadRemainingItems(projectId, initialItemsResponse.exchange_rates || {}, uniqueSpecNames, totalItems, uniqueCustomIdNames)
         } else {
           // All items loaded initially - trigger pricing jobs
           setAllItemsLoaded(true)
@@ -835,7 +835,7 @@ export default function ProcurementDashboard() {
   }, [])
 
   // Load remaining items in background (for large projects)
-  const loadRemainingItems = async (projectId: string, exchangeRates: Record<string, number>, uniqueSpecNames: string[], totalItems: number) => {
+  const loadRemainingItems = async (projectId: string, exchangeRates: Record<string, number>, uniqueSpecNames: string[], totalItems: number, uniqueCustomIdNames: string[] = []) => {
     try {
       const CHUNK_SIZE = 200
       let offset = 100 // We already loaded first 100
@@ -854,6 +854,17 @@ export default function ProcurementDashboard() {
           hasMore = false
           break
         }
+
+        // Discover any new custom ID names from this chunk
+        chunkResponse.items.forEach((item: ProjectItem) => {
+          item.custom_identifications?.forEach(id => {
+            if (!uniqueCustomIdNames.includes(id.identification_name)) {
+              uniqueCustomIdNames.push(id.identification_name)
+            }
+          })
+        })
+        // Update state with any new columns discovered
+        setCustomIdColumns([...uniqueCustomIdNames].sort())
 
         // Transform and convert these items
         const transformedChunk = chunkResponse.items.map((item: ProjectItem, index: number) => {
@@ -923,8 +934,8 @@ export default function ProcurementDashboard() {
             baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
           })
 
-          // Add dynamic custom identification columns (use state variable from initial load)
-          customIdColumns.forEach(idName => {
+          // Add dynamic custom identification columns (use parameter, not stale state)
+          uniqueCustomIdNames.forEach(idName => {
             const customId = item.custom_identifications?.find(id => id.identification_name === idName)
             baseItem[`customId_${idName.replace(/\s+/g, '_')}`] = customId?.identification_value || '-'
           })
