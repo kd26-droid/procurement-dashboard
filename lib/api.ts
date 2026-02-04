@@ -141,6 +141,8 @@ export interface ProjectItem {
   quantity: number;
   rate: number;
   amount: number;
+  event_quantity: number | null;
+  bom_slab_quantity: number;
   measurement_unit: {
     id: string;
     name: string;

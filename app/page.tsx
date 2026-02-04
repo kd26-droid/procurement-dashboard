@@ -729,6 +729,9 @@ export default function ProcurementDashboard() {
             unitPrice: item.rate || 0,
             totalPrice: item.amount || 0,
             currency: item.currency,
+            event_quantity: item.event_quantity ?? null,
+            bom_slab_quantity: item.bom_slab_quantity || 0,
+            enterprise_item_id: item.enterprise_item_id || null,
             vendor: '',
             action: '',
             dueDate: '',
@@ -890,6 +893,9 @@ export default function ProcurementDashboard() {
             unitPrice: item.rate || 0,
             totalPrice: item.amount || 0,
             currency: item.currency,
+            event_quantity: item.event_quantity ?? null,
+            bom_slab_quantity: item.bom_slab_quantity || 0,
+            enterprise_item_id: item.enterprise_item_id || null,
             vendor: '',
             action: '',
             dueDate: '',
@@ -1614,14 +1620,12 @@ export default function ProcurementDashboard() {
       'Alternate Parent Name',
       'Has Alternates',
       'Alternate Names',
-      'Project Quantity',
-      'Unit',
-      'BOM Code',
       'BOM Name',
       'BOM Slab Qty',
-      'BOM Quantity',
+      'Item Qty',
+      'Unit',
       'Event Code',
-      'Event Quantity',
+      'Event Qty',
     ]
 
     // Add dynamic tag columns (Tag 1, Tag 2, etc.)
@@ -1664,123 +1668,103 @@ export default function ProcurementDashboard() {
       headers.push(idName)
     })
 
-    // Build CSV rows - flatten items with multiple BOMs/events into multiple rows
+    // Build CSV rows - one row per API item (no fanning over bom_usages/event_usages)
     const rows: string[][] = []
 
     filteredAndSortedItems.forEach((item: any) => {
       const digikeyDetails = getDistributorPrice(item.digikey_pricing)
       const mouserDetails = getDistributorPrice(item.mouser_pricing)
 
-      // Get BOM usages and event usages
-      const bomUsages = item.bom_usages || []
+      // Parse tags for this item
+      const itemTags = item.category && item.category !== 'Uncategorized'
+        ? String(item.category).split(',').map((t: string) => t.trim()).filter(Boolean)
+        : []
+
+      // Get alternate info
+      const altInfo = item.alternate_info || {}
+      const alternateNames = (altInfo.alternates || [])
+        .map((alt: any) => alt.item_name || '')
+        .filter(Boolean)
+        .join('; ')
+
+      // BOM info from bom_info (each API item already represents one BOM source)
+      const bomName = item.bom_info?.bom_name || ''
+      const bomSlabQty = item.bom_slab_quantity ?? item.bom_info?.bom_slab_quantity ?? ''
+
+      // Event info — use first event_usage entry (all entries for one slab are same event)
       const eventUsages = item.event_usages || []
+      const eventCode = eventUsages?.[0]?.event_code || ''
+      const eventQty = item.event_quantity ?? ''
 
-      // Determine number of rows needed (max of bom_usages, event_usages, or 1)
-      const numRows = Math.max(bomUsages.length, eventUsages.length, 1)
+      const row: string[] = [
+        escapeCSV(item.itemId),
+        escapeCSV(item.description),
+        escapeCSV(item.internalNotes || ''),
+        altInfo.is_alternate ? 'Yes' : 'No',
+        escapeCSV(altInfo.alternate_parent_name || ''),
+        altInfo.has_alternates ? 'Yes' : 'No',
+        escapeCSV(alternateNames),
+        escapeCSV(bomName),
+        bomSlabQty !== '' ? String(bomSlabQty) : '',
+        escapeCSV(item.quantity),
+        escapeCSV(item.unit),
+        escapeCSV(eventCode),
+        eventQty !== '' && eventQty !== null ? String(eventQty) : '',
+      ]
 
-      for (let i = 0; i < numRows; i++) {
-        const bomUsage = bomUsages[i] || {}
-        const eventUsage = eventUsages[i] || {}
-
-        // Use event_usages data if from_bom is true, otherwise fall back to bom_usages or bom_info
-        const fromBom = eventUsage.from_bom || false
-
-        // BOM data - prefer event_usages when from_bom, then bom_usages, then bom_info
-        const bomCode = bomUsage.bom_code || (i === 0 ? item.bom_info?.bom_code : '') || ''
-        const bomName = bomUsage.bom_name || (i === 0 ? item.bom_info?.bom_name : '') || ''
-
-        // BOM quantities - from event_usages if from_bom, else from bom_usages/bom_info
-        const bomSlabQty = fromBom
-          ? (eventUsage.bom_slab_quantity ?? '')
-          : (bomUsage.bom_slab_quantity ?? (i === 0 ? item.bom_info?.bom_slab_quantity : '') ?? '')
-        const bomQuantity = fromBom
-          ? (eventUsage.bom_quantity ?? '')
-          : (bomUsage.bom_quantity ?? (i === 0 ? item.bom_info?.bom_quantity : '') ?? '')
-
-        // Parse tags for this item
-        const itemTags = item.category && item.category !== 'Uncategorized'
-          ? String(item.category).split(',').map((t: string) => t.trim()).filter(Boolean)
-          : []
-
-        // Get alternate info
-        const altInfo = item.alternate_info || {}
-        const alternateNames = (altInfo.alternates || [])
-          .map((alt: any) => alt.item_name || '')
-          .filter(Boolean)
-          .join('; ')
-
-        const row: string[] = [
-          escapeCSV(item.itemId),
-          escapeCSV(item.description),
-          escapeCSV(item.internalNotes || ''),
-          altInfo.is_alternate ? 'Yes' : 'No',
-          escapeCSV(altInfo.alternate_parent_name || ''),
-          altInfo.has_alternates ? 'Yes' : 'No',
-          escapeCSV(alternateNames),
-          escapeCSV(item.quantity),
-          escapeCSV(item.unit),
-          escapeCSV(bomCode),
-          escapeCSV(bomName),
-          bomSlabQty !== '' ? String(bomSlabQty) : '',
-          bomQuantity !== '' ? String(bomQuantity) : '',
-          escapeCSV(eventUsage.event_code || ''),
-          eventUsage.event_quantity !== undefined ? String(eventUsage.event_quantity) : '',
-        ]
-
-        // Add individual tag columns
-        for (let t = 0; t < maxTags; t++) {
-          row.push(escapeCSV(itemTags[t] || ''))
-        }
-
-        // Add remaining columns
-        row.push(
-          escapeCSV(item.action),
-          escapeCSV(item.assignedTo),
-          escapeCSV(item.dueDate),
-          escapeCSV(item.vendor),
-          escapeCSV(item.currency?.code || ''),
-          formatPrice(item.unitPrice),
-          formatPrice(item.totalPrice),
-          escapeCSV(item.source),
-          formatPrice(item.pricePO),
-          formatPrice(item.priceContract),
-          formatPrice(item.priceQuote),
-          formatPrice(item.priceEXIM),
-        )
-
-        // Only add Digikey values if enabled
-        if (digikeyEnabled) {
-          row.push(
-            digikeyDetails.unitPrice,
-            digikeyDetails.quantityPrice,
-            digikeyDetails.stock,
-            escapeCSV(digikeyDetails.status),
-          )
-        }
-        // Only add Mouser values if enabled
-        if (mouserEnabled) {
-          row.push(
-            mouserDetails.unitPrice,
-            mouserDetails.quantityPrice,
-            mouserDetails.stock,
-            escapeCSV(mouserDetails.status),
-          )
-        }
-
-        // Add dynamic spec values
-        specColumns.forEach(specName => {
-          const key = `spec_${specName.replace(/\s+/g, '_')}`
-          row.push(escapeCSV(item[key] || ''))
-        })
-
-        // Add dynamic custom identification values
-        customIdColumns.forEach(idName => {
-          const key = `customId_${idName.replace(/\s+/g, '_')}`
-          row.push(escapeCSV(item[key] || ''))
-        })
-
-        rows.push(row)
+      // Add individual tag columns
+      for (let t = 0; t < maxTags; t++) {
+        row.push(escapeCSV(itemTags[t] || ''))
       }
+
+      // Add remaining columns
+      row.push(
+        escapeCSV(item.action),
+        escapeCSV(item.assignedTo),
+        escapeCSV(item.dueDate),
+        escapeCSV(item.vendor),
+        escapeCSV(item.currency?.code || ''),
+        formatPrice(item.unitPrice),
+        formatPrice(item.totalPrice),
+        escapeCSV(item.source),
+        formatPrice(item.pricePO),
+        formatPrice(item.priceContract),
+        formatPrice(item.priceQuote),
+        formatPrice(item.priceEXIM),
+      )
+
+      // Only add Digikey values if enabled
+      if (digikeyEnabled) {
+        row.push(
+          digikeyDetails.unitPrice,
+          digikeyDetails.quantityPrice,
+          digikeyDetails.stock,
+          escapeCSV(digikeyDetails.status),
+        )
+      }
+      // Only add Mouser values if enabled
+      if (mouserEnabled) {
+        row.push(
+          mouserDetails.unitPrice,
+          mouserDetails.quantityPrice,
+          mouserDetails.stock,
+          escapeCSV(mouserDetails.status),
+        )
+      }
+
+      // Add dynamic spec values
+      specColumns.forEach(specName => {
+        const key = `spec_${specName.replace(/\s+/g, '_')}`
+        row.push(escapeCSV(item[key] || ''))
+      })
+
+      // Add dynamic custom identification values
+      customIdColumns.forEach(idName => {
+        const key = `customId_${idName.replace(/\s+/g, '_')}`
+        row.push(escapeCSV(item[key] || ''))
+      })
+
+      rows.push(row)
     })
 
     // Build CSV content
@@ -5063,14 +5047,16 @@ export default function ProcurementDashboard() {
                       }
 
                       if (columnKey === "quantity") {
+                        const displayQty = item.event_quantity != null ? item.event_quantity : item.quantity
+                        const qtyLabel = item.event_quantity != null ? 'Event Qty' : 'BOM Qty'
                         return (
                           <td key={columnKey} className="p-2 text-right" style={{ width: columnWidths.quantity }}>
                             <div className="flex items-center justify-end w-full">
                               <span
                                 className="text-gray-900 text-xs font-medium tabular-nums"
-                                title={`${item.quantity} ${item.unit}`}
+                                title={`${qtyLabel}: ${displayQty} ${item.unit}`}
                               >
-                                {item.quantity}
+                                {displayQty}
                               </span>
                             </div>
                           </td>
