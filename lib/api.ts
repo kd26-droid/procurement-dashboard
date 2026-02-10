@@ -67,11 +67,15 @@ export function getProjectId(): string | null {
 }
 
 /**
- * Generic API request handler with authentication
+ * Generic API request handler with authentication, timeout, and retry logic
  */
 async function apiRequest<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit & {
+    timeoutMs?: number;
+    maxRetries?: number;
+    retryDelayMs?: number;
+  } = {}
 ): Promise<T> {
   const token = getAuthToken();
 
@@ -79,29 +83,85 @@ async function apiRequest<T>(
     throw new Error('Authentication token not found. Please provide token in URL.');
   }
 
+  const { timeoutMs = 45000, maxRetries = 3, retryDelayMs = 1000, ...fetchOptions } = options;
+
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${token}`,
-    ...options.headers,
+    ...fetchOptions.headers,
   };
 
-  const response = await fetch(`${getApiBaseUrl()}${endpoint}`, {
-    ...options,
-    headers,
-  });
+  let lastError: Error | null = null;
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      if (attempt > 0) {
+        const delay = retryDelayMs * Math.pow(2, attempt - 1); // exponential backoff
+        console.log(`[API] Retry ${attempt}/${maxRetries} for ${endpoint} after ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+
+      const response = await fetch(`${getApiBaseUrl()}${endpoint}`, {
+        ...fetchOptions,
+        headers,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.status === 429) {
+        // Rate limited — wait and retry
+        const retryAfter = parseInt(response.headers.get('Retry-After') || '5', 10);
+        console.warn(`[API] Rate limited on ${endpoint}, waiting ${retryAfter}s...`);
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        lastError = new Error(`Rate limited (429)`);
+        continue;
+      }
+
+      if (response.status >= 500 && attempt < maxRetries) {
+        // Server error — retry
+        lastError = new Error(`HTTP ${response.status}: ${response.statusText}`);
+        console.warn(`[API] Server error ${response.status} on ${endpoint}, will retry...`);
+        continue;
+      }
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      if (!data.success) {
+        throw new Error(data.error || 'API request failed');
+      }
+
+      return data;
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+
+      if (error.name === 'AbortError') {
+        lastError = new Error(`Request timed out after ${timeoutMs}ms: ${endpoint}`);
+        console.warn(`[API] Timeout on ${endpoint} (attempt ${attempt + 1}/${maxRetries + 1})`);
+        if (attempt < maxRetries) continue;
+        throw lastError;
+      }
+
+      // Network errors are retryable
+      if (error.message?.includes('fetch') || error.message?.includes('network') || error.message?.includes('Failed to fetch')) {
+        lastError = error;
+        console.warn(`[API] Network error on ${endpoint} (attempt ${attempt + 1}/${maxRetries + 1}):`, error.message);
+        if (attempt < maxRetries) continue;
+      }
+
+      throw error;
+    }
   }
 
-  const data = await response.json();
-
-  if (!data.success) {
-    throw new Error(data.error || 'API request failed');
-  }
-
-  return data;
+  throw lastError || new Error(`Failed after ${maxRetries + 1} attempts: ${endpoint}`);
 }
 
 // ============================================================================

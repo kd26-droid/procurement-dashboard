@@ -359,8 +359,10 @@ export default function ProcurementDashboard() {
 
   // Track if all items are loaded from server
   const [allItemsLoaded, setAllItemsLoaded] = useState(false)
-  const [loadingProgress, setLoadingProgress] = useState({ loaded: 0, total: 0 })
+  const [loadingProgress, setLoadingProgress] = useState({ loaded: 0, total: 0, failed: 0 })
   const [isLoadingAllItems, setIsLoadingAllItems] = useState(false)
+  const [loadingError, setLoadingError] = useState<{ message: string; canRetry: boolean } | null>(null)
+  const loadingAbortRef = useRef(false)
   const [autoAssignProgress, setAutoAssignProgress] = useState({ current: 0, total: 0, isRunning: false })
 
   const [columnOrder, setColumnOrder] = useState([
@@ -705,114 +707,18 @@ export default function ProcurementDashboard() {
         setCustomIdColumns(uniqueCustomIdNames)
         console.log('[Dashboard] Found', uniqueCustomIdNames.length, 'unique custom identifications:', uniqueCustomIdNames)
 
-        // Transform API data to match dashboard format
-        const transformedItems = initialItemsResponse.items.map((item: ProjectItem, index: number) => {
-          // Create base item
-          const baseItem: any = {
-            id: index + 1,
-            project_item_id: item.project_item_id,
-            customer: '',
-            itemId: item.item_code,
-            description: item.item_name,
-            quantity: item.quantity,
-            unit: item.measurement_unit?.abbreviation || '',
-            category: (() => {
-              const allTags = [...(item.tags || []), ...(item.custom_tags || [])];
-              const uniqueTags = [...new Set(allTags)]; // Remove duplicates
-              return uniqueTags.length > 0 ? uniqueTags.join(', ') : 'Uncategorized';
-            })(),
-            // Store original tags separately for proper update logic
-            original_tags: item.tags || [],
-            original_custom_tags: item.custom_tags || [],
-            assignedTo: item.assigned_users.map(u => u.name).join(', '),
-            assigned_user_ids: item.assigned_users.map(u => u.user_id),
-            unitPrice: item.rate || 0,
-            totalPrice: item.amount || 0,
-            currency: item.currency,
-            event_quantity: item.event_quantity ?? null,
-            bom_slab_quantity: item.bom_slab_quantity || 0,
-            enterprise_item_id: item.enterprise_item_id || null,
-            vendor: '',
-            action: '',
-            dueDate: '',
-            source: '',
-            pricePO: 0,
-            priceContract: 0,
-            priceQuote: 0,
-            priceDigikey: 0,
-            priceMouser: 0,
-            priceEXIM: 0,
-            manuallyEdited: item.custom_fields?.manually_edited || false,
-            // Notes fields
-            notes: item.notes || '',
-            internalNotes: item.internal_notes || '',
-            // BOM Information
-            bom_info: item.bom_info || {
-              is_bom_item: false,
-              bom_id: null,
-              bom_code: null,
-              bom_name: null,
-              bom_item_id: null,
-              bom_module_linkage_id: null,
-            },
-            // BOM usages (multiple BOMs with quantities)
-            bom_usages: item.bom_usages || [],
-            // Event usages (RFQ/PO with quantities)
-            event_usages: item.event_usages || [],
-            // Delivery slabs
-            delivery_slabs: item.delivery_slabs || [],
-            // Alternate item information
-            alternate_info: item.alternate_info || {
-              is_alternate: false,
-              alternate_parent_id: null,
-              alternate_parent_name: null,
-              alternate_parent_code: null,
-              has_alternates: false,
-              alternates: [],
-            },
-          }
-
-          // Add dynamic spec columns
-          uniqueSpecNames.forEach(specName => {
-            const spec = item.specifications?.find(s => s.spec_name === specName)
-            baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
-          })
-
-          // Add dynamic custom identification columns
-          uniqueCustomIdNames.forEach(idName => {
-            const customId = item.custom_identifications?.find(id => id.identification_name === idName)
-            baseItem[`customId_${idName.replace(/\s+/g, '_')}`] = customId?.identification_value || '-'
-          })
-
-          // Add raw pricing data (will be converted below)
-          baseItem.digikey_pricing = item.digikey_pricing || null
-          baseItem.mouser_pricing = item.mouser_pricing || null
-
-          return baseItem
-        })
-
-        console.log('[Dashboard] Loaded', transformedItems.length, 'items')
-        console.log('[Dashboard] Transformed item codes:', transformedItems.map((item: any) => item.itemId))
-
-        // Check for duplicates in transformed items
-        const transformedCodes = transformedItems.map((item: any) => item.itemId)
-        const dupTransformed = transformedCodes.filter((code, index) => transformedCodes.indexOf(code) !== index)
-        if (dupTransformed.length > 0) {
-          console.warn('[Dashboard] ⚠️ DUPLICATE ITEM CODES AFTER TRANSFORM:', dupTransformed)
-        }
-
         // Store exchange rates for currency conversion
         if (initialItemsResponse.exchange_rates) {
           setExchangeRates(initialItemsResponse.exchange_rates)
           console.log('[Dashboard] Loaded exchange rates:', Object.keys(initialItemsResponse.exchange_rates).length, 'currencies')
         }
 
-        // Convert distributor pricing from USD to item currency
-        const itemsWithConvertedPricing = transformedItems.map(item =>
-          processItemPricing(item, initialItemsResponse.exchange_rates || {})
+        // Transform API data using shared helper
+        const itemsWithConvertedPricing = initialItemsResponse.items.map((item: ProjectItem, index: number) =>
+          transformApiItem(item, index, initialItemsResponse.exchange_rates || {}, uniqueSpecNames, uniqueCustomIdNames)
         )
 
-        console.log('[Dashboard] Applied currency conversion to all items')
+        console.log('[Dashboard] Loaded', itemsWithConvertedPricing.length, 'items')
 
         setLineItems(itemsWithConvertedPricing)
         setLoading(false)
@@ -838,158 +744,253 @@ export default function ProcurementDashboard() {
     loadProjectData()
   }, [])
 
-  // Load remaining items in background (for large projects)
-  const loadRemainingItems = async (projectId: string, exchangeRates: Record<string, number>, uniqueSpecNames: string[], totalItems: number, uniqueCustomIdNames: string[] = []) => {
-    try {
-      const CHUNK_SIZE = 200
-      let offset = 100 // We already loaded first 100
-      let hasMore = true
-      let allNewItems: any[] = []
+  // Transform a raw API item into the dashboard format
+  const transformApiItem = (item: ProjectItem, index: number, exchangeRates: Record<string, number>, uniqueSpecNames: string[], uniqueCustomIdNames: string[]) => {
+    const baseItem: any = {
+      id: index + 1,
+      project_item_id: item.project_item_id,
+      customer: '',
+      itemId: item.item_code,
+      description: item.item_name,
+      quantity: item.quantity,
+      unit: item.measurement_unit?.abbreviation || '',
+      category: (() => {
+        const allTags = [...(item.tags || []), ...(item.custom_tags || [])];
+        const uniqueTags = [...new Set(allTags)];
+        return uniqueTags.length > 0 ? uniqueTags.join(', ') : 'Uncategorized';
+      })(),
+      original_tags: item.tags || [],
+      original_custom_tags: item.custom_tags || [],
+      assignedTo: item.assigned_users.map(u => u.name).join(', '),
+      assigned_user_ids: item.assigned_users.map(u => u.user_id),
+      unitPrice: item.rate || 0,
+      totalPrice: item.amount || 0,
+      currency: item.currency,
+      event_quantity: item.event_quantity ?? null,
+      bom_slab_quantity: item.bom_slab_quantity || 0,
+      enterprise_item_id: item.enterprise_item_id || null,
+      vendor: '',
+      action: '',
+      dueDate: '',
+      source: '',
+      pricePO: 0,
+      priceContract: 0,
+      priceQuote: 0,
+      priceDigikey: 0,
+      priceMouser: 0,
+      priceEXIM: 0,
+      manuallyEdited: item.custom_fields?.manually_edited || false,
+      notes: item.notes || '',
+      internalNotes: item.internal_notes || '',
+      bom_info: item.bom_info || {
+        is_bom_item: false,
+        bom_id: null,
+        bom_code: null,
+        bom_name: null,
+        bom_item_id: null,
+        bom_module_linkage_id: null,
+      },
+      bom_usages: item.bom_usages || [],
+      event_usages: item.event_usages || [],
+      delivery_slabs: item.delivery_slabs || [],
+      alternate_info: item.alternate_info || {
+        is_alternate: false,
+        alternate_parent_id: null,
+        alternate_parent_name: null,
+        alternate_parent_code: null,
+        has_alternates: false,
+        alternates: [],
+      },
+    }
 
-      setLoadingProgress({ loaded: 100, total: totalItems })
-      setIsLoadingAllItems(true)
+    uniqueSpecNames.forEach(specName => {
+      const spec = item.specifications?.find(s => s.spec_name === specName)
+      baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
+    })
 
-      while (hasMore) {
-        console.log(`[Background Load] Fetching items ${offset} to ${offset + CHUNK_SIZE}...`)
+    uniqueCustomIdNames.forEach(idName => {
+      const customId = item.custom_identifications?.find(id => id.identification_name === idName)
+      baseItem[`customId_${idName.replace(/\s+/g, '_')}`] = customId?.identification_value || '-'
+    })
 
-        const chunkResponse = await getProjectItems(projectId, { limit: CHUNK_SIZE, offset, skip_pricing_jobs: true })
+    baseItem.digikey_pricing = item.digikey_pricing || null
+    baseItem.mouser_pricing = item.mouser_pricing || null
 
-        if (!chunkResponse.items || chunkResponse.items.length === 0) {
-          hasMore = false
-          break
-        }
+    return processItemPricing(baseItem, exchangeRates)
+  }
 
-        // Discover any new custom ID names from this chunk
-        chunkResponse.items.forEach((item: ProjectItem) => {
-          item.custom_identifications?.forEach(id => {
-            if (!uniqueCustomIdNames.includes(id.identification_name)) {
-              uniqueCustomIdNames.push(id.identification_name)
-            }
-          })
-        })
-        // Update state with any new columns discovered
-        setCustomIdColumns([...uniqueCustomIdNames].sort())
+  // Load remaining items in background with parallel fetching and retry
+  const loadRemainingItems = async (projectId: string, exchangeRates: Record<string, number>, uniqueSpecNames: string[], totalItems: number, uniqueCustomIdNames: string[] = [], resumeFromOffset: number = 100) => {
+    const CHUNK_SIZE = 500
+    const CONCURRENCY = 3 // Fetch 3 chunks in parallel
+    const MAX_CHUNK_RETRIES = 3
 
-        // Transform and convert these items
-        const transformedChunk = chunkResponse.items.map((item: ProjectItem, index: number) => {
-          const baseItem: any = {
-            id: offset + index + 1,
-            project_item_id: item.project_item_id,
-            customer: '',
-            itemId: item.item_code,
-            description: item.item_name,
-            quantity: item.quantity,
-            unit: item.measurement_unit?.abbreviation || '',
-            category: (() => {
-              const allTags = [...(item.tags || []), ...(item.custom_tags || [])];
-              const uniqueTags = [...new Set(allTags)]; // Remove duplicates
-              return uniqueTags.length > 0 ? uniqueTags.join(', ') : 'Uncategorized';
-            })(),
-            // Store original tags separately for proper update logic
-            original_tags: item.tags || [],
-            original_custom_tags: item.custom_tags || [],
-            assignedTo: item.assigned_users.map(u => u.name).join(', '),
-            assigned_user_ids: item.assigned_users.map(u => u.user_id),
-            unitPrice: item.rate || 0,
-            totalPrice: item.amount || 0,
-            currency: item.currency,
-            event_quantity: item.event_quantity ?? null,
-            bom_slab_quantity: item.bom_slab_quantity || 0,
-            enterprise_item_id: item.enterprise_item_id || null,
-            vendor: '',
-            action: '',
-            dueDate: '',
-            source: '',
-            pricePO: 0,
-            priceContract: 0,
-            priceQuote: 0,
-            priceDigikey: 0,
-            priceMouser: 0,
-            priceEXIM: 0,
-            manuallyEdited: item.custom_fields?.manually_edited || false,
-            // Notes fields
-            notes: item.notes || '',
-            internalNotes: item.internal_notes || '',
-            bom_info: item.bom_info || {
-              is_bom_item: false,
-              bom_id: null,
-              bom_code: null,
-              bom_name: null,
-              bom_item_id: null,
-              bom_module_linkage_id: null,
-            },
-            // BOM usages (multiple BOMs with quantities)
-            bom_usages: item.bom_usages || [],
-            // Event usages (RFQ/PO with quantities)
-            event_usages: item.event_usages || [],
-            // Delivery slabs
-            delivery_slabs: item.delivery_slabs || [],
-            // Alternate item information
-            alternate_info: item.alternate_info || {
-              is_alternate: false,
-              alternate_parent_id: null,
-              alternate_parent_name: null,
-              alternate_parent_code: null,
-              has_alternates: false,
-              alternates: [],
-            },
-          }
+    loadingAbortRef.current = false
+    setLoadingError(null)
+    setIsLoadingAllItems(true)
 
-          // Add dynamic spec columns
-          uniqueSpecNames.forEach(specName => {
-            const spec = item.specifications?.find(s => s.spec_name === specName)
-            baseItem[`spec_${specName.replace(/\s+/g, '_')}`] = spec?.spec_values.join(', ') || '-'
-          })
+    let loadedCount = resumeFromOffset
+    let failedChunks: number[] = []
+    setLoadingProgress({ loaded: loadedCount, total: totalItems, failed: 0 })
 
-          // Add dynamic custom identification columns (use parameter, not stale state)
-          uniqueCustomIdNames.forEach(idName => {
-            const customId = item.custom_identifications?.find(id => id.identification_name === idName)
-            baseItem[`customId_${idName.replace(/\s+/g, '_')}`] = customId?.identification_value || '-'
-          })
+    // Build list of all offsets we need to fetch
+    const offsets: number[] = []
+    for (let offset = resumeFromOffset; offset < totalItems; offset += CHUNK_SIZE) {
+      offsets.push(offset)
+    }
 
-          // Add pricing data
-          baseItem.digikey_pricing = item.digikey_pricing || null
-          baseItem.mouser_pricing = item.mouser_pricing || null
+    console.log(`[Background Load] Loading ${totalItems - resumeFromOffset} items in ${offsets.length} chunks of ${CHUNK_SIZE} (concurrency: ${CONCURRENCY})`)
 
-          return baseItem
-        })
-
-        // Convert pricing
-        const convertedChunk = transformedChunk.map(item => processItemPricing(item, exchangeRates))
-
-        allNewItems = [...allNewItems, ...convertedChunk]
-
-        // Append to existing items
-        setLineItems(prevItems => [...prevItems, ...convertedChunk])
-
-        // Update progress
-        const loadedSoFar = Math.min(offset + convertedChunk.length, totalItems)
-        setLoadingProgress({ loaded: loadedSoFar, total: totalItems })
-
-        console.log(`[Background Load] Loaded ${convertedChunk.length} more items (total: ${loadedSoFar}/${totalItems})`)
-
-        offset += CHUNK_SIZE
-
-        // Check if we've loaded everything
-        if (chunkResponse.items.length < CHUNK_SIZE) {
-          hasMore = false
-        }
-
-        // Small delay to avoid overwhelming the API
-        await new Promise(resolve => setTimeout(resolve, 500))
+    // Process offsets in batches of CONCURRENCY
+    for (let batchStart = 0; batchStart < offsets.length; batchStart += CONCURRENCY) {
+      if (loadingAbortRef.current) {
+        console.log('[Background Load] Aborted by user')
+        break
       }
 
-      console.log(`[Background Load] ✅ Finished loading all ${totalItems} items`)
+      const batch = offsets.slice(batchStart, batchStart + CONCURRENCY)
+      console.log(`[Background Load] Fetching batch: offsets ${batch.join(', ')}`)
+
+      // Fetch all chunks in this batch in parallel
+      const results = await Promise.allSettled(
+        batch.map(async (offset) => {
+          let lastErr: Error | null = null
+          for (let retry = 0; retry <= MAX_CHUNK_RETRIES; retry++) {
+            try {
+              if (retry > 0) {
+                console.log(`[Background Load] Retrying offset ${offset} (attempt ${retry + 1})`)
+              }
+              const chunkResponse = await getProjectItems(projectId, {
+                limit: CHUNK_SIZE,
+                offset,
+                skip_pricing_jobs: true,
+              })
+              return { offset, items: chunkResponse.items || [] }
+            } catch (err: any) {
+              lastErr = err
+              if (retry < MAX_CHUNK_RETRIES) {
+                await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retry)))
+              }
+            }
+          }
+          throw lastErr || new Error(`Failed to fetch offset ${offset}`)
+        })
+      )
+
+      // Process results from this batch
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          const { offset, items } = result.value
+          if (items.length === 0) continue
+
+          // Discover new custom ID names
+          items.forEach((item: ProjectItem) => {
+            item.custom_identifications?.forEach(id => {
+              if (!uniqueCustomIdNames.includes(id.identification_name)) {
+                uniqueCustomIdNames.push(id.identification_name)
+              }
+            })
+          })
+          setCustomIdColumns([...uniqueCustomIdNames].sort())
+
+          // Transform and append
+          const converted = items.map((item: ProjectItem, idx: number) =>
+            transformApiItem(item, offset + idx, exchangeRates, uniqueSpecNames, uniqueCustomIdNames)
+          )
+          setLineItems(prev => [...prev, ...converted])
+          loadedCount += converted.length
+        } else {
+          // This chunk failed after all retries
+          const failedOffset = batch[results.indexOf(result)]
+          failedChunks.push(failedOffset)
+          console.error(`[Background Load] Chunk at offset ${failedOffset} failed permanently:`, result.reason)
+        }
+      }
+
+      setLoadingProgress({ loaded: Math.min(loadedCount, totalItems), total: totalItems, failed: failedChunks.length })
+      console.log(`[Background Load] Progress: ${loadedCount}/${totalItems} loaded, ${failedChunks.length} failed chunks`)
+    }
+
+    // Done
+    if (failedChunks.length > 0) {
+      const failedItems = failedChunks.length * CHUNK_SIZE
+      console.warn(`[Background Load] Completed with ${failedChunks.length} failed chunks (~${failedItems} items)`)
+      setLoadingError({
+        message: `${failedChunks.length} chunk(s) failed to load (~${Math.min(failedItems, totalItems - loadedCount)} items). You can retry or continue with what's loaded.`,
+        canRetry: true,
+      })
+      // Store failed offsets for retry
+      ;(window as any).__failedChunkOffsets = failedChunks
+      ;(window as any).__loadRemainingContext = { projectId, exchangeRates, uniqueSpecNames, totalItems, uniqueCustomIdNames }
+      setIsLoadingAllItems(false)
+    } else {
+      console.log(`[Background Load] Finished loading all ${totalItems} items`)
       setAllItemsLoaded(true)
       setIsLoadingAllItems(false)
-
-      // Now trigger pricing jobs for all loaded items
-      console.log(`[Background Load] Triggering pricing jobs for all items...`)
+      setLoadingError(null)
       triggerPricingJobs(projectId)
-    } catch (error) {
-      console.error('[Background Load] Error loading remaining items:', error)
-      setIsLoadingAllItems(false)
     }
+  }
+
+  // Retry only the failed chunks
+  const retryFailedChunks = async () => {
+    const failedOffsets = (window as any).__failedChunkOffsets as number[] | undefined
+    const ctx = (window as any).__loadRemainingContext
+    if (!failedOffsets?.length || !ctx) return
+
+    setLoadingError(null)
+    setIsLoadingAllItems(true)
+    const { projectId, exchangeRates, uniqueSpecNames, totalItems, uniqueCustomIdNames } = ctx
+    const CHUNK_SIZE = 500
+    let newFailed: number[] = []
+    let newLoaded = 0
+
+    console.log(`[Retry] Retrying ${failedOffsets.length} failed chunks...`)
+
+    for (const offset of failedOffsets) {
+      try {
+        const chunkResponse = await getProjectItems(projectId, { limit: CHUNK_SIZE, offset, skip_pricing_jobs: true })
+        const items = chunkResponse.items || []
+        if (items.length > 0) {
+          items.forEach((item: ProjectItem) => {
+            item.custom_identifications?.forEach(id => {
+              if (!uniqueCustomIdNames.includes(id.identification_name)) {
+                uniqueCustomIdNames.push(id.identification_name)
+              }
+            })
+          })
+          setCustomIdColumns([...uniqueCustomIdNames].sort())
+          const converted = items.map((item: ProjectItem, idx: number) =>
+            transformApiItem(item, offset + idx, exchangeRates, uniqueSpecNames, uniqueCustomIdNames)
+          )
+          setLineItems(prev => [...prev, ...converted])
+          newLoaded += converted.length
+        }
+      } catch (err) {
+        console.error(`[Retry] Chunk at offset ${offset} failed again:`, err)
+        newFailed.push(offset)
+      }
+    }
+
+    setLoadingProgress(prev => ({
+      loaded: prev.loaded + newLoaded,
+      total: totalItems,
+      failed: newFailed.length,
+    }))
+
+    if (newFailed.length > 0) {
+      ;(window as any).__failedChunkOffsets = newFailed
+      setLoadingError({
+        message: `${newFailed.length} chunk(s) still failing. Check your network connection and try again.`,
+        canRetry: true,
+      })
+    } else {
+      ;(window as any).__failedChunkOffsets = undefined
+      setLoadingError(null)
+      setAllItemsLoaded(true)
+      triggerPricingJobs(projectId)
+    }
+    setIsLoadingAllItems(false)
   }
 
   // Trigger pricing jobs for all loaded items
@@ -4107,29 +4108,68 @@ export default function ProcurementDashboard() {
           )}
 
           {/* Loading All Items Progress Banner */}
-          {isLoadingAllItems && (
+          {isLoadingAllItems && loadingProgress.total > 0 && (
             <div className="mb-4 p-4 bg-purple-50 border border-purple-200 rounded-lg">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="animate-spin h-5 w-5 border-2 border-purple-600 border-t-transparent rounded-full" />
                   <div>
                     <div className="font-medium text-purple-900">
-                      Loading all items...
+                      Loading all items... (fetching 3 chunks in parallel)
                     </div>
                     <div className="text-sm text-purple-700">
                       {loadingProgress.loaded}/{loadingProgress.total} items loaded
                       ({((loadingProgress.loaded / loadingProgress.total) * 100).toFixed(1)}%)
+                      {loadingProgress.failed > 0 && (
+                        <span className="text-red-600 ml-2">
+                          ({loadingProgress.failed} chunk(s) failed, will retry)
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
 
-                {/* Progress bar */}
-                <div className="w-64 h-2 bg-purple-200 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-purple-600 transition-all duration-300"
-                    style={{ width: `${(loadingProgress.loaded / loadingProgress.total) * 100}%` }}
-                  />
+                <div className="flex items-center gap-3">
+                  {/* Progress bar */}
+                  <div className="w-64 h-2 bg-purple-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-purple-600 transition-all duration-300"
+                      style={{ width: `${(loadingProgress.loaded / loadingProgress.total) * 100}%` }}
+                    />
+                  </div>
+                  {/* Cancel button */}
+                  <button
+                    onClick={() => { loadingAbortRef.current = true }}
+                    className="text-xs px-2 py-1 text-purple-700 hover:text-purple-900 hover:bg-purple-100 rounded"
+                  >
+                    Cancel
+                  </button>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Loading Error / Retry Banner */}
+          {loadingError && !isLoadingAllItems && (
+            <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <svg className="h-5 w-5 text-red-600" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                  </svg>
+                  <div>
+                    <div className="font-medium text-red-900">Loading incomplete</div>
+                    <div className="text-sm text-red-700">{loadingError.message}</div>
+                  </div>
+                </div>
+                {loadingError.canRetry && (
+                  <button
+                    onClick={retryFailedChunks}
+                    className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 transition-colors"
+                  >
+                    Retry Failed
+                  </button>
+                )}
               </div>
             </div>
           )}
