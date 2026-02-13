@@ -1502,11 +1502,22 @@ export default function ProcurementDashboard() {
 
   const filteredAndSortedItems = useMemo(() => {
     let filtered = lineItems.filter((item: any) => {
+      const term = searchTerm.toLowerCase()
       const matchesSearch =
-        item.customer.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.itemId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.vendor.toLowerCase().includes(searchTerm.toLowerCase())
+        item.customer.toLowerCase().includes(term) ||
+        item.description.toLowerCase().includes(term) ||
+        item.itemId.toLowerCase().includes(term) ||
+        item.vendor.toLowerCase().includes(term) ||
+        // Search custom identifications (MPN, CPN, etc.)
+        customIdColumns.some(idName => {
+          const key = `customId_${idName.replace(/\s+/g, '_')}`
+          return (item[key] || '').toLowerCase().includes(term)
+        }) ||
+        // Search spec columns
+        specColumns.some(specName => {
+          const key = `spec_${specName.replace(/\s+/g, '_')}`
+          return (item[key] || '').toLowerCase().includes(term)
+        })
 
       const vendorMatch = vendorFilter.length === 0 || vendorFilter.includes(item.vendor || "tbd")
       const actionMatch = actionFilter.length === 0 || actionFilter.includes(item.action)
@@ -1581,6 +1592,8 @@ export default function ProcurementDashboard() {
     sortDirection,
     activeFilter,
     reverseFilter,
+    customIdColumns,
+    specColumns,
   ])
 
   const paginatedItems = useMemo(() => {
