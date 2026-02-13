@@ -452,6 +452,8 @@ export interface ProjectItemsResponse {
   mouser_uncached_count?: number;
   mouser_job_id?: string;
   mouser_estimated_duration_seconds?: number;
+  // Dynamic column name for internal notes (from Item Directory template)
+  internal_notes_column_name?: string;
   // Legacy fields (for backward compatibility)
   uncached_count?: number;
   job_id?: string;

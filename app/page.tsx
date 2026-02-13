@@ -395,6 +395,8 @@ export default function ProcurementDashboard() {
   const [specColumns, setSpecColumns] = useState<string[]>([])
   // Dynamic custom identification columns
   const [customIdColumns, setCustomIdColumns] = useState<string[]>([])
+  // Dynamic internal notes column name (from Item Directory template)
+  const [internalNotesLabel, setInternalNotesLabel] = useState<string>('Internal Notes')
 
   // Distributor enabled flags (based on API keys configured in admin)
   const [digikeyEnabled, setDigikeyEnabled] = useState(false)
@@ -712,6 +714,11 @@ export default function ProcurementDashboard() {
           setExchangeRates(initialItemsResponse.exchange_rates)
           console.log('[Dashboard] Loaded exchange rates:', Object.keys(initialItemsResponse.exchange_rates).length, 'currencies')
         }
+
+        // Store dynamic internal notes column name from API
+        const notesColName = initialItemsResponse.internal_notes_column_name || 'Internal Notes'
+        setInternalNotesLabel(notesColName)
+        console.log('[Dashboard] Internal notes column name:', notesColName)
 
         // Transform API data using shared helper
         const itemsWithConvertedPricing = initialItemsResponse.items.map((item: ProjectItem, index: number) =>
@@ -1616,7 +1623,7 @@ export default function ProcurementDashboard() {
     const headers: string[] = [
       'Item ID',
       'Description',
-      'Internal Notes',
+      internalNotesLabel,
       'Is Alternate',
       'Alternate Parent Name',
       'Has Alternates',
@@ -2868,7 +2875,7 @@ export default function ProcurementDashboard() {
     customer: "Customer",
     itemId: "Item ID",
     description: "Description",
-    internalNotes: "Internal Notes",
+    internalNotes: internalNotesLabel,
     bom: "BOM",
     quantity: "Qty",
     unit: "Unit",
