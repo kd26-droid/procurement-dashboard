@@ -335,6 +335,12 @@ export default function ProcurementDashboard() {
     customer: "",
   })
   const [projectUsers, setProjectUsers] = useState<Array<{user_id: string, name: string, email: string, role: string}>>([])
+  // Project-level role arrays (same for all items)
+  const [projectManagers, setProjectManagers] = useState<string>('')
+  const [rfqAssignees, setRfqAssignees] = useState<string>('')
+  const [quoteAssignees, setQuoteAssignees] = useState<string>('')
+  // Map of user name → roles (for settings display)
+  const [userRolesMap, setUserRolesMap] = useState<Record<string, string[]>>({})
   const [availableTags, setAvailableTags] = useState<string[]>([])
   const [tagSearchTerm, setTagSearchTerm] = useState("")
 
@@ -373,6 +379,9 @@ export default function ProcurementDashboard() {
     "quantity",
     "unit",
     "category",
+    "projectManager",
+    "rfqAssignee",
+    "quoteAssignee",
     "action",
     "assignedTo",
     "dueDate",
@@ -661,6 +670,31 @@ export default function ProcurementDashboard() {
         // Set users data
         setProjectUsers(usersResponse.users)
         console.log('[Dashboard] Loaded', usersResponse.users.length, 'users:', usersResponse.users.map(u => `${u.name} (${u.email})`))
+
+        // Set project-level role columns (same for all items)
+        const pmNames = (usersResponse.project_managers || []).map(u => u.name).join('; ')
+        const rfqNames = (usersResponse.rfq_responsible_users || []).map(u => u.name).join('; ')
+        const quoteNames = (usersResponse.quote_responsible_users || []).map(u => u.name).join('; ')
+        setProjectManagers(pmNames)
+        setRfqAssignees(rfqNames)
+        setQuoteAssignees(quoteNames)
+        console.log('[Dashboard] Roles — PM:', pmNames, '| RFQ:', rfqNames, '| Quote:', quoteNames)
+
+        // Build user → roles map for settings display
+        const rolesMap: Record<string, string[]> = {}
+        ;(usersResponse.project_managers || []).forEach(u => {
+          if (!rolesMap[u.name]) rolesMap[u.name] = []
+          rolesMap[u.name].push('PM')
+        })
+        ;(usersResponse.rfq_responsible_users || []).forEach(u => {
+          if (!rolesMap[u.name]) rolesMap[u.name] = []
+          if (!rolesMap[u.name].includes('RFQ Assignee')) rolesMap[u.name].push('RFQ Assignee')
+        })
+        ;(usersResponse.quote_responsible_users || []).forEach(u => {
+          if (!rolesMap[u.name]) rolesMap[u.name] = []
+          if (!rolesMap[u.name].includes('Quote Assignee')) rolesMap[u.name].push('Quote Assignee')
+        })
+        setUserRolesMap(rolesMap)
 
         // Set available tags (ALL organization-level tags from backend)
         setAvailableTags(tagsResponse.tags || [])
@@ -1643,6 +1677,9 @@ export default function ProcurementDashboard() {
 
     // Continue with remaining columns
     headers.push(
+      'Project Manager',
+      'RFQ Assignee',
+      'Quote Assignee',
       'Action',
       'Assigned To',
       'Due Date',
@@ -1724,6 +1761,13 @@ export default function ProcurementDashboard() {
       for (let t = 0; t < maxTags; t++) {
         row.push(escapeCSV(itemTags[t] || ''))
       }
+
+      // Add project-level role columns (same for all rows)
+      row.push(
+        escapeCSV(projectManagers),
+        escapeCSV(rfqAssignees),
+        escapeCSV(quoteAssignees),
+      )
 
       // Add remaining columns
       row.push(
@@ -2880,6 +2924,9 @@ export default function ProcurementDashboard() {
     quantity: "Qty",
     unit: "Unit",
     category: "Tag",
+    projectManager: "Project Manager",
+    rfqAssignee: "RFQ Assignee",
+    quoteAssignee: "Quote Assignee",
     action: "Action",
     assignedTo: "Assigned",
     dueDate: "Due Date",
@@ -4477,6 +4524,28 @@ export default function ProcurementDashboard() {
                         )
                       }
 
+                      if (columnKey === "projectManager" || columnKey === "rfqAssignee" || columnKey === "quoteAssignee") {
+                        const value = columnKey === "projectManager" ? projectManagers
+                          : columnKey === "rfqAssignee" ? rfqAssignees
+                          : quoteAssignees
+                        return (
+                          <td key={columnKey} className="p-2 text-left">
+                            {value ? (
+                              <UiTooltip>
+                                <UiTooltipTrigger>
+                                  <span className="text-xs text-gray-700 truncate block max-w-[120px]">{value}</span>
+                                </UiTooltipTrigger>
+                                <UiTooltipContent side="bottom">
+                                  <p className="text-xs whitespace-pre-wrap">{value}</p>
+                                </UiTooltipContent>
+                              </UiTooltip>
+                            ) : (
+                              <span className="text-gray-400 text-xs">-</span>
+                            )}
+                          </td>
+                        )
+                      }
+
                       if (columnKey === "action") {
                         return (
                           <td key={columnKey} className="p-2 text-left">
@@ -5658,6 +5727,7 @@ export default function ProcurementDashboard() {
               <SettingsPanel
                 allTags={allTags}
                 allUsers={allUsers}
+                userRolesMap={userRolesMap}
                 current={currentSettings}
                 initialTab={settingsInitialTab}
                 onSave={(s) => {

@@ -491,6 +491,9 @@ export interface ProjectUser {
 export interface ProjectUsersResponse {
   success: boolean;
   users: ProjectUser[];
+  project_managers?: ProjectUser[];
+  rfq_responsible_users?: ProjectUser[];
+  quote_responsible_users?: ProjectUser[];
   total: number;
 }
 

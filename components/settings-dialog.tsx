@@ -135,6 +135,7 @@ type Props = {
   onOpenChange: (open: boolean) => void
   allTags: string[]
   allUsers: string[]
+  userRolesMap?: Record<string, string[]>
   current: AppSettings
   onSave: (settings: AppSettings) => void
   initialTab?: 'users' | 'prices' | 'actions'
@@ -164,7 +165,7 @@ export type ActionCriterion = {
 }
 
 // --- MAIN COMPONENT ---
-export function SettingsDialog({ open, onOpenChange, allTags, allUsers, current, onSave, initialTab = 'users' }: Props) {
+export function SettingsDialog({ open, onOpenChange, allTags, allUsers, userRolesMap = {}, current, onSave, initialTab = 'users' }: Props) {
   const [local, setLocal] = useState<AppSettings>(current)
   const [newItemId, setNewItemId] = useState('')
   const [tagSearch, setTagSearch] = useState('')
@@ -465,7 +466,19 @@ export function SettingsDialog({ open, onOpenChange, allTags, allUsers, current,
                                   htmlFor={`user-${user}`}
                                   className="text-base cursor-pointer font-medium flex-1 text-slate-700"
                                 >
-                                  {user}
+                                  <span className="flex items-center gap-2 flex-wrap">
+                                    {user}
+                                    {userRolesMap[user]?.map(role => (
+                                      <Badge key={role} variant="outline" className={cn(
+                                        "text-[10px] px-1.5 py-0 font-normal",
+                                        role === 'PM' ? "border-purple-300 text-purple-700 bg-purple-50" :
+                                        role === 'RFQ Assignee' ? "border-blue-300 text-blue-700 bg-blue-50" :
+                                        "border-green-300 text-green-700 bg-green-50"
+                                      )}>
+                                        {role}
+                                      </Badge>
+                                    ))}
+                                  </span>
                                 </Label>
                               </div>
                             ))}
@@ -867,6 +880,7 @@ export function SettingsDialog({ open, onOpenChange, allTags, allUsers, current,
 export function SettingsPanel({
   allTags,
   allUsers,
+  userRolesMap = {},
   current,
   onSave,
   onCancel,
@@ -874,6 +888,7 @@ export function SettingsPanel({
 }: {
   allTags: string[]
   allUsers: string[]
+  userRolesMap?: Record<string, string[]>
   current: AppSettings
   onSave: (s: AppSettings) => void
   onCancel: () => void
@@ -1077,7 +1092,21 @@ export function SettingsPanel({
                         {filteredUsers.map(user => (
                           <div key={user} className="flex items-center space-x-2">
                             <Checkbox id={`user-${user}`} checked={selectedUsers.includes(user)} onCheckedChange={() => toggleUser(user)} />
-                            <Label htmlFor={`user-${user}`} className="text-sm cursor-pointer">{user}</Label>
+                            <Label htmlFor={`user-${user}`} className="text-sm cursor-pointer">
+                              <span className="flex items-center gap-1.5 flex-wrap">
+                                {user}
+                                {userRolesMap[user]?.map(role => (
+                                  <Badge key={role} variant="outline" className={cn(
+                                    "text-[9px] px-1 py-0 font-normal",
+                                    role === 'PM' ? "border-purple-300 text-purple-700 bg-purple-50" :
+                                    role === 'RFQ Assignee' ? "border-blue-300 text-blue-700 bg-blue-50" :
+                                    "border-green-300 text-green-700 bg-green-50"
+                                  )}>
+                                    {role}
+                                  </Badge>
+                                ))}
+                              </span>
+                            </Label>
                           </div>
                         ))}
                       </div>
