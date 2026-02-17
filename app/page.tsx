@@ -1290,7 +1290,15 @@ export default function ProcurementDashboard() {
   }, [])
 
   const currentSettings: AppSettings = useMemo(() => {
-    return settingsProfiles[currentSettingsKey] || buildDefaultSettings('Default')
+    const raw = settingsProfiles[currentSettingsKey] || buildDefaultSettings('Default')
+    // Migrate old tagUserMap → rfqAssigneeMap/quoteAssigneeMap if needed
+    return {
+      ...raw,
+      users: {
+        rfqAssigneeMap: raw.users?.rfqAssigneeMap || (raw.users as any)?.tagUserMap || {},
+        quoteAssigneeMap: raw.users?.quoteAssigneeMap || {},
+      },
+    }
   }, [settingsProfiles, currentSettingsKey])
 
   const allTags = useMemo(() => {
