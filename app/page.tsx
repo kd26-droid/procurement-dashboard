@@ -10,7 +10,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
-import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel } from 'recharts'
+import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel, LabelList } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
 import { getProjectId, getProjectItems, getProjectOverview, getProjectUsers, updateProjectItem, bulkAssignUsers, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, type ProjectItem } from '@/lib/api'
@@ -341,6 +341,11 @@ export default function ProcurementDashboard() {
   const [quoteAssignees, setQuoteAssignees] = useState<string>('')
   // Map of user name → roles (for settings display)
   const [userRolesMap, setUserRolesMap] = useState<Record<string, string[]>>({})
+  // All enterprise users available for role assignment
+  const [availableUsers, setAvailableUsers] = useState<Array<{user_id: string, name: string, email: string}>>([])
+  // Currently assigned users per role (raw arrays from API)
+  const [rfqResponsibleUsers, setRfqResponsibleUsers] = useState<Array<{user_id: string, name: string, email: string}>>([])
+  const [quoteResponsibleUsers, setQuoteResponsibleUsers] = useState<Array<{user_id: string, name: string, email: string}>>([])
   const [availableTags, setAvailableTags] = useState<string[]>([])
   const [tagSearchTerm, setTagSearchTerm] = useState("")
 
@@ -417,21 +422,31 @@ export default function ProcurementDashboard() {
   // Exchange rates for currency conversion (USD_TO_XXX format)
   const [exchangeRates, setExchangeRates] = useState<Record<string, number>>({})
 
-  const [columnWidths, setColumnWidths] = useState({
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({
+    itemId: 130,
     description: 280,
-    category: 128,
+    internalNotes: 140,
+    bom: 140,
     quantity: 80,
-    vendor: 144,
+    unit: 60,
+    category: 128,
+    projectManager: 130,
+    rfqAssignee: 130,
+    quoteAssignee: 130,
+    action: 80,
     assignedTo: 144,
+    dueDate: 100,
+    vendor: 144,
     unitPrice: 100,
+    source: 96,
     pricePO: 88,
     priceContract: 88,
     priceQuote: 88,
     priceDigikey: 88,
     priceMouser: 88,
     priceEXIM: 88,
-    source: 96,
     totalPrice: 128,
+    customer: 120,
   })
 
   const [isResizing, setIsResizing] = useState(false)
@@ -678,6 +693,8 @@ export default function ProcurementDashboard() {
         setProjectManagers(pmNames)
         setRfqAssignees(rfqNames)
         setQuoteAssignees(quoteNames)
+        setRfqResponsibleUsers(usersResponse.rfq_responsible_users || [])
+        setQuoteResponsibleUsers(usersResponse.quote_responsible_users || [])
         console.log('[Dashboard] Roles — PM:', pmNames, '| RFQ:', rfqNames, '| Quote:', quoteNames)
 
         // Build user → roles map for settings display
@@ -695,6 +712,12 @@ export default function ProcurementDashboard() {
           if (!rolesMap[u.name].includes('Quote Assignee')) rolesMap[u.name].push('Quote Assignee')
         })
         setUserRolesMap(rolesMap)
+
+        // Store available enterprise users for role assignment dropdowns
+        if (usersResponse.available_users) {
+          setAvailableUsers(usersResponse.available_users)
+          console.log('[Dashboard] Available users for assignment:', usersResponse.available_users.length)
+        }
 
         // Set available tags (ALL organization-level tags from backend)
         setAvailableTags(tagsResponse.tags || [])
@@ -810,6 +833,8 @@ export default function ProcurementDashboard() {
       event_quantity: item.event_quantity ?? null,
       bom_slab_quantity: item.bom_slab_quantity || 0,
       enterprise_item_id: item.enterprise_item_id || null,
+      rfqAssigneeName: '',  // per-item, filled by auto-assign
+      quoteAssigneeName: '',  // per-item, filled by auto-assign
       vendor: '',
       action: '',
       dueDate: '',
@@ -1354,12 +1379,13 @@ export default function ProcurementDashboard() {
     setResizeColumn(columnKey)
 
     const startX = e.clientX
-    const startWidth = columnWidths[columnKey as keyof typeof columnWidths] || 280 // default to 280 if not set
+    // Get actual rendered width from the th element
+    const thEl = (e.target as HTMLElement).parentElement
+    const startWidth = thEl ? thEl.getBoundingClientRect().width : (columnWidths[columnKey as keyof typeof columnWidths] || 120)
 
     const handleMouseMove = (e: MouseEvent) => {
       const diff = e.clientX - startX
-      const minWidth = columnKey === 'description' ? 200 : 80 // minimum 200px for description, 80px for others
-      const newWidth = Math.max(startWidth + diff, minWidth)
+      const newWidth = Math.max(startWidth + diff, 40) // 40px absolute minimum
       setColumnWidths((prev) => ({
         ...prev,
         [columnKey]: newWidth,
@@ -1371,8 +1397,12 @@ export default function ProcurementDashboard() {
       setResizeColumn(null)
       document.removeEventListener("mousemove", handleMouseMove)
       document.removeEventListener("mouseup", handleMouseUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
     }
 
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
     document.addEventListener("mousemove", handleMouseMove)
     document.addEventListener("mouseup", handleMouseUp)
   }
@@ -1775,11 +1805,11 @@ export default function ProcurementDashboard() {
         row.push(escapeCSV(itemTags[t] || ''))
       }
 
-      // Add project-level role columns (same for all rows)
+      // Add role columns (PM is project-level, RFQ/Quote are per-item from auto-assign)
       row.push(
         escapeCSV(projectManagers),
-        escapeCSV(rfqAssignees),
-        escapeCSV(quoteAssignees),
+        escapeCSV(item.rfqAssigneeName || ''),
+        escapeCSV(item.quoteAssigneeName || ''),
       )
 
       // Add remaining columns
@@ -1934,141 +1964,106 @@ export default function ProcurementDashboard() {
     }
   }
 
-  // Auto Assign Users Handler
+  // Helper: resolve user ID to display name
+  const resolveUserName = (uid: string): string => {
+    const fromProject = projectUsers.find(u => u.user_id === uid)
+    if (fromProject) return fromProject.name
+    const fromAvailable = availableUsers.find(u => u.user_id === uid)
+    if (fromAvailable) return fromAvailable.name
+    return uid // fallback to ID if not found
+  }
+
+  // Auto Assign Users Handler — fills RFQ Assignee & Quote Assignee columns per item
   const handleAutoAssignUsers = async (scope: 'all' | 'unassigned' | 'selected') => {
-    const projectId = getProjectId()
-    if (!projectId) {
-      console.error('[Auto-Assign] No project ID found')
-      return
-    }
-
     try {
-      const tagMap = currentSettings.users.tagUserMap || {}
+      const rfqMap = currentSettings.users.rfqAssigneeMap || {}
+      const quoteMap = currentSettings.users.quoteAssigneeMap || {}
 
-      // Convert tag-user map from user names to user IDs
-      const tagUserIdMap: Record<string, string[]> = {}
-      Object.entries(tagMap).forEach(([tag, userNames]) => {
-        const userIds = userNames
-          .map(userName => {
-            const user = projectUsers.find(u => u.name === userName)
-            return user?.user_id
-          })
-          .filter((id: string | undefined): id is string => id !== undefined)
+      console.log('[Auto-Assign] RFQ map (tag→user_ids):', rfqMap)
+      console.log('[Auto-Assign] Quote map (customer→user_ids):', quoteMap)
 
-        if (userIds.length > 0) {
-          tagUserIdMap[tag] = userIds
-        }
-      })
-
-      console.log('[Auto-Assign] Tag-User ID Map:', tagUserIdMap)
-
-      if (Object.keys(tagUserIdMap).length === 0) {
+      if (Object.keys(rfqMap).length === 0 && Object.keys(quoteMap).length === 0) {
         toast({
           title: "No Mappings",
-          description: "No valid tag-to-user mappings found. Configure them in Settings first.",
+          description: "No RFQ or Quote assignee mappings found. Configure them in Settings first.",
           variant: "destructive",
         })
         return
       }
 
       // Determine which items to process based on scope
-      let itemsToProcess: any[]
+      let itemIdsToProcess: Set<number>
       if (scope === 'selected') {
-        itemsToProcess = lineItems.filter((item: any) => selectedItems.includes(item.id))
+        itemIdsToProcess = new Set(selectedItems)
       } else if (scope === 'unassigned') {
-        itemsToProcess = lineItems.filter((item: any) => !item.assigned_user_ids || item.assigned_user_ids.length === 0)
+        // "unassigned" = items where both RFQ and Quote assignee columns are empty
+        itemIdsToProcess = new Set(
+          lineItems
+            .filter((item: any) => !item.rfqAssigneeName && !item.quoteAssigneeName)
+            .map((item: any) => item.id)
+        )
       } else {
-        itemsToProcess = [...lineItems]
+        itemIdsToProcess = new Set(lineItems.map((item: any) => item.id))
       }
 
-      console.log(`[Auto-Assign] Processing ${itemsToProcess.length} items with scope: ${scope}`)
+      console.log(`[Auto-Assign] Processing ${itemIdsToProcess.size} items with scope: ${scope}`)
 
-      setAutoAssignProgress({ current: 0, total: itemsToProcess.length, isRunning: true })
-
-      // For each item, find matching tags and compute the user IDs to assign
       let updated = 0
       let skipped = 0
-      const updatedItemIds: string[] = []
-      const allAssignedUserIds = new Set<string>()
 
-      for (const item of itemsToProcess) {
-        // Get tags for this item (split category by comma, same as how allTags is built)
+      // Build updates for all matching items in one pass
+      setLineItems((prevItems: any[]) => prevItems.map((item: any) => {
+        if (!itemIdsToProcess.has(item.id)) return item
+
+        // --- RFQ Assignee: match item tags → rfqAssigneeMap ---
+        const rfqUserIds = new Set<string>()
         const itemTags = Array.isArray(item.category)
           ? (item.category as string[])
           : String(item.category || '').split(',').map((s: string) => s.trim()).filter(Boolean)
 
-        // Collect all user IDs from matching tag mappings
-        const userIdsToAssign = new Set<string>()
         itemTags.forEach((tag: string) => {
-          const mappedUserIds = tagUserIdMap[tag]
+          const mappedUserIds = rfqMap[tag]
           if (mappedUserIds) {
-            mappedUserIds.forEach(uid => userIdsToAssign.add(uid))
+            mappedUserIds.forEach((uid: string) => rfqUserIds.add(uid))
           }
         })
 
-        if (userIdsToAssign.size === 0) {
-          skipped++
-          setAutoAssignProgress(prev => ({ ...prev, current: prev.current + 1 }))
-          continue
+        // --- Quote Assignee: match project customer → quoteAssigneeMap ---
+        const quoteUserIds = new Set<string>()
+        const customerName = projectData.customer || ''
+        if (customerName && quoteMap[customerName]) {
+          quoteMap[customerName].forEach((uid: string) => quoteUserIds.add(uid))
         }
 
-        // Merge with existing assigned users (don't remove existing ones)
-        const existingIds = item.assigned_user_ids || []
-        const mergedIds = Array.from(new Set([...existingIds, ...userIdsToAssign]))
-
-        // Skip if no change
-        if (mergedIds.length === existingIds.length && mergedIds.every((id: string) => existingIds.includes(id))) {
+        // Skip if no matches at all
+        if (rfqUserIds.size === 0 && quoteUserIds.size === 0) {
           skipped++
-          setAutoAssignProgress(prev => ({ ...prev, current: prev.current + 1 }))
-          continue
+          return item
         }
 
-        try {
-          const result = await updateProjectItem(projectId, item.project_item_id, {
-            assigned_user_ids: mergedIds,
-          })
+        // Resolve user IDs to names
+        const rfqNames = Array.from(rfqUserIds).map(resolveUserName).join('; ')
+        const quoteNames = Array.from(quoteUserIds).map(resolveUserName).join('; ')
 
-          if (result.success) {
-            // Get user names for display
-            const assignedNames = mergedIds
-              .map((uid: string) => projectUsers.find(u => u.user_id === uid)?.name || uid)
-              .join(', ')
+        // Only update fields that have new values
+        const newRfq = rfqNames || item.rfqAssigneeName
+        const newQuote = quoteNames || item.quoteAssigneeName
 
-            // Update local state for this item
-            setLineItems((prevItems: any[]) => prevItems.map((prevItem: any) => {
-              if (prevItem.project_item_id !== item.project_item_id) return prevItem
-              return {
-                ...prevItem,
-                assigned_user_ids: mergedIds,
-                assignedTo: assignedNames,
-              }
-            }))
-
-            updatedItemIds.push(item.project_item_id)
-            mergedIds.forEach((uid: string) => allAssignedUserIds.add(uid))
-            updated++
-
-            console.log(`[Auto-Assign] Updated item ${item.itemId}: ${assignedNames}`)
-          } else {
-            console.error(`[Auto-Assign] Failed to update item ${item.itemId}:`, result)
-            skipped++
-          }
-        } catch (err) {
-          console.error(`[Auto-Assign] Error updating item ${item.itemId}:`, err)
+        if (newRfq !== item.rfqAssigneeName || newQuote !== item.quoteAssigneeName) {
+          updated++
+        } else {
           skipped++
+          return item
         }
 
-        // Update progress and small delay to avoid hammering API
-        setAutoAssignProgress(prev => ({ ...prev, current: prev.current + 1 }))
-        await new Promise(resolve => setTimeout(resolve, 100))
-      }
+        console.log(`[Auto-Assign] Item ${item.itemId}: RFQ="${rfqNames}", Quote="${quoteNames}"`)
 
-      setAutoAssignProgress(prev => ({ ...prev, isRunning: false }))
-
-      // Notify Factwise parent about all updated items
-      if (updatedItemIds.length > 0) {
-        notifyItemsAssigned(updatedItemIds, Array.from(allAssignedUserIds))
-      }
+        return {
+          ...item,
+          rfqAssigneeName: newRfq,
+          quoteAssigneeName: newQuote,
+        }
+      }))
 
       console.log(`[Auto-Assign] Done: ${updated} updated, ${skipped} skipped`)
 
@@ -2078,7 +2073,6 @@ export default function ProcurementDashboard() {
       })
     } catch (error) {
       console.error('[Auto-Assign] Error:', error)
-      setAutoAssignProgress(prev => ({ ...prev, isRunning: false }))
 
       toast({
         title: "Error",
@@ -2954,10 +2948,17 @@ export default function ProcurementDashboard() {
     unitPrice: "Price",
   }
 
-  // Add dynamic spec column labels
+  // Add dynamic spec column labels + default widths
   specColumns.forEach(specName => {
     const key = `spec_${specName.replace(/\s+/g, '_')}`
     columnLabels[key] = specName
+    if (!columnWidths[key]) columnWidths[key] = 120
+  })
+
+  // Add dynamic custom ID column default widths
+  customIdColumns.forEach(idName => {
+    const key = `customId_${idName.replace(/\s+/g, '_')}`
+    if (!columnWidths[key]) columnWidths[key] = 120
   })
 
   // Helpers for price icons
@@ -3082,51 +3083,27 @@ export default function ProcurementDashboard() {
     // Base price from actual distributor data or calculated prices
     const basePrice = digikeyPrice || mouserPrice || poPrice || contractPrice || quotePrice || 10
 
-    // Create date range (last 6 months)
-    const createDateRange = () => {
-      return Array.from({ length: 6 }, (_, i) => {
-        const monthsAgo = 5 - i
-        const date = new Date()
-        date.setMonth(date.getMonth() - monthsAgo)
-        return date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
-      })
-    }
-    const commonDates = createDateRange()
-
-    const chartTypes = {
-      po: 'line',
-      contract: 'bar',
-      exim: 'line',
-      quote: 'line',
-      online: 'bar'
-    }
-
-    // PO Module - Historical PO prices trending towards current PO price
-    // Shows price negotiation over time, quantities based on item's actual qty
-    const poData = commonDates.map((date, idx) => {
-      // Price starts higher and trends down to current PO price
-      const priceVariation = seededRandom(0.95, 1.15)
-      const trendFactor = 1.2 - (idx * 0.04) // Starts 20% higher, decreases
-      const price = (poPrice || basePrice * 0.92) * trendFactor * priceVariation
-      // Quantity increases as price drops (better deals = larger orders)
-      const qtyMultiplier = 0.5 + (idx * 0.15) + seededRandom(-0.1, 0.1)
-      const quantity = Math.round(itemQty * qtyMultiplier)
+    // PO Module - different vendors with PO prices
+    const poVendors = ['Arrow Electronics', 'Avnet', 'Future Electronics', 'TTI Inc', 'RS Components', 'Newark']
+    const poData = poVendors.map((vendor, idx) => {
+      const vendorFactor = [0.97, 1.02, 0.95, 1.05, 0.99, 1.01][idx]
+      const variation = seededRandom(0.96, 1.04)
+      const price = (poPrice || basePrice * 0.92) * vendorFactor * variation
+      const qtyMultiplier = [1.0, 0.8, 1.3, 0.6, 1.1, 0.9][idx]
+      const quantity = Math.round(itemQty * qtyMultiplier * seededRandom(0.9, 1.1))
       return {
-        date,
+        vendor,
         price: Math.round(price * 100) / 100,
         quantity: Math.max(10, quantity)
       }
     })
 
-    // Contract Module - Different vendors with varying prices around contract price
-    // Realistic vendor names, prices close to item's contract price
-    const vendorNames = ['Arrow Electronics', 'Avnet', 'Future Electronics', 'TTI Inc', 'Digi-Key (Contract)']
-    const contractData = vendorNames.map((vendor, idx) => {
-      // Each vendor has slightly different pricing
+    // Contract Module - different vendors with contract prices
+    const contractVendors = ['Arrow Electronics', 'Avnet', 'Future Electronics', 'TTI Inc', 'Digi-Key']
+    const contractData = contractVendors.map((vendor, idx) => {
       const vendorFactor = [0.97, 1.02, 0.95, 1.05, 0.99][idx]
       const variation = seededRandom(0.98, 1.02)
       const price = (contractPrice || basePrice * 0.85) * vendorFactor * variation
-      // Quantity varies by vendor capability
       const qtyFactor = [1.2, 0.8, 1.5, 0.6, 1.0][idx]
       const quantity = Math.round(itemQty * qtyFactor * seededRandom(0.8, 1.2))
       return {
@@ -3136,74 +3113,62 @@ export default function ProcurementDashboard() {
       }
     })
 
-    // EXIM Module - Import price trends (slightly higher due to duties)
-    const eximData = commonDates.map((date, idx) => {
-      // EXIM prices fluctuate with currency/duties
-      const dutyFactor = seededRandom(1.05, 1.25)
-      const trendFactor = 1.0 + (Math.sin(idx * 0.8) * 0.1) // Slight wave pattern
-      const price = basePrice * dutyFactor * trendFactor
-      const quantity = Math.round(itemQty * seededRandom(0.3, 0.8))
+    // EXIM Module - different vendors with import prices
+    const eximVendors = ['LCSC', 'AliExpress', 'Made-in-China', 'Global Sources', 'IndiaMART']
+    const eximData = eximVendors.map((vendor, idx) => {
+      const dutyFactor = [1.08, 1.15, 1.12, 1.20, 1.06][idx]
+      const variation = seededRandom(0.97, 1.03)
+      const price = basePrice * dutyFactor * variation
+      const qtyFactor = [1.5, 0.7, 1.0, 0.5, 1.2][idx]
+      const quantity = Math.round(itemQty * qtyFactor * seededRandom(0.8, 1.2))
       return {
-        date,
+        vendor,
         price: Math.round(price * 100) / 100,
         quantity: Math.max(5, quantity)
       }
     })
 
-    // Quote Module - Recent quotes trending towards best price
-    const quoteData = commonDates.map((date, idx) => {
-      // Quotes start varied and converge towards quote price
-      const convergeFactor = 1.15 - (idx * 0.025)
-      const variation = seededRandom(0.92, 1.08)
-      const price = (quotePrice || basePrice * 0.97) * convergeFactor * variation
-      // Quote quantities typically match requested qty
+    // Quote Module - different vendors with quote prices
+    const quoteVendors = ['Arrow Electronics', 'Avnet', 'TTI Inc', 'Future Electronics', 'RS Components']
+    const quoteData = quoteVendors.map((vendor, idx) => {
+      const vendorFactor = [1.0, 1.05, 0.95, 1.08, 0.98][idx]
+      const variation = seededRandom(0.94, 1.06)
+      const price = (quotePrice || basePrice * 0.97) * vendorFactor * variation
       const quantity = Math.round(itemQty * seededRandom(0.9, 1.1))
       return {
-        date,
+        vendor,
         price: Math.round(price * 100) / 100,
         quantity: Math.max(10, quantity)
       }
     })
 
-    // Online Pricing Module - ACTUAL distributor prices with real stock
+    // Online Pricing Module - always show all 4 vendors (real data when available, mock otherwise)
+    const refPrice = digikeyPrice || mouserPrice || basePrice
+    const refStock = digikeyStock || mouserStock || Math.max(100, itemQty * 3)
     const onlineData = [
       {
         vendor: 'Digikey',
-        price: digikeyPrice ? Math.round(digikeyPrice * 100) / 100 : null,
-        quantity: digikeyStock > 0 ? digikeyStock : null,
-        available: digikeyPricing?.status === 'available'
+        price: Math.round((digikeyPrice || refPrice * 1.0) * 100) / 100,
+        quantity: digikeyStock > 0 ? digikeyStock : Math.round(refStock * 0.9),
       },
       {
         vendor: 'Mouser',
-        price: mouserPrice ? Math.round(mouserPrice * 100) / 100 : null,
-        quantity: mouserStock > 0 ? mouserStock : null,
-        available: mouserPricing?.status === 'available'
+        price: Math.round((mouserPrice || refPrice * 1.02) * 100) / 100,
+        quantity: mouserStock > 0 ? mouserStock : Math.round(refStock * 0.95),
       },
       {
         vendor: 'LCSC',
-        // LCSC typically 20-30% cheaper than Digikey
-        price: digikeyPrice ? Math.round(digikeyPrice * seededRandom(0.70, 0.80) * 100) / 100
-          : mouserPrice ? Math.round(mouserPrice * seededRandom(0.70, 0.80) * 100) / 100
-          : Math.round(basePrice * 0.75 * 100) / 100,
-        quantity: Math.round((digikeyStock || mouserStock || 1000) * seededRandom(1.5, 3.0)),
-        available: true
+        price: Math.round(refPrice * 0.93 * 100) / 100,
+        quantity: Math.round(refStock * 1.2),
       },
       {
         vendor: 'Farnell',
-        // Farnell typically 5-10% more than Digikey
-        price: digikeyPrice ? Math.round(digikeyPrice * seededRandom(1.05, 1.12) * 100) / 100
-          : mouserPrice ? Math.round(mouserPrice * seededRandom(1.05, 1.12) * 100) / 100
-          : Math.round(basePrice * 1.08 * 100) / 100,
-        quantity: Math.round((digikeyStock || mouserStock || 500) * seededRandom(0.4, 0.8)),
-        available: true
-      }
-    ].filter(d => d.price !== null).map(d => ({
-      vendor: d.vendor,
-      price: d.price as number,
-      quantity: d.quantity as number
-    }))
+        price: Math.round(refPrice * 1.04 * 100) / 100,
+        quantity: Math.round(refStock * 0.85),
+      },
+    ]
 
-    return { poData, contractData, eximData, quoteData, onlineData, chartTypes }
+    return { poData, contractData, eximData, quoteData, onlineData }
   }
 
   // Helper function to render different chart types
@@ -3233,7 +3198,10 @@ export default function ProcurementDashboard() {
     const hasSecondSeries = Boolean(dataKey2) && data.some((d) => d[dataKey2 as keyof typeof d] !== undefined)
     const xAxisProps = {
       dataKey: xAxisKey,
-      tick: { fontSize: 12, fill: '#475569' },
+      tick: { fontSize: 10, fill: '#475569' },
+      angle: -25,
+      textAnchor: 'end' as const,
+      interval: 0,
     } as const
     const yLeftProps = {
       yAxisId: 'left',
@@ -3248,45 +3216,109 @@ export default function ProcurementDashboard() {
       tickFormatter: rightTickFormatter,
     }
 
+    // Format value for permanent labels on data points
+    const fmtLabel = (isCurrency: boolean) => (v: any) => {
+      const n = Number(v)
+      if (isNaN(n)) return ''
+      return isCurrency ? `$${n.toFixed(0)}` : `${n}`
+    }
+    const labelStyle1 = { fontSize: 9, fill: color1, fontWeight: 600 }
+    const labelStyle2 = { fontSize: 9, fill: color2, fontWeight: 600 }
+
+    // Label just above the bar top — also records bar top y for pointLabel
+    const barLabel = (isCurrency: boolean, color: string) => (props: any) => {
+      const { x, y, width, value, index } = props
+      const n = Number(value)
+      if (isNaN(n)) return null
+      if (index !== undefined) barTops[index] = y
+      const text = isCurrency ? `$${n.toFixed(0)}` : `${n}`
+      const cx = x + (width || 0) / 2
+      const ty = y - 8
+      return (
+        <g>
+          <rect x={cx - 16} y={ty - 10} width={32} height={13} rx={2} fill="white" fillOpacity={0.85} />
+          <text x={cx} y={ty} textAnchor="middle" fontSize={9} fontWeight={700} fill={color}>
+            {text}
+          </text>
+        </g>
+      )
+    }
+
+    // Label for line points — white bg so it pops off the line, placed above bars if inside
+    const barTops: Record<number, number> = {}
+    const pointLabel = (isCurrency: boolean, color: string) => (props: any) => {
+      const { x, y, value, index } = props
+      const n = Number(value)
+      if (isNaN(n)) return null
+      const text = isCurrency ? `$${n.toFixed(0)}` : `${n}`
+      const barTopY = barTops[index ?? -1]
+      // If dot is inside/below a bar, place label above the bar; otherwise above the dot
+      const rawY = (barTopY !== undefined && y >= barTopY) ? barTopY - 18 : y - 18
+      const chartTop = (props.viewBox?.y ?? 5) + 4
+      const finalY = Math.max(chartTop, rawY)
+      return (
+        <g>
+          <rect x={x - 18} y={finalY - 10} width={36} height={14} rx={3} fill="white" stroke={color} strokeWidth={0.5} />
+          <text x={x} y={finalY} textAnchor="middle" fontSize={9} fontWeight={700} fill={color}>
+            {text}
+          </text>
+        </g>
+      )
+    }
+
+    // Legend entry names
+    const legendName1 = yLeftLabel || dataKey1
+    const legendName2 = yRightLabel || dataKey2
+    const legendPayload = [
+      { value: legendName1, type: 'line' as const, color: color1 },
+      ...(hasSecondSeries ? [{ value: legendName2, type: 'rect' as const, color: color2 }] : []),
+    ]
+
     switch (type) {
       case 'line':
         return (
           <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 18, left: 18 }}>
+          <ComposedChart data={data} margin={{ top: 28, right: 20, bottom: 45, left: 18 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-            <XAxis {...xAxisProps} tickLine={false} axisLine={false}>
-              <RechartsLabel value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
-            </XAxis>
+            <XAxis {...xAxisProps} tickLine={false} axisLine={false} height={50} />
             <YAxis {...yLeftProps} tickLine={false} axisLine={false}>
               <RechartsLabel value={yLeftLabel} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
             <YAxis {...yRightProps} tickLine={false} axisLine={false}>
               <RechartsLabel value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
+            <Legend payload={legendPayload} verticalAlign="bottom" wrapperStyle={{ fontSize: 11, paddingTop: 12 }} iconSize={10} />
             <Tooltip formatter={commonTooltip} contentStyle={{ fontSize: '11px', padding: '6px 8px' }} />
-            <Line isAnimationActive={false} yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={1.75} dot={false} />
-            <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey={dataKey2} stroke={color2} strokeWidth={1.5} dot={false} />
+            <Line isAnimationActive={false} yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={1.75} dot={{ r: 3, fill: color1, stroke: '#fff', strokeWidth: 1.5 }}>
+              <LabelList dataKey={dataKey1} content={pointLabel(isCurrencyLeft, color1)} />
+            </Line>
+            <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey={dataKey2} stroke={color2} strokeWidth={1.5} dot={{ r: 3, fill: color2, stroke: '#fff', strokeWidth: 1.5 }}>
+              <LabelList dataKey={dataKey2} content={pointLabel(isCurrencyRight, color2)} />
+            </Line>
           </ComposedChart>
           </ResponsiveContainer>
         )
       case 'bar':
         return (
           <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 18, left: 18 }} barCategoryGap={"20%"} barGap={4}>
+          <ComposedChart data={data} margin={{ top: 28, right: 20, bottom: 45, left: 18 }} barCategoryGap={"20%"} barGap={4}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-            <XAxis {...xAxisProps} tickLine={false} axisLine={false}>
-              <RechartsLabel value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
-            </XAxis>
+            <XAxis {...xAxisProps} tickLine={false} axisLine={false} height={50} />
             <YAxis {...yLeftProps} tickLine={false} axisLine={false}>
               <RechartsLabel value={yLeftLabel} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
             <YAxis {...yRightProps} tickLine={false} axisLine={false}>
               <RechartsLabel value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
+            <Legend payload={legendPayload} verticalAlign="bottom" wrapperStyle={{ fontSize: 11, paddingTop: 12 }} iconSize={10} />
             <Tooltip formatter={commonTooltip} contentStyle={{ fontSize: '11px', padding: '6px 8px' }} />
-            <Bar isAnimationActive={false} yAxisId="left" dataKey={dataKey1} fill={color1} barSize={35} radius={[3,3,0,0]} />
+            <Bar isAnimationActive={false} yAxisId="left" dataKey={dataKey1} fill={color1} barSize={35} radius={[3,3,0,0]}>
+              <LabelList dataKey={dataKey1} content={barLabel(isCurrencyLeft, color1)} />
+            </Bar>
             {hasSecondSeries && (
-              <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={35} radius={[3,3,0,0]} />
+              <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={35} radius={[3,3,0,0]}>
+                <LabelList dataKey={dataKey2} content={barLabel(isCurrencyRight, color2)} />
+              </Bar>
             )}
           </ComposedChart>
           </ResponsiveContainer>
@@ -3294,40 +3326,49 @@ export default function ProcurementDashboard() {
       case 'area':
         return (
           <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={data}>
+          <ComposedChart data={data} margin={{ top: 28, right: 20, bottom: 45, left: 18 }}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis {...xAxisProps}>
-              <RechartsLabel value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
-            </XAxis>
+            <XAxis {...xAxisProps} tickLine={false} axisLine={false} height={50} />
             <YAxis {...yLeftProps}>
               <RechartsLabel value="Price ($)" angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
             <YAxis {...yRightProps}>
               <RechartsLabel value="Quantity (pcs)" angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
+            <Legend payload={legendPayload} verticalAlign="bottom" wrapperStyle={{ fontSize: 11, paddingTop: 12 }} iconSize={10} />
             <Tooltip formatter={commonTooltip} contentStyle={{ fontSize: '11px', padding: '6px 8px' }} />
-            <Area yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} fill={color1} fillOpacity={0.6} />
-            <Line yAxisId="right" type="monotone" dataKey={dataKey2} stroke={color2} strokeWidth={2} />
+            <Area yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} fill={color1} fillOpacity={0.6}>
+              <LabelList dataKey={dataKey1} content={barLabel(isCurrencyLeft, color1)} />
+            </Area>
+            <Line yAxisId="right" type="monotone" dataKey={dataKey2} stroke={color2} strokeWidth={2} dot={{ r: 3, fill: color2, stroke: '#fff', strokeWidth: 1.5 }}>
+              <LabelList dataKey={dataKey2} content={pointLabel(isCurrencyRight, color2)} />
+            </Line>
           </ComposedChart>
           </ResponsiveContainer>
         )
       default: // composed (bars + line) — used for all 5 modules
         return (
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 18, left: 18 }}>
+            <ComposedChart data={data} margin={{ top: 28, right: 20, bottom: 45, left: 18 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis {...xAxisProps}>
-                <RechartsLabel value={xLabel} position="insideBottom" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
-              </XAxis>
+              <XAxis {...xAxisProps} tickLine={false} axisLine={false} height={50} />
               <YAxis {...yLeftProps}>
                 <RechartsLabel value={yLeftLabel} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
               </YAxis>
               <YAxis {...yRightProps}>
                 <RechartsLabel value={yRightLabel} angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
               </YAxis>
+              <Legend payload={[
+                { value: legendName1, type: 'line' as const, color: color1 },
+                { value: legendName2, type: 'square' as const, color: color2 },
+              ]} verticalAlign="bottom" wrapperStyle={{ fontSize: 11, paddingTop: 8 }} iconSize={10} />
               <Tooltip formatter={commonTooltip} contentStyle={{ fontSize: '11px', padding: '6px 8px' }} />
-              <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={35} radius={[3,3,0,0]} />
-              <Line isAnimationActive={false} yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={1.75} dot={false} />
+              <Bar isAnimationActive={false} yAxisId="right" dataKey={dataKey2} fill={color2} barSize={35} radius={[3,3,0,0]}>
+                <LabelList dataKey={dataKey2} content={barLabel(isCurrencyRight, color2)} />
+              </Bar>
+              <Line isAnimationActive={false} yAxisId="left" type="monotone" dataKey={dataKey1} stroke={color1} strokeWidth={1.75} dot={{ r: 3, fill: color1, stroke: '#fff', strokeWidth: 1.5 }}>
+                <LabelList dataKey={dataKey1} content={pointLabel(isCurrencyLeft, color1)} />
+              </Line>
             </ComposedChart>
           </ResponsiveContainer>
         )
@@ -4267,11 +4308,17 @@ export default function ProcurementDashboard() {
             </div>
           )}
 
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+          <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-280px)]" style={{ position: 'relative' }}>
+            <style>{`
+              .dtbl td, .dtbl th { box-sizing: border-box; }
+              .dtbl td > div, .dtbl td > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+              .pin { position: sticky !important; }
+              .pin-edge { box-shadow: 4px 0 6px -2px rgba(0,0,0,0.15); }
+            `}</style>
+            <table className="border-collapse dtbl" style={{ minWidth: '100%' }}>
+              <thead className="sticky top-0 z-30">
                 <tr>
-                  <th className="p-2 text-left font-medium text-gray-700 text-xs bg-gray-50 w-10">
+                  <th className="pin p-2 text-left font-medium text-gray-700 text-xs bg-gray-50 z-40 border-b border-gray-200" style={{ width: 40, minWidth: 40, maxWidth: 40, left: 0 }}>
                     <input
                       type="checkbox"
                       checked={
@@ -4281,28 +4328,24 @@ export default function ProcurementDashboard() {
                       className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                     />
                   </th>
-                  {visibleColumns.map((columnKey) => {
+                  {visibleColumns.map((columnKey, colIndex) => {
                     const isNumeric = columnKey === "quantity" || columnKey === "unitPrice" || columnKey === "totalPrice"
+                    const isSticky = colIndex === 0 || colIndex === 1
+                    const isLastSticky = colIndex === 1
+                    const col0W = columnWidths[visibleColumns[0]] || 130
+                    const frozenLeft = colIndex === 0 ? 40 : colIndex === 1 ? 40 + col0W : 0
+                    const w = columnWidths[columnKey] || 100
                     return (
                       <th
                         key={columnKey}
-                        className={`p-2 font-medium text-gray-700 text-xs relative group whitespace-nowrap select-none bg-gray-50 ${
+                        className={`p-2 font-medium text-gray-700 text-xs relative group whitespace-nowrap select-none bg-gray-50 border-b border-gray-200 ${
                           isNumeric ? "text-right" : "text-left"
-                        }`}
+                        } ${isSticky ? "pin z-40" : ""} ${isLastSticky ? "pin-edge" : ""}`}
                         style={{
-                          width: columnWidths[columnKey as keyof typeof columnWidths] || "auto",
-                          minWidth:
-                            columnKey === "description"
-                              ? "200px"
-                              : columnKey === "category"
-                              ? "128px"
-                              : columnKey === "quantity"
-                                ? "80px"
-                                : columnKey === "vendor" || columnKey === "assignedTo"
-                                  ? "144px"
-                                  : columnKey === "unitPrice" || columnKey === "totalPrice"
-                                    ? "112px"
-                                    : "auto",
+                          width: w,
+                          minWidth: w,
+                          maxWidth: w,
+                          ...(isSticky ? { left: frozenLeft } : {}),
                         }}
                         draggable
                         onDragStart={(e) => {
@@ -4332,13 +4375,11 @@ export default function ProcurementDashboard() {
                           </button>
                           <GripVertical className="h-3 w-3 text-gray-400 opacity-0 group-hover:opacity-100 cursor-grab flex-shrink-0 ml-2" />
                         </div>
-                        {(columnKey === "description" || columnKey === "category" || columnKey === "quantity" || columnKey === "vendor" || columnKey === "assignedTo" || columnKey === "pricePO" || columnKey === "priceContract" || columnKey === "priceQuote" || columnKey === "priceDigikey" || columnKey === "priceMouser" || columnKey === "priceEXIM" || columnKey === "source" || columnKey === "totalPrice") && (
-                          <div
-                            className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 group-hover:opacity-100"
-                            onMouseDown={(e) => handleMouseDown(columnKey, e)}
-                            style={{ zIndex: 10 }}
-                          ></div>
-                        )}
+                        <div
+                          className="absolute right-0 top-0 bottom-0 w-3 cursor-col-resize hover:bg-blue-400/40"
+                          onMouseDown={(e) => handleMouseDown(columnKey, e)}
+                          style={{ zIndex: 10 }}
+                        />
               </th>
             )
           })}
@@ -4346,8 +4387,8 @@ export default function ProcurementDashboard() {
       </thead>
       <tbody className="bg-white divide-y divide-gray-100">
         {paginatedItems.map((item: any) => (
-          <tr key={item.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="p-2">
+          <tr key={item.id} className="hover:bg-gray-50 transition-colors group/row">
+                    <td className="pin p-2 z-10 bg-white group-hover/row:bg-gray-50" style={{ width: 40, minWidth: 40, maxWidth: 40, left: 0 }}>
                       <input
                         type="checkbox"
                         checked={selectedItems.includes(item.id)}
@@ -4355,15 +4396,24 @@ export default function ProcurementDashboard() {
                         className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       />
                     </td>
-                    {visibleColumns.map((columnKey) => {
+                    {visibleColumns.map((columnKey, colIndex) => {
                       const value = item[columnKey as keyof typeof item]
+                      const isStickyCol = colIndex === 0 || colIndex === 1
+                      const isLastStickyCol = colIndex === 1
+                      const col0W = columnWidths[visibleColumns[0]] || 130
+                      const frozenLeftVal = colIndex === 0 ? 40 : colIndex === 1 ? 40 + col0W : 0
+                      const cellW = columnWidths[columnKey] || 100
+                      const stickyClass = isStickyCol ? `pin z-10 bg-white group-hover/row:bg-gray-50${isLastStickyCol ? " pin-edge" : ""}` : ""
+                      const stickyStyle: React.CSSProperties = isStickyCol
+                        ? { left: frozenLeftVal, width: cellW, minWidth: cellW, maxWidth: cellW }
+                        : { width: cellW, minWidth: cellW, maxWidth: cellW }
 
                       if (columnKey === "customer") {
                         return (
-                          <td key={columnKey} className="p-2 text-left">
+                          <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
                             <div className="flex items-center">
                               <span
-                                className="font-medium text-gray-900 text-xs truncate max-w-20"
+                                className="font-medium text-gray-900 text-xs truncate"
                                 title={item.customer}
                               >
                                 {item.customer}
@@ -4375,7 +4425,7 @@ export default function ProcurementDashboard() {
 
                       if (columnKey === "itemId") {
                         return (
-                          <td key={columnKey} className="p-2 text-left">
+                          <td key={columnKey} className={`p-2 text-left ${stickyClass}`} style={{ ...stickyStyle }}>
                             <div className="flex items-center gap-1">
                               <span
                                 className="font-mono text-xs text-gray-600 bg-gray-100 px-1 py-0.5 rounded"
@@ -4394,7 +4444,7 @@ export default function ProcurementDashboard() {
                         const isAlternate = altInfo.is_alternate
 
                         return (
-                          <td key={columnKey} className="p-2 text-left" style={{ width: columnWidths.description }}>
+                          <td key={columnKey} className={`p-2 text-left ${stickyClass}`} style={{ ...stickyStyle }}>
                             <div className="flex items-center gap-2">
                               {/* Alternate indicator - show indent and icon */}
                               {isAlternate && (
@@ -4466,12 +4516,12 @@ export default function ProcurementDashboard() {
                       if (columnKey === "internalNotes") {
                         const internalNotesText = item.internalNotes || ''
                         return (
-                          <td key={columnKey} className="p-2 text-left">
+                          <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
                             {internalNotesText ? (
                               <UiTooltip>
                                 <UiTooltipTrigger>
-                                  <span className="text-xs text-gray-700 truncate block max-w-[200px] cursor-help">
-                                    {internalNotesText.length > 30 ? internalNotesText.slice(0, 30) + '...' : internalNotesText}
+                                  <span className="text-xs text-gray-700 truncate block cursor-help">
+                                    {internalNotesText}
                                   </span>
                                 </UiTooltipTrigger>
                                 <UiTooltipContent side="bottom" className="max-w-[400px]">
@@ -4488,9 +4538,9 @@ export default function ProcurementDashboard() {
                       if (columnKey === "bom") {
                         const bomInfo = (item as any).bom_info
                         return (
-                          <td key={columnKey} className="p-2 text-left">
+                          <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
                             {bomInfo?.is_bom_item ? (
-                              <span className="text-xs text-gray-700 whitespace-nowrap overflow-hidden text-ellipsis block max-w-[300px]">
+                              <span className="text-xs text-gray-700 whitespace-nowrap overflow-hidden text-ellipsis block">
                                 {/* Show breadcrumb path like: KDKDKD -> QASB2 (same as Factwise) */}
                                 {bomInfo.bom_hierarchy && bomInfo.bom_hierarchy.length > 0
                                   ? bomInfo.bom_hierarchy.map((bom: any) => bom.bom_code).join(' → ')
@@ -4508,7 +4558,7 @@ export default function ProcurementDashboard() {
                         const isMissing = categories.length === 0
 
                         return (
-                          <td key={columnKey} className="p-2 text-left" style={{ width: columnWidths.category }}>
+                          <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
                             {isMissing ? (
                               <span className="text-gray-400 text-xs">-</span>
                             ) : categories.length === 1 ? (
@@ -4518,15 +4568,20 @@ export default function ProcurementDashboard() {
                             ) : (
                               <UiTooltip>
                                 <UiTooltipTrigger>
-                                  <span className="text-blue-600 font-medium text-xs cursor-pointer hover:text-blue-800">
-                                    {categories.length}
+                                  <span className="flex items-center gap-1 cursor-pointer">
+                                    <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate">
+                                      {categories[0].trim()}
+                                    </Badge>
+                                    <span className="text-blue-600 font-medium text-xs hover:text-blue-800 whitespace-nowrap">
+                                      +{categories.length - 1}
+                                    </span>
                                   </span>
                                 </UiTooltipTrigger>
                                 <UiTooltipContent side="bottom" align="start">
                                   <div className="space-y-1">
                                     {categories.map((cat: string, index: number) => (
                                       <div key={index} className="text-xs">
-                                        {index + 1}. {cat}
+                                        {index + 1}. {cat.trim()}
                                       </div>
                                     ))}
                                   </div>
@@ -4538,15 +4593,16 @@ export default function ProcurementDashboard() {
                       }
 
                       if (columnKey === "projectManager" || columnKey === "rfqAssignee" || columnKey === "quoteAssignee") {
+                        // Project Manager is project-level; RFQ/Quote Assignee are per-item (filled by auto-assign)
                         const value = columnKey === "projectManager" ? projectManagers
-                          : columnKey === "rfqAssignee" ? rfqAssignees
-                          : quoteAssignees
+                          : columnKey === "rfqAssignee" ? (item.rfqAssigneeName || '')
+                          : (item.quoteAssigneeName || '')
                         return (
-                          <td key={columnKey} className="p-2 text-left">
+                          <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
                             {value ? (
                               <UiTooltip>
                                 <UiTooltipTrigger>
-                                  <span className="text-xs text-gray-700 truncate block max-w-[120px]">{value}</span>
+                                  <span className="text-xs text-gray-700 truncate block">{value}</span>
                                 </UiTooltipTrigger>
                                 <UiTooltipContent side="bottom">
                                   <p className="text-xs whitespace-pre-wrap">{value}</p>
@@ -4561,7 +4617,7 @@ export default function ProcurementDashboard() {
 
                       if (columnKey === "action") {
                         return (
-                          <td key={columnKey} className="p-2 text-left">
+                          <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
                             <Badge
                               className={`text-xs px-1 py-0 ${
                                 item.action === "RFQ"
@@ -4585,10 +4641,10 @@ export default function ProcurementDashboard() {
                         const isMissing = !displayVendor || displayVendor === ""
 
                         return (
-                          <td key={columnKey} className="p-2 text-left" style={{ width: columnWidths.vendor }}>
+                          <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
                             <div className="flex items-center gap-1 w-full">
                               <span
-                                className={`text-xs truncate block flex-shrink max-w-24 ${
+                                className={`text-xs truncate block flex-1 min-w-0 ${
                                   isMissing ? "text-red-700" : "text-gray-900"
                                 }`}
                                 title={hasMultiple ? vendors.join(", ") : displayVendor || "No vendor"}
@@ -4615,7 +4671,7 @@ export default function ProcurementDashboard() {
                         const isMissing = assignedUsersList.length === 0
 
                         return (
-                          <td key={columnKey} className="p-2 text-left" style={{ width: columnWidths.assignedTo }}>
+                          <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
                             {isMissing ? (
                               <span className="text-red-700 text-xs">Unassigned</span>
                             ) : assignedUsersList.length === 1 ? (
@@ -4824,7 +4880,7 @@ export default function ProcurementDashboard() {
                         }
 
                         return (
-                          <td key={columnKey} className="p-2 text-right" style={{ width: (columnWidths as any)[columnKey] }}>
+                          <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             {renderPricingContent()}
                           </td>
                         )
@@ -5023,7 +5079,7 @@ export default function ProcurementDashboard() {
                         }
 
                         return (
-                          <td key={columnKey} className="p-2 text-right" style={{ width: (columnWidths as any)[columnKey] }}>
+                          <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             {renderMouserContent()}
                           </td>
                         )
@@ -5071,7 +5127,7 @@ export default function ProcurementDashboard() {
                         const itemCurrencySymbol = (item as any).currency?.symbol || '₹'
 
                         return (
-                          <td key={columnKey} className="p-2 text-right" style={{ width: (columnWidths as any)[columnKey] }}>
+                          <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
                               className={`text-xs font-medium ${
                                 !hasPrice
@@ -5138,7 +5194,7 @@ export default function ProcurementDashboard() {
                           : null
 
                         return (
-                          <td key={columnKey} className="p-2 text-center" style={{ width: columnWidths.source }}>
+                          <td key={columnKey} className="p-2 text-center" style={stickyStyle}>
                             <span className="text-xs font-medium text-gray-900">
                               {cheapest ? cheapest.source : 'Project'}
                             </span>
@@ -5150,7 +5206,7 @@ export default function ProcurementDashboard() {
                         const hasPrice = item.unitPrice && item.unitPrice > 0
                         const currencySymbol = (item as any).currency?.symbol || '₹'
                         return (
-                          <td key={columnKey} className="p-2 text-right" style={{ width: columnWidths.unitPrice }}>
+                          <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
                               className={`text-xs font-semibold ${hasPrice ? "text-gray-900" : "text-red-700"}`}
                               title={hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(2)}` : "N/A"}
@@ -5164,7 +5220,7 @@ export default function ProcurementDashboard() {
                       if (columnKey === "totalPrice") {
                         const hasPrice = item.totalPrice && item.totalPrice > 0
                         return (
-                          <td key={columnKey} className="p-2 text-right" style={{ width: columnWidths.totalPrice }}>
+                          <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
                               className={`text-xs font-medium ${hasPrice ? "text-gray-900" : "text-red-700"}`}
                               title={hasPrice ? `$${item.totalPrice.toFixed(2)}` : "N/A"}
@@ -5179,7 +5235,7 @@ export default function ProcurementDashboard() {
                         const displayQty = item.event_quantity != null ? item.event_quantity : item.quantity
                         const qtyLabel = item.event_quantity != null ? 'Event Qty' : 'BOM Qty'
                         return (
-                          <td key={columnKey} className="p-2 text-right" style={{ width: columnWidths.quantity }}>
+                          <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <div className="flex items-center justify-end w-full">
                               <span
                                 className="text-gray-900 text-xs font-medium tabular-nums"
@@ -5193,8 +5249,8 @@ export default function ProcurementDashboard() {
                       }
 
                       return (
-                        <td key={columnKey} className="p-2 text-left">
-                          <span className="text-gray-900 text-xs truncate block max-w-20" title={String(value || "")}>
+                        <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
+                          <span className="text-gray-900 text-xs truncate block" title={String(value || "")}>
                             {String(value || "")}
                           </span>
                         </td>
@@ -5414,40 +5470,40 @@ export default function ProcurementDashboard() {
                 {/* PO */}
                 <div className="bg-white p-4 rounded-lg border">
                   <h4 className="text-sm font-medium text-gray-800 mb-2">PO</h4>
-                  <div className="h-56">
-                    {renderChart(analyticsData.poData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'date', 'Date of PO', 'Price', 'Quantity')}
+                  <div className="h-72">
+                    {renderChart(analyticsData.poData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
                   </div>
                 </div>
 
                 {/* Contract */}
                 <div className="bg-white p-4 rounded-lg border">
                   <h4 className="text-sm font-medium text-gray-800 mb-2">Contract</h4>
-                  <div className="h-56">
-                    {renderChart(analyticsData.contractData, 'composed', 'price', 'quantity', '#f472b6', '#93c5fd', 'vendor', 'Vendor name', 'Price', 'Quantity')}
+                  <div className="h-72">
+                    {renderChart(analyticsData.contractData, 'composed', 'price', 'quantity', '#f472b6', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
                   </div>
                 </div>
 
                 {/* EXIM */}
                 <div className="bg-white p-4 rounded-lg border">
                   <h4 className="text-sm font-medium text-gray-800 mb-2">EXIM</h4>
-                  <div className="h-56">
-                    {renderChart(analyticsData.eximData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'date', 'Date of Purchase', 'Price', 'Quantity')}
+                  <div className="h-72">
+                    {renderChart(analyticsData.eximData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
                   </div>
                 </div>
 
                 {/* Quote */}
                 <div className="bg-white p-4 rounded-lg border">
                   <h4 className="text-sm font-medium text-gray-800 mb-2">Quote</h4>
-                  <div className="h-56">
-                    {renderChart(analyticsData.quoteData, 'line', 'price', 'quantity', '#334155', '#94a3b8', 'date', 'Date', 'Price', 'Quantity')}
+                  <div className="h-72">
+                    {renderChart(analyticsData.quoteData, 'composed', 'price', 'quantity', '#8b5cf6', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
                   </div>
                 </div>
 
                 {/* Online Pricing (full width) */}
                 <div className="bg-white p-4 rounded-lg border lg:col-span-2">
                   <h4 className="text-sm font-medium text-gray-800 mb-2">Online Pricing</h4>
-                  <div className="h-56">
-                    {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Distributors', 'Price', 'Quantity')}
+                  <div className="h-72">
+                    {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#f97316', '#93c5fd', 'vendor', 'Distributors', 'Price', 'Quantity')}
                   </div>
                 </div>
               </div>
@@ -5739,8 +5795,10 @@ export default function ProcurementDashboard() {
             <div className="flex-1 min-h-0">
               <SettingsPanel
                 allTags={allTags}
-                allUsers={allUsers}
-                userRolesMap={userRolesMap}
+                allCustomers={projectData.customer ? [projectData.customer] : []}
+                availableUsers={availableUsers}
+                rfqResponsibleUsers={rfqResponsibleUsers}
+                quoteResponsibleUsers={quoteResponsibleUsers}
                 current={currentSettings}
                 initialTab={settingsInitialTab}
                 onSave={(s) => {

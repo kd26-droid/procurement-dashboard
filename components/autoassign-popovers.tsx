@@ -50,7 +50,9 @@ export function AutoAssignUsersPopover({
   onExecute,
   onOpenSettings
 }: AutoAssignUsersPopoverProps) {
-  const hasTagMappings = Object.keys(currentSettings.users.tagUserMap || {}).length > 0
+  const rfqCount = Object.keys(currentSettings.users.rfqAssigneeMap || {}).length
+  const quoteCount = Object.keys(currentSettings.users.quoteAssigneeMap || {}).length
+  const hasTagMappings = rfqCount + quoteCount > 0
 
   const handleExecute = (scope: 'all' | 'unassigned' | 'selected') => {
     onExecute(scope)
@@ -79,7 +81,7 @@ export function AutoAssignUsersPopover({
               <div className="text-sm">
                 <span className="font-medium">Tag Mappings: </span>
                 <span className="text-muted-foreground">
-                  {hasTagMappings ? `${Object.keys(currentSettings.users.tagUserMap).length} configured` : 'None configured'}
+                  {hasTagMappings ? `${rfqCount + quoteCount} configured` : 'None configured'}
                 </span>
               </div>
               <Button variant="outline" size="sm" onClick={onOpenSettings}>

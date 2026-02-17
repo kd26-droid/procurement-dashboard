@@ -494,6 +494,7 @@ export interface ProjectUsersResponse {
   project_managers?: ProjectUser[];
   rfq_responsible_users?: ProjectUser[];
   quote_responsible_users?: ProjectUser[];
+  available_users?: ProjectUser[];
   total: number;
 }
 
