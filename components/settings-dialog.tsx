@@ -152,7 +152,7 @@ type ActionFormula = {
 }
 
 // Criteria builder types
-type CriteriaField = 'Purpose' | 'Item ID Type' | 'Source' | 'Date' | 'Price' | 'Quantity' | 'Vendor'
+type CriteriaField = 'Purpose' | 'Item ID Type' | 'Source' | 'Date' | 'Price' | 'Quantity' | 'Vendor' | 'Tag'
 type CriteriaOperator = 'is' | 'is not' | 'before' | 'after' | '=' | '>' | '<' | '>=' | '<='
 export type ActionCriterion = {
   id: string
@@ -1377,6 +1377,7 @@ export function SettingsPanel({
                             <SelectItem value="Purpose">Purpose</SelectItem>
                             <SelectItem value="Item ID Type">Item ID Type</SelectItem>
                             <SelectItem value="Source">Source</SelectItem>
+                            <SelectItem value="Tag">Tag</SelectItem>
                             <SelectItem value="Date">Date</SelectItem>
                             <SelectItem value="Price">Price</SelectItem>
                             <SelectItem value="Quantity">Quantity</SelectItem>
@@ -1395,7 +1396,7 @@ export function SettingsPanel({
                           <SelectTrigger className="w-24 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             {/* Operators vary by field */}
-                            {(['Purpose','Item ID Type','Source','Vendor'].includes(row.field) ? (
+                            {(['Purpose','Item ID Type','Source','Vendor','Tag'].includes(row.field) ? (
                               <>
                                 <SelectItem value="is">is</SelectItem>
                                 <SelectItem value="is not">is not</SelectItem>
@@ -1425,6 +1426,7 @@ export function SettingsPanel({
                               <SelectItem value="Quote">Quote</SelectItem>
                               <SelectItem value="PO">PO</SelectItem>
                               <SelectItem value="Contract">Contract</SelectItem>
+                              <SelectItem value="Event">Event</SelectItem>
                             </SelectContent>
                           </Select>
                         )}
@@ -1443,6 +1445,14 @@ export function SettingsPanel({
                             <SelectTrigger className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               {DEFAULT_PRICE_SOURCES.map(s => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                        {row.field === 'Tag' && (
+                          <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
+                            <SelectTrigger className="w-48 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue placeholder="Select tag" /></SelectTrigger>
+                            <SelectContent>
+                              {allTags.map(tag => (<SelectItem key={tag} value={tag}>{tag}</SelectItem>))}
                             </SelectContent>
                           </Select>
                         )}

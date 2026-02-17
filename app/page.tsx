@@ -456,6 +456,8 @@ export default function ProcurementDashboard() {
   const [showAssignUsersPopup, setShowAssignUsersPopup] = useState(false)
   const [showFillPricesPopup, setShowFillPricesPopup] = useState(false)
   const [showAssignActionsPopup, setShowAssignActionsPopup] = useState(false)
+  const [showActionResultsPopup, setShowActionResultsPopup] = useState(false)
+  const [actionResultsLoading, setActionResultsLoading] = useState(false)
   const [showAnalyticsPopup, setShowAnalyticsPopup] = useState(false)
   const [selectedItemForAnalytics, setSelectedItemForAnalytics] = useState<any>(null)
   const [showEditDialog, setShowEditDialog] = useState(false)
@@ -2527,33 +2529,34 @@ export default function ProcurementDashboard() {
 
   // Assign Actions Handler
   const handleAssignActions = (scope: 'all' | 'unassigned' | 'selected') => {
-    let itemsToUpdate = lineItems
+    let idsToUpdate: Set<number>
     if (scope === 'unassigned') {
-      itemsToUpdate = lineItems.filter((item: any) => !item.action || item.action.trim() === '')
+      idsToUpdate = new Set(lineItems.filter((item: any) => !item.action || item.action.trim() === '').map((i: any) => i.id))
     } else if (scope === 'selected') {
-      itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
+      idsToUpdate = new Set(selectedItems)
+    } else {
+      idsToUpdate = new Set(lineItems.map((i: any) => i.id))
     }
 
     const updatedItems = lineItems.map((item: any) => {
-      if (!itemsToUpdate.some((u) => u.id === item.id)) return item
-      const hasPrice = !!item.unitPrice && item.unitPrice > 0
-      const hasVendor = !!item.vendor && String(item.vendor).trim() !== ''
+      if (!idsToUpdate.has(item.id)) return item
 
-      // If no price, always RFQ
-      if (!hasPrice) return { ...item, action: 'RFQ' }
+      // Check if item has "Class A" tag
+      const itemTags = item.category
+        ? String(item.category).split(',').map((t: string) => t.trim())
+        : []
+      const isClassA = itemTags.includes('Class A')
 
-      // If price exists but no vendor, can only be RFQ or Quote
-      if (hasPrice && !hasVendor) {
-        // Randomly choose between RFQ and Quote
-        return { ...item, action: Math.random() > 0.5 ? 'RFQ' : 'Quote' }
-      }
-
-      // Both price and vendor exist → randomly assign Quote or PO
-      const actions = ['Quote', 'Direct PO']
-      return { ...item, action: actions[Math.floor(Math.random() * actions.length)] }
+      return { ...item, action: isClassA ? 'Quote' : 'Event' }
     })
 
     setLineItems(updatedItems)
+
+    toast({
+      title: "Actions Assigned",
+      description: `Assigned actions to ${idsToUpdate.size} item(s)`,
+    })
+
     document.body.click()
   }
 
@@ -5380,14 +5383,25 @@ export default function ProcurementDashboard() {
                 <Button
                   size="sm"
                   className="bg-blue-600 hover:bg-blue-700 text-white h-8"
+                  disabled={actionResultsLoading}
                   onClick={() => {
                     console.log('Execute action clicked, selected items:', selectedItems)
-                    // Add your execute action logic here
+                    setActionResultsLoading(true)
+                    setShowActionResultsPopup(true)
+                    setTimeout(() => {
+                      setActionResultsLoading(false)
+                    }, 3000)
                   }}
                   title="Execute Action"
-                  disabled={selectedItems.length === 0}
                 >
-                  Execute Action
+                  {actionResultsLoading ? (
+                    <span className="flex items-center gap-2">
+                      <span className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></span>
+                      Executing...
+                    </span>
+                  ) : (
+                    'Execute Action'
+                  )}
                 </Button>
               </div>
             </div>
@@ -5431,6 +5445,101 @@ export default function ProcurementDashboard() {
           setSettingsOpen(true)
         }}
       />
+
+      {/* Action Results Popup */}
+      <Dialog open={showActionResultsPopup} onOpenChange={(open) => {
+        if (!open && !actionResultsLoading) setShowActionResultsPopup(false)
+      }}>
+        <DialogContent className="w-[480px] max-w-[90vw]">
+          {actionResultsLoading ? (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-3">
+                  <div className="animate-spin rounded-full h-6 w-6 border-2 border-blue-500 border-t-transparent"></div>
+                  Executing Actions...
+                </DialogTitle>
+                <DialogDescription>
+                  Creating events and quotes based on your rules. Please wait.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex flex-col items-center justify-center py-10 space-y-4">
+                <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
+                <p className="text-sm text-gray-500">Processing items...</p>
+              </div>
+            </>
+          ) : (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-3">
+                  <div className="p-2 bg-green-100 rounded-lg">
+                    <CheckSquare className="h-5 w-5 text-green-600" />
+                  </div>
+                  Actions Executed Successfully
+                </DialogTitle>
+                <DialogDescription>
+                  The following actions have been created based on your rules.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-4 mt-2">
+                {/* Event for Mechanical */}
+                <div className="flex items-center justify-between p-4 rounded-lg border border-gray-200 bg-blue-50">
+                  <div>
+                    <div className="font-medium text-gray-900">1 Event created</div>
+                    <div className="text-sm text-gray-600">Tag: <span className="font-medium">Mechanical</span></div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-blue-600 border-blue-300 hover:bg-blue-100"
+                    onClick={() => window.open('#', '_blank')}
+                  >
+                    Go to Event
+                  </Button>
+                </div>
+
+                {/* Event for Electrical */}
+                <div className="flex items-center justify-between p-4 rounded-lg border border-gray-200 bg-blue-50">
+                  <div>
+                    <div className="font-medium text-gray-900">1 Event created</div>
+                    <div className="text-sm text-gray-600">Tag: <span className="font-medium">Electrical</span></div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-blue-600 border-blue-300 hover:bg-blue-100"
+                    onClick={() => window.open('#', '_blank')}
+                  >
+                    Go to Event
+                  </Button>
+                </div>
+
+                {/* Quote for OEM Controlled Items */}
+                <div className="flex items-center justify-between p-4 rounded-lg border border-gray-200 bg-purple-50">
+                  <div>
+                    <div className="font-medium text-gray-900">1 Quote created</div>
+                    <div className="text-sm text-gray-600">Tag: <span className="font-medium">OEM Controlled Items</span></div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-purple-600 border-purple-300 hover:bg-purple-100"
+                    onClick={() => window.open('#', '_blank')}
+                  >
+                    Go to Quote
+                  </Button>
+                </div>
+              </div>
+
+              <div className="flex justify-end mt-4">
+                <Button onClick={() => setShowActionResultsPopup(false)}>
+                  Done
+                </Button>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Analytics Popup */}
       {showAnalyticsPopup && selectedItemForAnalytics && (
