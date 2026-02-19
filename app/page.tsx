@@ -310,6 +310,17 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
     ? validPrices.reduce((min, p) => p.price < min.price ? p : min).source
     : '';
 
+  // Assign vendor name when source is PO or Contract
+  const PO_VENDORS = ['Tata Steel', 'Bharat Forge', 'Larsen & Toubro', 'Mahindra CIE', 'Jindal Steel']
+  const CONTRACT_VENDORS = ['Reliance Industries', 'Adani Enterprises', 'Godrej & Boyce', 'Thermax Ltd', 'Kirloskar Brothers']
+  const itemId = item.id || 0
+  let vendor = item.vendor || ''
+  if (cheapestSource === 'PO') {
+    vendor = PO_VENDORS[itemId % PO_VENDORS.length]
+  } else if (cheapestSource === 'Contract') {
+    vendor = CONTRACT_VENDORS[itemId % CONTRACT_VENDORS.length]
+  }
+
   return {
     ...item,
     digikey_pricing: digikeyPricing,
@@ -319,6 +330,7 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
     priceQuote,
     priceEXIM,
     source: cheapestSource,
+    vendor,
   };
 }
 
@@ -2523,12 +2535,32 @@ export default function ProcurementDashboard() {
       const priceDigikey = Math.round(mockPriceForSource(item, 'Online - Digikey') * 100) / 100
       const priceEXIM = Math.round(mockPriceForSource(item, 'EXIM') * 100) / 100
 
-      // Find cheapest for unitPrice and totalPrice
-      const allPrices = [pricePO, priceContract, priceQuote, priceDigikey, priceEXIM].filter((p: number) => p > 0)
-      const unitPrice = allPrices.length > 0 ? Math.min(...allPrices) : 0
+      // Find cheapest for unitPrice, totalPrice, and source
+      const priceSources = [
+        { source: 'PO', price: pricePO },
+        { source: 'Contract', price: priceContract },
+        { source: 'Quote', price: priceQuote },
+        { source: 'Digi-Key', price: priceDigikey },
+        { source: 'EXIM', price: priceEXIM },
+      ].filter(p => p.price > 0)
+      const cheapest = priceSources.length > 0
+        ? priceSources.reduce((min, p) => p.price < min.price ? p : min)
+        : null
+      const unitPrice = cheapest ? cheapest.price : 0
       const totalPrice = Math.round(unitPrice * item.quantity * 100) / 100
+      const cheapestSource = cheapest ? cheapest.source : ''
 
-      return { ...item, pricePO, priceContract, priceQuote, priceDigikey, priceEXIM, unitPrice, totalPrice }
+      // Assign vendor name when source is PO or Contract
+      const PO_VENDORS = ['Tata Steel', 'Bharat Forge', 'Larsen & Toubro', 'Mahindra CIE', 'Jindal Steel']
+      const CONTRACT_VENDORS = ['Reliance Industries', 'Adani Enterprises', 'Godrej & Boyce', 'Thermax Ltd', 'Kirloskar Brothers']
+      let vendor = item.vendor || ''
+      if (cheapestSource === 'PO') {
+        vendor = PO_VENDORS[item.id % PO_VENDORS.length]
+      } else if (cheapestSource === 'Contract') {
+        vendor = CONTRACT_VENDORS[item.id % CONTRACT_VENDORS.length]
+      }
+
+      return { ...item, pricePO, priceContract, priceQuote, priceDigikey, priceEXIM, unitPrice, totalPrice, source: cheapestSource, vendor }
     })
 
     setLineItems(updatedItems)
@@ -2549,13 +2581,9 @@ export default function ProcurementDashboard() {
     const updatedItems = lineItems.map((item: any) => {
       if (!idsToUpdate.has(item.id)) return item
 
-      // Check if item has "Class A" tag
-      const itemTags = item.category
-        ? String(item.category).split(',').map((t: string) => t.trim())
-        : []
-      const isClassA = itemTags.includes('Class A')
-
-      return { ...item, action: isClassA ? 'Quote' : 'Event' }
+      // If Price is N/A (0 or missing) → Event, else → Quote
+      const hasPrice = item.unitPrice && item.unitPrice > 0
+      return { ...item, action: hasPrice ? 'Quote' : 'Event' }
     })
 
     setLineItems(updatedItems)
