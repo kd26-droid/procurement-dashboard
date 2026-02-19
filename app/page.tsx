@@ -311,8 +311,8 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
     : '';
 
   // Assign vendor name when source is PO or Contract
-  const PO_VENDORS = ['Foxconn', 'Jabil', 'Flex Ltd', 'Celestica', 'Sanmina']
-  const CONTRACT_VENDORS = ['Benchmark Electronics', 'Plexus Corp', 'Venture Corp', 'KeyTronic', 'Creation Technologies']
+  const PO_VENDORS = ['Avnet', 'Jabil', 'Flex Ltd', 'Celestica', 'Sanmina']
+  const CONTRACT_VENDORS = ['Arrow Electronics', 'Plexus Corp', 'Venture Corp', 'KeyTronic', 'Creation Technologies']
   const itemId = item.id || 0
   let vendor = item.vendor || ''
   if (cheapestSource === 'PO') {
