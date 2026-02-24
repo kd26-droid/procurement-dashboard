@@ -358,6 +358,8 @@ export default function ProcurementDashboard() {
   const [userRolesMap, setUserRolesMap] = useState<Record<string, string[]>>({})
   // All enterprise users available for role assignment
   const [availableUsers, setAvailableUsers] = useState<Array<{user_id: string, name: string, email: string}>>([])
+  // Users assigned to at least one section in the project (eligible for item-level assignment)
+  const [sectionAssignedUsers, setSectionAssignedUsers] = useState<Array<{user_id: string, name: string, email: string}>>([])
   // Currently assigned users per role (raw arrays from API)
   const [rfqResponsibleUsers, setRfqResponsibleUsers] = useState<Array<{user_id: string, name: string, email: string}>>([])
   const [quoteResponsibleUsers, setQuoteResponsibleUsers] = useState<Array<{user_id: string, name: string, email: string}>>([])
@@ -755,6 +757,12 @@ export default function ProcurementDashboard() {
         if (usersResponse.available_users) {
           setAvailableUsers(usersResponse.available_users)
           console.log('[Dashboard] Available users for assignment:', usersResponse.available_users.length)
+        }
+
+        // Store section-assigned users (eligible for item-level assignment)
+        if (usersResponse.section_assigned_users) {
+          setSectionAssignedUsers(usersResponse.section_assigned_users)
+          console.log('[Dashboard] Section-assigned users:', usersResponse.section_assigned_users.length)
         }
 
         // Set available tags (ALL organization-level tags from backend)
@@ -1350,6 +1358,24 @@ export default function ProcurementDashboard() {
       },
     }
   }, [settingsProfiles, currentSettingsKey])
+
+  // Eligible users for item-level assignment: section-assigned + PM + RFQ Assignee + Quote Assignee
+  const eligibleUsers = useMemo(() => {
+    const userMap = new Map<string, { user_id: string; name: string; email: string }>()
+    // Section-assigned users
+    for (const u of sectionAssignedUsers) {
+      userMap.set(u.user_id, u)
+    }
+    // Project managers, RFQ assignees, Quote assignees
+    for (const u of [...rfqResponsibleUsers, ...quoteResponsibleUsers]) {
+      if (!userMap.has(u.user_id)) userMap.set(u.user_id, u)
+    }
+    // Project managers from projectUsers (role === 'PROJECT_MANAGER' or from the PM list)
+    for (const u of projectUsers) {
+      if (!userMap.has(u.user_id)) userMap.set(u.user_id, u)
+    }
+    return Array.from(userMap.values())
+  }, [sectionAssignedUsers, rfqResponsibleUsers, quoteResponsibleUsers, projectUsers])
 
   const allTags = useMemo(() => {
     const set = new Set<string>()
@@ -2461,6 +2487,7 @@ export default function ProcurementDashboard() {
           setProjectUsers(freshUsers.users || [])
           setRfqAssignees((freshUsers.rfq_responsible_users || []).map(u => u.name).join('; '))
           setQuoteAssignees((freshUsers.quote_responsible_users || []).map(u => u.name).join('; '))
+          if (freshUsers.section_assigned_users) setSectionAssignedUsers(freshUsers.section_assigned_users)
         }
 
         // Update items (per-item responsible names come from API)
@@ -6321,7 +6348,7 @@ export default function ProcurementDashboard() {
                 entityId={projectData.buyer_entity_id}
                 allTags={allTags}
                 allCustomers={projectData.customer ? [projectData.customer] : []}
-                availableUsers={availableUsers}
+                availableUsers={eligibleUsers}
                 rfqResponsibleUsers={rfqResponsibleUsers}
                 quoteResponsibleUsers={quoteResponsibleUsers}
                 current={currentSettings}

@@ -501,6 +501,7 @@ export interface ProjectUsersResponse {
   rfq_responsible_users?: ProjectUser[];
   quote_responsible_users?: ProjectUser[];
   available_users?: ProjectUser[];
+  section_assigned_users?: ProjectUser[];
   total: number;
 }
 
