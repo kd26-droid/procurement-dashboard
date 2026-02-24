@@ -29,7 +29,7 @@ import {
   Link2,
   Building2,
   Globe,
-  Filter
+  Filter,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -56,6 +56,8 @@ export type ItemIdType = 'HSN' | 'MPN' | 'CPN'
 export type UsersSettings = {
   rfqAssigneeMap: Record<string, string[]>
   quoteAssigneeMap: Record<string, string[]>
+  rfqResponsibleMap: Record<string, string[]>
+  quoteResponsibleMap: Record<string, string[]>
 }
 
 export type PricesSettings = {
@@ -101,7 +103,7 @@ const DEFAULT_PRICE_SOURCES: PriceSource[] = [
 // --- HELPER FUNCTIONS ---
 export const buildDefaultSettings = (name = 'Default'): AppSettings => ({
   name,
-  users: { rfqAssigneeMap: {}, quoteAssigneeMap: {} },
+  users: { rfqAssigneeMap: {}, quoteAssigneeMap: {}, rfqResponsibleMap: {}, quoteResponsibleMap: {} },
   prices: {
     mappingItemId: {
       'Direct - Materials': 'Item ID',
@@ -889,6 +891,7 @@ export function SettingsPanel({
   const [customerSearch, setCustomerSearch] = useState('')
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [selectedCustomers, setSelectedCustomers] = useState<string[]>([])
+
   // Multiple formulas state
   const [actionFormulas, setActionFormulas] = useState<ActionFormula[]>([])
   const [currentFormula, setCurrentFormula] = useState<ActionFormula>({
@@ -904,6 +907,10 @@ export function SettingsPanel({
   useEffect(() => {
     // Reset content whenever current changes
     const localCopy = JSON.parse(JSON.stringify(current))
+
+    // Ensure new user map keys exist (backward compat for old localStorage)
+    if (!localCopy.users.rfqResponsibleMap) localCopy.users.rfqResponsibleMap = {}
+    if (!localCopy.users.quoteResponsibleMap) localCopy.users.quoteResponsibleMap = {}
 
     // Add default criteria for Actions if none exist
     if (!localCopy.actions.criteria || localCopy.actions.criteria.length === 0) {
@@ -933,11 +940,15 @@ export function SettingsPanel({
     setSelectedCustomers(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c])
   }
 
-  const linkTagsToCustomersFor = (mapKey: 'rfqAssigneeMap' | 'quoteAssigneeMap') => {
-    if (selectedTags.length === 0 || selectedCustomers.length === 0) return
+  type UserMapKey = 'rfqAssigneeMap' | 'quoteAssigneeMap' | 'rfqResponsibleMap' | 'quoteResponsibleMap'
+
+  const linkTagsToUsersFor = (mapKey: UserMapKey) => {
+    if (selectedTags.length === 0) return
     setLocal(prev => {
       const newMap = { ...prev.users[mapKey] }
       selectedTags.forEach(tag => {
+        // For assignee maps, link to selected customers; for responsible maps, link to selected users
+        // But since we're now using user IDs for all, we check selectedCustomers for backward compat
         newMap[tag] = [...selectedCustomers]
       })
       return { ...prev, users: { ...prev.users, [mapKey]: newMap } }
@@ -946,7 +957,10 @@ export function SettingsPanel({
     setSelectedCustomers([])
   }
 
-  const removeTagMapping = (tag: string, mapKey: 'rfqAssigneeMap' | 'quoteAssigneeMap') => {
+  // Keep old name for backward compat in the JSX that hasn't changed
+  const linkTagsToCustomersFor = linkTagsToUsersFor
+
+  const removeTagMapping = (tag: string, mapKey: UserMapKey) => {
     setLocal(prev => {
       const newMap = { ...prev.users[mapKey] }
       delete newMap[tag]
@@ -1089,164 +1103,89 @@ export function SettingsPanel({
                 </div>
               </div>
 
-              {/* Output */}
+              {/* Output — 4 role panels */}
               <div>
                 <h3 className="text-lg font-semibold text-slate-900 mb-4">Output</h3>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                  <Card>
-                    <CardHeader><CardTitle>RFQ Assignee</CardTitle></CardHeader>
-                    <CardContent>
-                      {selectedTags.length === 0 ? (
-                        <p className="text-center text-muted-foreground py-6 text-sm border border-dashed rounded-lg">Select a tag to assign RFQ users</p>
-                      ) : (
-                        <>
-                          <div className="flex flex-wrap gap-1 mb-3">
-                            {selectedTags.map(t => (<Badge key={t} variant="default" className="text-xs">{t}</Badge>))}
-                          </div>
-                          <ScrollArea className="h-48 border rounded-md p-2">
-                            <div className="space-y-2">
-                              {availableUsers.map(user => {
-                                const isChecked = selectedTags.every(tag => (local.users.rfqAssigneeMap[tag] || []).includes(user.user_id))
-                                return (
-                                  <div key={user.user_id} className="flex items-center space-x-2">
-                                    <Checkbox
-                                      id={`rfq-${user.user_id}`}
-                                      checked={isChecked}
-                                      onCheckedChange={() => {
-                                        setLocal(prev => {
-                                          const newMap = { ...prev.users.rfqAssigneeMap }
-                                          selectedTags.forEach(tag => {
-                                            const current = newMap[tag] || []
-                                            if (current.includes(user.user_id)) {
-                                              newMap[tag] = current.filter(id => id !== user.user_id)
-                                              if (newMap[tag].length === 0) delete newMap[tag]
-                                            } else {
-                                              newMap[tag] = [...current, user.user_id]
-                                            }
-                                          })
-                                          return { ...prev, users: { ...prev.users, rfqAssigneeMap: newMap } }
-                                        })
-                                      }}
-                                    />
-                                    <Label htmlFor={`rfq-${user.user_id}`} className="text-sm cursor-pointer">{user.name}</Label>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          </ScrollArea>
-                        </>
-                      )}
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader><CardTitle>Quote Assignee</CardTitle></CardHeader>
-                    <CardContent>
-                      {selectedCustomers.length === 0 ? (
-                        <p className="text-center text-muted-foreground py-6 text-sm border border-dashed rounded-lg">Select a customer to assign Quote users</p>
-                      ) : (
-                        <>
-                          <div className="flex flex-wrap gap-1 mb-3">
-                            {selectedCustomers.map(c => (<Badge key={c} variant="default" className="text-xs">{c}</Badge>))}
-                          </div>
-                          <ScrollArea className="h-48 border rounded-md p-2">
-                            <div className="space-y-2">
-                              {availableUsers.map(user => {
-                                const isChecked = selectedCustomers.every(cust => (local.users.quoteAssigneeMap[cust] || []).includes(user.user_id))
-                                return (
-                                  <div key={user.user_id} className="flex items-center space-x-2">
-                                    <Checkbox
-                                      id={`quote-${user.user_id}`}
-                                      checked={isChecked}
-                                      onCheckedChange={() => {
-                                        setLocal(prev => {
-                                          const newMap = { ...prev.users.quoteAssigneeMap }
-                                          selectedCustomers.forEach(cust => {
-                                            const current = newMap[cust] || []
-                                            if (current.includes(user.user_id)) {
-                                              newMap[cust] = current.filter(id => id !== user.user_id)
-                                              if (newMap[cust].length === 0) delete newMap[cust]
-                                            } else {
-                                              newMap[cust] = [...current, user.user_id]
-                                            }
-                                          })
-                                          return { ...prev, users: { ...prev.users, quoteAssigneeMap: newMap } }
-                                        })
-                                      }}
-                                    />
-                                    <Label htmlFor={`quote-${user.user_id}`} className="text-sm cursor-pointer">{user.name}</Label>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          </ScrollArea>
-                        </>
-                      )}
-                    </CardContent>
-                  </Card>
-                </div>
-              </div>
-
-              {/* Real-time Mapping Preview */}
-              {(Object.keys(local.users.rfqAssigneeMap).length > 0 || Object.keys(local.users.quoteAssigneeMap).length > 0) && (
-              <div>
-                <h3 className="text-lg font-semibold text-slate-900 mb-4">Current Mappings</h3>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                  {Object.keys(local.users.rfqAssigneeMap).length > 0 && (
-                    <Card>
-                      <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">RFQ Assignee Mappings</CardTitle></CardHeader>
+                <p className="text-sm text-muted-foreground mb-4">Select tag(s) above, then check users for each role below.</p>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {([
+                    { key: 'rfqAssigneeMap' as const, title: 'RFQ Assignee', desc: 'Project-level RFQ assignment' },
+                    { key: 'quoteAssigneeMap' as const, title: 'Quote Assignee', desc: 'Project-level Quote assignment' },
+                    { key: 'rfqResponsibleMap' as const, title: 'RFQ Item Responsible', desc: 'Item-level — controls Create Event button' },
+                    { key: 'quoteResponsibleMap' as const, title: 'Quote Item Responsible', desc: 'Item-level — controls Create Quote button' },
+                  ] as const).map(({ key, title, desc }) => (
+                    <Card key={key}>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm">{title}</CardTitle>
+                        <CardDescription className="text-xs">{desc}</CardDescription>
+                      </CardHeader>
                       <CardContent>
-                        <div className="space-y-2">
-                          {Object.entries(local.users.rfqAssigneeMap).map(([tag, userIds]) => (
-                            <div key={tag} className="flex items-start justify-between p-2 border rounded-md">
-                              <div>
-                                <Badge variant="outline" className="text-xs mr-2">{tag}</Badge>
-                                <span className="text-xs text-muted-foreground">→</span>
-                                {userIds.map(uid => {
-                                  const u = availableUsers.find(au => au.user_id === uid)
-                                  return <Badge key={uid} variant="secondary" className="text-xs ml-1">{u?.name || uid}</Badge>
+                        {selectedTags.length === 0 ? (
+                          <p className="text-center text-muted-foreground py-4 text-xs border border-dashed rounded-lg">Select a tag to assign users</p>
+                        ) : (
+                          <>
+                            <div className="flex flex-wrap gap-1 mb-2">
+                              {selectedTags.map(t => (<Badge key={t} variant="default" className="text-xs">{t}</Badge>))}
+                            </div>
+                            <ScrollArea className="h-36 border rounded-md p-2">
+                              <div className="space-y-1.5">
+                                {availableUsers.map(user => {
+                                  const isChecked = selectedTags.every(tag => (local.users[key][tag] || []).includes(user.user_id))
+                                  return (
+                                    <div key={user.user_id} className="flex items-center space-x-2">
+                                      <Checkbox
+                                        id={`${key}-${user.user_id}`}
+                                        checked={isChecked}
+                                        onCheckedChange={() => {
+                                          setLocal(prev => {
+                                            const newMap = { ...prev.users[key] }
+                                            selectedTags.forEach(tag => {
+                                              const current = newMap[tag] || []
+                                              if (current.includes(user.user_id)) {
+                                                newMap[tag] = current.filter(id => id !== user.user_id)
+                                                if (newMap[tag].length === 0) delete newMap[tag]
+                                              } else {
+                                                newMap[tag] = [...current, user.user_id]
+                                              }
+                                            })
+                                            return { ...prev, users: { ...prev.users, [key]: newMap } }
+                                          })
+                                        }}
+                                      />
+                                      <Label htmlFor={`${key}-${user.user_id}`} className="text-xs cursor-pointer">{user.name}</Label>
+                                    </div>
+                                  )
                                 })}
                               </div>
-                              <Button variant="ghost" size="sm" className="h-6 w-6 p-0 hover:bg-red-50 hover:text-red-600" onClick={() => setLocal(prev => {
-                                const newMap = { ...prev.users.rfqAssigneeMap }
-                                delete newMap[tag]
-                                return { ...prev, users: { ...prev.users, rfqAssigneeMap: newMap } }
-                              })}><Trash2 className="h-3 w-3" /></Button>
-                            </div>
-                          ))}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )}
-                  {Object.keys(local.users.quoteAssigneeMap).length > 0 && (
-                    <Card>
-                      <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">Quote Assignee Mappings</CardTitle></CardHeader>
-                      <CardContent>
-                        <div className="space-y-2">
-                          {Object.entries(local.users.quoteAssigneeMap).map(([cust, userIds]) => (
-                            <div key={cust} className="flex items-start justify-between p-2 border rounded-md">
-                              <div>
-                                <Badge variant="outline" className="text-xs mr-2">{cust}</Badge>
-                                <span className="text-xs text-muted-foreground">→</span>
-                                {userIds.map(uid => {
-                                  const u = availableUsers.find(au => au.user_id === uid)
-                                  return <Badge key={uid} variant="secondary" className="text-xs ml-1">{u?.name || uid}</Badge>
-                                })}
+                            </ScrollArea>
+                          </>
+                        )}
+
+                        {/* Existing mappings for this role */}
+                        {Object.keys(local.users[key]).length > 0 && (
+                          <div className="mt-3 pt-3 border-t space-y-1.5">
+                            {Object.entries(local.users[key]).map(([tag, userIds]) => (
+                              <div key={tag} className="flex items-center justify-between">
+                                <div className="flex items-center gap-1 flex-wrap">
+                                  <Badge variant="outline" className="text-xs">{tag}</Badge>
+                                  <span className="text-xs text-muted-foreground">→</span>
+                                  {userIds.map(uid => {
+                                    const u = availableUsers.find(au => au.user_id === uid)
+                                    return <Badge key={uid} variant="secondary" className="text-xs">{u?.name || uid.slice(0, 8)}</Badge>
+                                  })}
+                                </div>
+                                <Button variant="ghost" size="sm" className="h-5 w-5 p-0 hover:bg-red-50 hover:text-red-600 shrink-0" onClick={() => removeTagMapping(tag, key)}>
+                                  <Trash2 className="h-3 w-3" />
+                                </Button>
                               </div>
-                              <Button variant="ghost" size="sm" className="h-6 w-6 p-0 hover:bg-red-50 hover:text-red-600" onClick={() => setLocal(prev => {
-                                const newMap = { ...prev.users.quoteAssigneeMap }
-                                delete newMap[cust]
-                                return { ...prev, users: { ...prev.users, quoteAssigneeMap: newMap } }
-                              })}><Trash2 className="h-3 w-3" /></Button>
-                            </div>
-                          ))}
-                        </div>
+                            ))}
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
-                  )}
+                  ))}
                 </div>
               </div>
-              )}
             </div>
           </TabsContent>
 

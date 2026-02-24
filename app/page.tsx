@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel, LabelList } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
-import { getProjectId, getProjectItems, getProjectOverview, getProjectUsers, updateProjectItem, bulkAssignUsers, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, type ProjectItem } from '@/lib/api'
+import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getAssignmentRules, getRuleFieldOptions, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -345,6 +345,9 @@ export default function ProcurementDashboard() {
     created: "",
     deadline: "",
     customer: "",
+    buyer_entity_id: "",
+    buyer_entity_name: "",
+    template_id: "",
   })
   const [projectUsers, setProjectUsers] = useState<Array<{user_id: string, name: string, email: string, role: string}>>([])
   // Project-level role arrays (same for all items)
@@ -386,7 +389,17 @@ export default function ProcurementDashboard() {
   const [isLoadingAllItems, setIsLoadingAllItems] = useState(false)
   const [loadingError, setLoadingError] = useState<{ message: string; canRetry: boolean } | null>(null)
   const loadingAbortRef = useRef(false)
-  const [autoAssignProgress, setAutoAssignProgress] = useState({ current: 0, total: 0, isRunning: false })
+  const autoAssignAbortRef = useRef(false)
+  const [autoAssignProgress, setAutoAssignProgress] = useState<{
+    current: number
+    total: number
+    isRunning: boolean
+    phase: 'fetching' | 'evaluating' | 'assigning' | 'done' | 'cancelled'
+    rulesCount: number
+    matchedItems: number
+    assignmentsCount: number
+    log: string[]  // recent activity log lines
+  }>({ current: 0, total: 0, isRunning: false, phase: 'fetching', rulesCount: 0, matchedItems: 0, assignmentsCount: 0, log: [] })
 
   const [columnOrder, setColumnOrder] = useState([
     "itemId",
@@ -692,6 +705,9 @@ export default function ProcurementDashboard() {
           created: overviewResponse.project.validity_from || '',
           deadline: overviewResponse.project.deadline || '',
           customer: overviewResponse.project.customer_name || '',
+          buyer_entity_id: overviewResponse.project.buyer_entity_id || '',
+          buyer_entity_name: overviewResponse.project.buyer_entity_name || '',
+          template_id: overviewResponse.project.template_id || '',
         })
 
         console.log('[Dashboard] Project:', overviewResponse.project.project_name)
@@ -1309,6 +1325,8 @@ export default function ProcurementDashboard() {
       users: {
         rfqAssigneeMap: raw.users?.rfqAssigneeMap || (raw.users as any)?.tagUserMap || {},
         quoteAssigneeMap: raw.users?.quoteAssigneeMap || {},
+        rfqResponsibleMap: raw.users?.rfqResponsibleMap || {},
+        quoteResponsibleMap: raw.users?.quoteResponsibleMap || {},
       },
     }
   }, [settingsProfiles, currentSettingsKey])
@@ -1996,111 +2014,389 @@ export default function ProcurementDashboard() {
   }
 
   // Auto Assign Users Handler — fills RFQ Assignee & Quote Assignee columns per item
-  const handleAutoAssignUsers = async (scope: 'all' | 'unassigned' | 'selected') => {
+  // ─── Rule Evaluation Helpers ───
+
+  /**
+   * Extract the value from a project custom field based on its type.
+   * Backend stores values in type-specific columns: text_value, integer_value, decimal_value, etc.
+   */
+  const getCustomFieldValue = (field: { type: string; text_value?: string | null; integer_value?: number | null; decimal_value?: number | null; date_value?: string | null; multi_choice_value?: string[] | null }): string | string[] => {
+    const t = field.type.toUpperCase()
+    if (t === 'MULTI_CHOICE' && Array.isArray(field.multi_choice_value)) {
+      return field.multi_choice_value
+    }
+    if ((t === 'INTEGER' || t === 'FLOAT' || t === 'DECIMAL') && field.integer_value != null) {
+      return String(field.integer_value)
+    }
+    if ((t === 'FLOAT' || t === 'DECIMAL') && field.decimal_value != null) {
+      return String(field.decimal_value)
+    }
+    if (t === 'DATE' && field.date_value) {
+      return field.date_value
+    }
+    // Default: text_value covers CHOICE, SHORTTEXT, LONGTEXT, etc.
+    return field.text_value || ''
+  }
+
+  /**
+   * Get a field value from an item or project for rule condition evaluation.
+   * Returns string or string[] depending on field.
+   *
+   * For CUSTOM fields, checks in order:
+   * 1. Project-level custom sections (section_type: "OTHER") — same for all items
+   * 2. Item-level custom_fields, additional_details, attributes
+   */
+  const getFieldValue = (
+    condition: AssignmentRuleCondition,
+    item: any,
+    project: typeof projectData,
+    projectCustomSections?: ProjectCustomSection[]
+  ): string | string[] => {
+    if (condition.field_type === 'BUILTIN') {
+      switch (condition.field) {
+        case 'tags': {
+          const tags = [
+            ...(item.original_tags || []),
+            ...(item.original_custom_tags || []),
+          ]
+          return [...new Set(tags)]
+        }
+        case 'customer_name':
+          return project.customer || ''
+        case 'buyer_entity_name':
+          return project.buyer_entity_name || ''
+        case 'project_code':
+          return project.id || ''
+        default:
+          return ''
+      }
+    }
+
+    // CUSTOM fields
+    const fieldName = condition.field
+    const sectionName = condition.section_name
+
+    // 1. Check project-level custom sections (section_type: "OTHER")
+    if (projectCustomSections) {
+      for (const section of projectCustomSections) {
+        // Match section name if specified on the condition
+        if (sectionName && section.name !== sectionName) continue
+        // Only check project-level sections (OTHER), not item-level (ITEM)
+        // But if no section_name filter, check all sections
+        for (const field of section.custom_fields) {
+          if (field.name === fieldName) {
+            return getCustomFieldValue(field)
+          }
+        }
+      }
+    }
+
+    // 2. Check item-level: custom_fields, additional_details, attributes
+    if (item.custom_fields && item.custom_fields[fieldName] !== undefined) {
+      const val = item.custom_fields[fieldName]
+      return Array.isArray(val) ? val : String(val)
+    }
+    if (item.additional_details && item.additional_details[fieldName] !== undefined) {
+      const val = item.additional_details[fieldName]
+      return Array.isArray(val) ? val : String(val)
+    }
+    if (Array.isArray(item.attributes)) {
+      const attr = item.attributes.find(
+        (a: any) => a.attribute_name === fieldName
+      )
+      if (attr?.attribute_values?.length > 0) {
+        return attr.attribute_values.map((v: any) => v.value || String(v))
+      }
+    }
+    return ''
+  }
+
+  /**
+   * Evaluate a single condition against a field value. Case-insensitive.
+   */
+  const evaluateCondition = (
+    operator: string,
+    fieldValue: string | string[],
+    conditionValue: string
+  ): boolean => {
+    const cv = conditionValue.toLowerCase()
+
+    if (Array.isArray(fieldValue)) {
+      const lowerValues = fieldValue.map((v) => v.toLowerCase())
+      switch (operator) {
+        case 'contains':
+          return lowerValues.some((v) => v.includes(cv) || cv.includes(v))
+        case 'does_not_contain':
+          return !lowerValues.some((v) => v.includes(cv) || cv.includes(v))
+        case 'is':
+          return lowerValues.includes(cv)
+        case 'is_not':
+          return !lowerValues.includes(cv)
+        default:
+          return false
+      }
+    }
+
+    const fv = String(fieldValue).toLowerCase()
+    switch (operator) {
+      case 'is':
+        return fv === cv
+      case 'is_not':
+        return fv !== cv
+      case 'contains':
+        return fv.includes(cv)
+      case 'does_not_contain':
+        return !fv.includes(cv)
+      default:
+        return false
+    }
+  }
+
+  /**
+   * Evaluate all conditions of a rule against an item. Handles AND/OR conjunctions.
+   */
+  const evaluateRuleConditions = (
+    conditions: AssignmentRuleCondition[],
+    item: any,
+    project: typeof projectData,
+    projectCustomSections?: ProjectCustomSection[]
+  ): boolean => {
+    if (conditions.length === 0) return true
+
+    let result = true
+    for (let i = 0; i < conditions.length; i++) {
+      const cond = conditions[i]
+      const fieldValue = getFieldValue(cond, item, project, projectCustomSections)
+      const match = evaluateCondition(cond.operator, fieldValue, cond.value)
+
+      if (i === 0) {
+        result = match
+      } else {
+        const conjunction = cond.conjunction || 'AND'
+        if (conjunction === 'AND') {
+          result = result && match
+        } else {
+          result = result || match
+        }
+      }
+    }
+    return result
+  }
+
+  // ─── Auto Assign Users (Phase 4: Rules Engine) ───
+
+  const handleAutoAssignUsers = async (scope: 'all' | 'unassigned' | 'selected', ruleOverrides?: Record<string, boolean>) => {
+    const resetProgress = () => setAutoAssignProgress({ current: 0, total: 0, isRunning: false, phase: 'done', rulesCount: 0, matchedItems: 0, assignmentsCount: 0, log: [] })
+    const addLog = (msg: string) => setAutoAssignProgress(prev => ({ ...prev, log: [...prev.log.slice(-19), msg] }))
+
+    autoAssignAbortRef.current = false
+
     try {
-      const rfqMap = currentSettings.users.rfqAssigneeMap || {}
-      const quoteMap = currentSettings.users.quoteAssigneeMap || {}
+      const entityId = projectData.buyer_entity_id
+      const templateId = projectData.template_id
+      const projectId = new URLSearchParams(window.location.search).get('project_id') || ''
 
-      console.log('[Auto-Assign] RFQ map (tag→user_ids):', rfqMap)
-      console.log('[Auto-Assign] Quote map (customer→user_ids):', quoteMap)
-
-      if (Object.keys(rfqMap).length === 0 && Object.keys(quoteMap).length === 0) {
-        toast({
-          title: "No Mappings",
-          description: "No RFQ or Quote assignee mappings found. Configure them in Settings first.",
-          variant: "destructive",
-        })
+      if (!entityId) {
+        toast({ title: "Error", description: "Could not determine entity ID for this project. Please reload.", variant: "destructive" })
         return
       }
 
-      // Determine which items to process based on scope
-      let itemIdsToProcess: Set<number>
-      if (scope === 'selected') {
-        itemIdsToProcess = new Set(selectedItems)
-      } else if (scope === 'unassigned') {
-        // "unassigned" = items where both RFQ and Quote assignee columns are empty
-        itemIdsToProcess = new Set(
-          lineItems
-            .filter((item: any) => !item.rfqAssigneeName && !item.quoteAssigneeName)
-            .map((item: any) => item.id)
-        )
-      } else {
-        itemIdsToProcess = new Set(lineItems.map((item: any) => item.id))
+      // ── Phase 1: Fetching ──
+      setAutoAssignProgress({ current: 0, total: 0, isRunning: true, phase: 'fetching', rulesCount: 0, matchedItems: 0, assignmentsCount: 0, log: ['Fetching rules and project details...'] })
+
+      const [rulesResponse, projectDetail] = await Promise.all([
+        getAssignmentRules(entityId),
+        getProjectDetail(projectId).catch((err) => {
+          console.warn('[Auto-Assign] Failed to fetch project detail:', err)
+          return { custom_sections: [] } as { custom_sections: ProjectCustomSection[] }
+        }),
+      ])
+
+      if (autoAssignAbortRef.current) { resetProgress(); toast({ title: "Cancelled", description: "Auto-assign was cancelled. No changes were made." }); return }
+
+      const allRules = rulesResponse.rules || []
+      const projectCustomSections = projectDetail.custom_sections || []
+
+      // Filter applicable rules
+      let applicableRules = allRules.filter((rule: AssignmentRule) => {
+        if (!rule.is_active) return false
+        if (rule.template_filter.length > 0 && templateId) return rule.template_filter.includes(templateId)
+        return true
+      })
+      if (ruleOverrides) {
+        applicableRules = applicableRules.filter((rule: AssignmentRule) => ruleOverrides[rule.rule_id] !== false)
       }
 
-      console.log(`[Auto-Assign] Processing ${itemIdsToProcess.size} items with scope: ${scope}`)
+      if (applicableRules.length === 0) {
+        resetProgress()
+        toast({ title: "No Rules Match", description: "No active assignment rules match this project.", variant: "destructive" })
+        return
+      }
 
-      let updated = 0
-      let skipped = 0
+      addLog(`Found ${applicableRules.length} applicable rule(s): ${applicableRules.map(r => r.name).join(', ')}`)
 
-      // Build updates for all matching items in one pass
-      setLineItems((prevItems: any[]) => prevItems.map((item: any) => {
-        if (!itemIdsToProcess.has(item.id)) return item
+      // Determine items
+      let itemsToProcess: any[]
+      if (scope === 'selected') {
+        const selectedSet = new Set(selectedItems)
+        itemsToProcess = lineItems.filter((item: any) => selectedSet.has(item.id))
+      } else if (scope === 'unassigned') {
+        itemsToProcess = lineItems.filter((item: any) => !item.rfqAssigneeName && !item.quoteAssigneeName)
+      } else {
+        itemsToProcess = [...lineItems]
+      }
 
-        // --- RFQ Assignee: match item tags → rfqAssigneeMap ---
-        const rfqUserIds = new Set<string>()
-        const itemTags = Array.isArray(item.category)
-          ? (item.category as string[])
-          : String(item.category || '').split(',').map((s: string) => s.trim()).filter(Boolean)
+      addLog(`Evaluating ${itemsToProcess.length} items (scope: ${scope})`)
 
-        itemTags.forEach((tag: string) => {
-          const mappedUserIds = rfqMap[tag]
-          if (mappedUserIds) {
-            mappedUserIds.forEach((uid: string) => rfqUserIds.add(uid))
+      // ── Phase 2: Evaluating ──
+      setAutoAssignProgress(prev => ({ ...prev, phase: 'evaluating', total: itemsToProcess.length, rulesCount: applicableRules.length }))
+
+      const assignments: Array<{ project_item_id: string; user_ids: string[]; action: 'replace'; role: 'ASSIGNED' | 'RFQ_RESPONSIBLE' | 'QUOTE_RESPONSIBLE' }> = []
+      let matchedItems = 0
+
+      for (let i = 0; i < itemsToProcess.length; i++) {
+        // Check abort
+        if (autoAssignAbortRef.current) {
+          setAutoAssignProgress(prev => ({ ...prev, phase: 'cancelled', isRunning: false }))
+          toast({ title: "Cancelled", description: `Stopped after evaluating ${i} of ${itemsToProcess.length} items. No changes were made.` })
+          return
+        }
+
+        const item = itemsToProcess[i]
+        const itemProjectItemId = item.project_item_id
+        if (!itemProjectItemId) {
+          setAutoAssignProgress(prev => ({ ...prev, current: i + 1 }))
+          continue
+        }
+
+        const itemTags = [...(item.original_tags || []), ...(item.original_custom_tags || [])].map((t: string) => t.toLowerCase())
+        const uniqueItemTags = [...new Set(itemTags)]
+        let itemHasAssignment = false
+
+        for (const rule of applicableRules) {
+          if (!evaluateRuleConditions(rule.conditions, item, projectData, projectCustomSections)) continue
+
+          // Rule conditions match this item! Now resolve user assignments.
+          const outputs = rule.outputs || {} as any
+          const tagMappings: TagUserMapping[] = outputs.tag_mappings || []
+
+          // Handle FLAT outputs (backend API format: outputs has direct user ID arrays)
+          // These apply to ALL items that match conditions — no tag filtering needed
+          const flatRoles: Array<{ userIds: string[]; role: 'ASSIGNED' | 'RFQ_RESPONSIBLE' | 'QUOTE_RESPONSIBLE' }> = [
+            { userIds: (outputs as any).rfq_assignee_user_ids || [], role: 'RFQ_RESPONSIBLE' },
+            { userIds: (outputs as any).quote_assignee_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
+            { userIds: (outputs as any).rfq_item_responsible_user_ids || [], role: 'RFQ_RESPONSIBLE' },
+            { userIds: (outputs as any).quote_item_responsible_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
+          ]
+          for (const { userIds, role } of flatRoles) {
+            if (userIds.length === 0) continue
+            assignments.push({ project_item_id: itemProjectItemId, user_ids: userIds, action: 'replace', role })
+            itemHasAssignment = true
           }
-        })
 
-        // --- Quote Assignee: match project customer → quoteAssigneeMap ---
-        const quoteUserIds = new Set<string>()
-        const customerName = projectData.customer || ''
-        if (customerName && quoteMap[customerName]) {
-          quoteMap[customerName].forEach((uid: string) => quoteUserIds.add(uid))
+          // Handle TAG MAPPINGS (Factwise Admin UI format: outputs.tag_mappings)
+          // These only apply to items that have the matching tag
+          for (const tm of tagMappings) {
+            if (!uniqueItemTags.includes(tm.tag.toLowerCase())) continue
+
+            const tagRoles: Array<{ userIds: string[]; role: 'ASSIGNED' | 'RFQ_RESPONSIBLE' | 'QUOTE_RESPONSIBLE' }> = [
+              { userIds: tm.rfq_assignee_user_ids || [], role: 'RFQ_RESPONSIBLE' },
+              { userIds: tm.quote_assignee_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
+              { userIds: tm.rfq_item_responsible_user_ids || [], role: 'RFQ_RESPONSIBLE' },
+              { userIds: tm.quote_item_responsible_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
+            ]
+
+            for (const { userIds, role } of tagRoles) {
+              if (userIds.length === 0) continue
+              assignments.push({ project_item_id: itemProjectItemId, user_ids: userIds, action: 'replace', role })
+              itemHasAssignment = true
+            }
+          }
         }
 
-        // Skip if no matches at all
-        if (rfqUserIds.size === 0 && quoteUserIds.size === 0) {
-          skipped++
-          return item
+        if (itemHasAssignment) {
+          matchedItems++
+          addLog(`${item.name || item.itemCode || itemProjectItemId.slice(0, 8)} → matched (${assignments.length} assignments so far)`)
         }
 
-        // Resolve user IDs to names
-        const rfqNames = Array.from(rfqUserIds).map(resolveUserName).join('; ')
-        const quoteNames = Array.from(quoteUserIds).map(resolveUserName).join('; ')
+        setAutoAssignProgress(prev => ({ ...prev, current: i + 1, matchedItems, assignmentsCount: assignments.length }))
 
-        // Only update fields that have new values
-        const newRfq = rfqNames || item.rfqAssigneeName
-        const newQuote = quoteNames || item.quoteAssigneeName
+        // Yield to UI every 10 items so progress bar updates
+        if (i % 10 === 9) await new Promise(r => setTimeout(r, 0))
+      }
 
-        if (newRfq !== item.rfqAssigneeName || newQuote !== item.quoteAssigneeName) {
-          updated++
+      // Check abort again before sending
+      if (autoAssignAbortRef.current) {
+        setAutoAssignProgress(prev => ({ ...prev, phase: 'cancelled', isRunning: false }))
+        toast({ title: "Cancelled", description: "Auto-assign was cancelled. No changes were made." })
+        return
+      }
+
+      if (assignments.length === 0) {
+        resetProgress()
+        toast({ title: "No Matches", description: "Rules conditions did not match any items, or no users are configured in rule outputs." })
+        return
+      }
+
+      // Merge assignments
+      const mergedMap = new Map<string, { project_item_id: string; user_ids: Set<string>; role: string }>()
+      for (const a of assignments) {
+        const key = `${a.project_item_id}::${a.role}`
+        if (!mergedMap.has(key)) {
+          mergedMap.set(key, { project_item_id: a.project_item_id, user_ids: new Set(a.user_ids), role: a.role })
         } else {
-          skipped++
-          return item
+          a.user_ids.forEach((uid) => mergedMap.get(key)!.user_ids.add(uid))
         }
+      }
 
-        console.log(`[Auto-Assign] Item ${item.itemId}: RFQ="${rfqNames}", Quote="${quoteNames}"`)
-
-        return {
-          ...item,
-          rfqAssigneeName: newRfq,
-          quoteAssigneeName: newQuote,
-        }
+      const mergedAssignments = Array.from(mergedMap.values()).map((m) => ({
+        project_item_id: m.project_item_id,
+        user_ids: Array.from(m.user_ids),
+        action: 'replace' as const,
+        role: m.role as 'ASSIGNED' | 'RFQ_RESPONSIBLE' | 'QUOTE_RESPONSIBLE',
       }))
 
-      console.log(`[Auto-Assign] Done: ${updated} updated, ${skipped} skipped`)
+      // ── Phase 3: Assigning ──
+      addLog(`Sending ${mergedAssignments.length} assignments to Factwise...`)
+      setAutoAssignProgress(prev => ({ ...prev, phase: 'assigning' }))
+
+      // Final abort check
+      if (autoAssignAbortRef.current) {
+        setAutoAssignProgress(prev => ({ ...prev, phase: 'cancelled', isRunning: false }))
+        toast({ title: "Cancelled", description: "Auto-assign was cancelled before sending to Factwise. No changes were made." })
+        return
+      }
+
+      const result = await bulkAssignUsersWithRoles(projectId, mergedAssignments)
+      console.log('[Auto-Assign] Bulk-assign result:', result)
+
+      addLog(`Done! ${result.updated} assignments applied, ${result.failed} failed.`)
+      setAutoAssignProgress(prev => ({ ...prev, phase: 'done', isRunning: false }))
 
       toast({
         title: "Users Assigned Successfully",
-        description: `Auto-assigned users to ${updated} item(s)${skipped > 0 ? `, skipped ${skipped} item(s)` : ''}`,
+        description: `Applied ${applicableRules.length} rule(s), assigned users to ${matchedItems} item(s). Refreshing...`,
       })
+
+      // Re-fetch items
+      try {
+        const freshItems = await getProjectItems(projectId)
+        if (freshItems?.items) {
+          const exchangeRates: Record<string, number> = {}
+          const uniqueSpecNames: string[] = []
+          const uniqueCustomIdNames: string[] = []
+          const transformed = freshItems.items.map((item: ProjectItem, index: number) =>
+            transformApiItem(item, index, exchangeRates, uniqueSpecNames, uniqueCustomIdNames)
+          )
+          setLineItems(transformed)
+        }
+      } catch (refreshErr) {
+        console.error('[Auto-Assign] Failed to refresh items:', refreshErr)
+      }
     } catch (error) {
       console.error('[Auto-Assign] Error:', error)
-
-      toast({
-        title: "Error",
-        description: error instanceof Error ? error.message : "An unexpected error occurred",
-        variant: "destructive",
-      })
+      resetProgress()
+      toast({ title: "Error", description: error instanceof Error ? error.message : "An unexpected error occurred", variant: "destructive" })
     }
 
     document.body.click()
@@ -4321,28 +4617,91 @@ export default function ProcurementDashboard() {
             </div>
           )}
 
-          {autoAssignProgress.isRunning && (
-            <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-              <div className="flex items-center justify-between">
+          {(autoAssignProgress.isRunning || autoAssignProgress.phase === 'done' || autoAssignProgress.phase === 'cancelled') && autoAssignProgress.log.length > 0 && (
+            <div className={`mb-4 p-4 rounded-lg border ${
+              autoAssignProgress.phase === 'cancelled' ? 'bg-yellow-50 border-yellow-200' :
+              autoAssignProgress.phase === 'done' ? 'bg-green-50 border-green-200' :
+              'bg-blue-50 border-blue-200'
+            }`}>
+              <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-3">
-                  <div className="animate-spin h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full" />
+                  {autoAssignProgress.isRunning && (
+                    <div className="animate-spin h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full" />
+                  )}
+                  {autoAssignProgress.phase === 'done' && (
+                    <div className="h-5 w-5 rounded-full bg-green-600 flex items-center justify-center">
+                      <svg className="h-3 w-3 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+                    </div>
+                  )}
+                  {autoAssignProgress.phase === 'cancelled' && (
+                    <div className="h-5 w-5 rounded-full bg-yellow-500 flex items-center justify-center">
+                      <X className="h-3 w-3 text-white" />
+                    </div>
+                  )}
                   <div>
-                    <div className="font-medium text-blue-900">
-                      Auto-assigning users...
+                    <div className={`font-medium ${
+                      autoAssignProgress.phase === 'cancelled' ? 'text-yellow-900' :
+                      autoAssignProgress.phase === 'done' ? 'text-green-900' :
+                      'text-blue-900'
+                    }`}>
+                      {autoAssignProgress.phase === 'fetching' && 'Loading rules...'}
+                      {autoAssignProgress.phase === 'evaluating' && `Evaluating rules — ${autoAssignProgress.rulesCount} rule(s)`}
+                      {autoAssignProgress.phase === 'assigning' && 'Sending assignments to Factwise...'}
+                      {autoAssignProgress.phase === 'done' && `Done — ${autoAssignProgress.matchedItems} items matched, ${autoAssignProgress.assignmentsCount} assignments`}
+                      {autoAssignProgress.phase === 'cancelled' && 'Cancelled — no changes were made'}
                     </div>
-                    <div className="text-sm text-blue-700">
-                      {autoAssignProgress.current}/{autoAssignProgress.total} items processed
-                      ({autoAssignProgress.total > 0 ? ((autoAssignProgress.current / autoAssignProgress.total) * 100).toFixed(0) : 0}%)
-                    </div>
+                    {autoAssignProgress.phase === 'evaluating' && autoAssignProgress.total > 0 && (
+                      <div className="text-sm text-blue-700">
+                        {autoAssignProgress.current}/{autoAssignProgress.total} items
+                        {autoAssignProgress.matchedItems > 0 && ` — ${autoAssignProgress.matchedItems} matched`}
+                        {autoAssignProgress.assignmentsCount > 0 && `, ${autoAssignProgress.assignmentsCount} assignments`}
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                <div className="w-64 h-2 bg-blue-200 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-600 transition-all duration-300"
-                    style={{ width: `${autoAssignProgress.total > 0 ? (autoAssignProgress.current / autoAssignProgress.total) * 100 : 0}%` }}
-                  />
+                <div className="flex items-center gap-3">
+                  {/* Progress bar during evaluation */}
+                  {autoAssignProgress.phase === 'evaluating' && autoAssignProgress.total > 0 && (
+                    <div className="w-48 h-2 bg-blue-200 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-600 transition-all duration-300"
+                        style={{ width: `${(autoAssignProgress.current / autoAssignProgress.total) * 100}%` }}
+                      />
+                    </div>
+                  )}
+                  {/* Cancel button */}
+                  {autoAssignProgress.isRunning && (
+                    <button
+                      onClick={() => { autoAssignAbortRef.current = true }}
+                      className="text-xs px-3 py-1.5 text-red-700 hover:text-red-900 hover:bg-red-100 rounded border border-red-200 font-medium transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  {/* Dismiss button when done/cancelled */}
+                  {!autoAssignProgress.isRunning && (
+                    <button
+                      onClick={() => setAutoAssignProgress(prev => ({ ...prev, log: [] }))}
+                      className="text-xs px-2 py-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
+                    >
+                      Dismiss
+                    </button>
+                  )}
                 </div>
+              </div>
+
+              {/* Activity log */}
+              <div className="mt-2 max-h-24 overflow-y-auto text-xs font-mono space-y-0.5 bg-white/50 rounded p-2">
+                {autoAssignProgress.log.map((line, i) => (
+                  <div key={i} className={`${
+                    autoAssignProgress.phase === 'cancelled' ? 'text-yellow-700' :
+                    autoAssignProgress.phase === 'done' ? 'text-green-700' :
+                    'text-blue-700'
+                  } ${i === autoAssignProgress.log.length - 1 ? 'font-medium' : 'opacity-70'}`}>
+                    {line}
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -5456,6 +5815,8 @@ export default function ProcurementDashboard() {
           setSettingsInitialTab('users')
           setSettingsOpen(true)
         }}
+        entityId={projectData.buyer_entity_id}
+        templateId={projectData.template_id}
       />
 
       <AutoFillPricesPopover
