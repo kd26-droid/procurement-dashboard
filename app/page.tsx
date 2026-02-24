@@ -412,6 +412,8 @@ export default function ProcurementDashboard() {
     "projectManager",
     "rfqAssignee",
     "quoteAssignee",
+    "rfqResponsible",
+    "quoteResponsible",
     "action",
     "assignedTo",
     "dueDate",
@@ -454,10 +456,12 @@ export default function ProcurementDashboard() {
     bom: 140,
     quantity: 80,
     unit: 60,
-    category: 128,
-    projectManager: 130,
-    rfqAssignee: 130,
-    quoteAssignee: 130,
+    category: 170,
+    projectManager: 160,
+    rfqAssignee: 160,
+    quoteAssignee: 160,
+    rfqResponsible: 160,
+    quoteResponsible: 160,
     action: 80,
     assignedTo: 144,
     dueDate: 100,
@@ -696,6 +700,10 @@ export default function ProcurementDashboard() {
         // IMPORTANT: Skip pricing jobs on initial load - we'll trigger them after all data is loaded
         const initialItemsResponse = await getProjectItems(projectId, { limit: 100, offset: 0, skip_pricing_jobs: true })
         console.log('[Dashboard] Initial load:', initialItemsResponse.items.length, 'items of', initialItemsResponse.total)
+        // DEBUG: Check what assigned_users looks like from API
+        if (initialItemsResponse.items.length > 0) {
+          console.log('[Dashboard] DEBUG assigned_users on first item:', JSON.stringify(initialItemsResponse.items[0].assigned_users))
+        }
 
         // Set project data
         setProjectData({
@@ -857,14 +865,26 @@ export default function ProcurementDashboard() {
       original_custom_tags: item.custom_tags || [],
       assignedTo: item.assigned_users.map(u => u.name).join(', '),
       assigned_user_ids: item.assigned_users.map(u => u.user_id),
+      _debug_assigned_users: item.assigned_users, // TEMP DEBUG — remove later
       unitPrice: item.rate || 0,
       totalPrice: item.amount || 0,
       currency: item.currency,
       event_quantity: item.event_quantity ?? null,
       bom_slab_quantity: item.bom_slab_quantity || 0,
       enterprise_item_id: item.enterprise_item_id || null,
-      rfqAssigneeName: '',  // per-item, filled by auto-assign
-      quoteAssigneeName: '',  // per-item, filled by auto-assign
+      // RFQ/Quote Assignee are PROJECT-level (same for all items) — populated from column render using state
+      rfqAssigneeName: '',  // filled from rfqAssignees state in column render
+      quoteAssigneeName: '',  // filled from quoteAssignees state in column render
+      // RFQ/Quote Item Responsible are PER-ITEM — from items API
+      // API may return objects [{user_id, name}] or just ID strings ["uuid"] — handle both
+      rfqResponsibleName: (item.rfq_responsible_users || []).map((u: any) => {
+        if (typeof u === 'string') { const found = projectUsers.find(pu => pu.user_id === u); return found?.name || u }
+        return u.name || u.user_id || u
+      }).join('; '),
+      quoteResponsibleName: (item.quote_responsible_users || []).map((u: any) => {
+        if (typeof u === 'string') { const found = projectUsers.find(pu => pu.user_id === u); return found?.name || u }
+        return u.name || u.user_id || u
+      }).join('; '),
       vendor: '',
       action: '',
       dueDate: '',
@@ -1763,6 +1783,8 @@ export default function ProcurementDashboard() {
       'Project Manager',
       'RFQ Assignee',
       'Quote Assignee',
+      'RFQ Item Responsible',
+      'Quote Item Responsible',
       'Action',
       'Assigned To',
       'Due Date',
@@ -1845,11 +1867,13 @@ export default function ProcurementDashboard() {
         row.push(escapeCSV(itemTags[t] || ''))
       }
 
-      // Add role columns (PM is project-level, RFQ/Quote are per-item from auto-assign)
+      // Add role columns
       row.push(
         escapeCSV(projectManagers),
         escapeCSV(item.rfqAssigneeName || ''),
         escapeCSV(item.quoteAssigneeName || ''),
+        escapeCSV(item.rfqResponsibleName || ''),
+        escapeCSV(item.quoteResponsibleName || ''),
       )
 
       // Add remaining columns
@@ -2227,13 +2251,19 @@ export default function ProcurementDashboard() {
         applicableRules = applicableRules.filter((rule: AssignmentRule) => ruleOverrides[rule.rule_id] !== false)
       }
 
-      if (applicableRules.length === 0) {
+      // Local settings tag-user mappings (user's own, HIGHEST priority)
+      const localMaps = currentSettings.users
+      const hasLocalMappings = Object.values(localMaps).some(m => Object.keys(m).length > 0)
+      const hasBackendRules = applicableRules.length > 0
+
+      if (!hasLocalMappings && !hasBackendRules) {
         resetProgress()
-        toast({ title: "No Rules Match", description: "No active assignment rules match this project.", variant: "destructive" })
+        toast({ title: "No Rules", description: "No local mappings or backend rules found. Configure mappings in Settings or ask admin to create rules.", variant: "destructive" })
         return
       }
 
-      addLog(`Found ${applicableRules.length} applicable rule(s): ${applicableRules.map(r => r.name).join(', ')}`)
+      if (hasLocalMappings) addLog(`Local settings: ${Object.values(localMaps).reduce((n, m) => n + Object.keys(m).length, 0)} tag mappings`)
+      if (hasBackendRules) addLog(`Backend rules: ${applicableRules.length} rule(s): ${applicableRules.map(r => r.name).join(', ')}`)
 
       // Determine items
       let itemsToProcess: any[]
@@ -2251,11 +2281,12 @@ export default function ProcurementDashboard() {
       // ── Phase 2: Evaluating ──
       setAutoAssignProgress(prev => ({ ...prev, phase: 'evaluating', total: itemsToProcess.length, rulesCount: applicableRules.length }))
 
-      const assignments: Array<{ project_item_id: string; user_ids: string[]; action: 'replace'; role: 'ASSIGNED' | 'RFQ_RESPONSIBLE' | 'QUOTE_RESPONSIBLE' }> = []
+      const assignments: Array<{ project_item_id: string; user_ids: string[]; action: 'replace'; role: string }> = []
+      // Track which item+role combos are covered by local mappings (they take priority)
+      const localCovered = new Set<string>()
       let matchedItems = 0
 
       for (let i = 0; i < itemsToProcess.length; i++) {
-        // Check abort
         if (autoAssignAbortRef.current) {
           setAutoAssignProgress(prev => ({ ...prev, phase: 'cancelled', isRunning: false }))
           toast({ title: "Cancelled", description: `Stopped after evaluating ${i} of ${itemsToProcess.length} items. No changes were made.` })
@@ -2273,43 +2304,83 @@ export default function ProcurementDashboard() {
         const uniqueItemTags = [...new Set(itemTags)]
         let itemHasAssignment = false
 
-        for (const rule of applicableRules) {
-          if (!evaluateRuleConditions(rule.conditions, item, projectData, projectCustomSections)) continue
+        // ── STEP 1: Local settings mappings (PRIORITY) ──
+        // RFQ panels mapped by TAG, Quote panels mapped by CUSTOMER
+        if (hasLocalMappings) {
+          const projectCustomer = (projectData.customer || '').toLowerCase()
 
-          // Rule conditions match this item! Now resolve user assignments.
-          const outputs = rule.outputs || {} as any
-          const tagMappings: TagUserMapping[] = outputs.tag_mappings || []
-
-          // Handle FLAT outputs (backend API format: outputs has direct user ID arrays)
-          // These apply to ALL items that match conditions — no tag filtering needed
-          const flatRoles: Array<{ userIds: string[]; role: 'ASSIGNED' | 'RFQ_RESPONSIBLE' | 'QUOTE_RESPONSIBLE' }> = [
-            { userIds: (outputs as any).rfq_assignee_user_ids || [], role: 'RFQ_RESPONSIBLE' },
-            { userIds: (outputs as any).quote_assignee_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
-            { userIds: (outputs as any).rfq_item_responsible_user_ids || [], role: 'RFQ_RESPONSIBLE' },
-            { userIds: (outputs as any).quote_item_responsible_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
+          // Tag-based: RFQ Assignee, RFQ Item Responsible
+          const tagRoleKeys: Array<{ mapKey: keyof typeof localMaps; role: string }> = [
+            { mapKey: 'rfqAssigneeMap', role: 'RFQ_ASSIGNEE' },
+            { mapKey: 'rfqResponsibleMap', role: 'RFQ_RESPONSIBLE' },
           ]
-          for (const { userIds, role } of flatRoles) {
-            if (userIds.length === 0) continue
-            assignments.push({ project_item_id: itemProjectItemId, user_ids: userIds, action: 'replace', role })
-            itemHasAssignment = true
+          for (const { mapKey, role } of tagRoleKeys) {
+            const map = localMaps[mapKey]
+            for (const tag of uniqueItemTags) {
+              const userIds = map[tag] || map[tag.charAt(0).toUpperCase() + tag.slice(1)] || Object.entries(map).find(([k]) => k.toLowerCase() === tag)?.[1]
+              if (userIds && userIds.length > 0) {
+                assignments.push({ project_item_id: itemProjectItemId, user_ids: userIds, action: 'replace', role })
+                localCovered.add(`${itemProjectItemId}::${role}`)
+                itemHasAssignment = true
+              }
+            }
           }
 
-          // Handle TAG MAPPINGS (Factwise Admin UI format: outputs.tag_mappings)
-          // These only apply to items that have the matching tag
-          for (const tm of tagMappings) {
-            if (!uniqueItemTags.includes(tm.tag.toLowerCase())) continue
+          // Customer-based: Quote Assignee, Quote Item Responsible
+          const customerRoleKeys: Array<{ mapKey: keyof typeof localMaps; role: string }> = [
+            { mapKey: 'quoteAssigneeMap', role: 'QUOTE_ASSIGNEE' },
+            { mapKey: 'quoteResponsibleMap', role: 'QUOTE_RESPONSIBLE' },
+          ]
+          for (const { mapKey, role } of customerRoleKeys) {
+            const map = localMaps[mapKey]
+            if (projectCustomer) {
+              const userIds = Object.entries(map).find(([k]) => k.toLowerCase() === projectCustomer)?.[1]
+              if (userIds && userIds.length > 0) {
+                assignments.push({ project_item_id: itemProjectItemId, user_ids: userIds, action: 'replace', role })
+                localCovered.add(`${itemProjectItemId}::${role}`)
+                itemHasAssignment = true
+              }
+            }
+          }
+        }
 
-            const tagRoles: Array<{ userIds: string[]; role: 'ASSIGNED' | 'RFQ_RESPONSIBLE' | 'QUOTE_RESPONSIBLE' }> = [
-              { userIds: tm.rfq_assignee_user_ids || [], role: 'RFQ_RESPONSIBLE' },
-              { userIds: tm.quote_assignee_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
-              { userIds: tm.rfq_item_responsible_user_ids || [], role: 'RFQ_RESPONSIBLE' },
-              { userIds: tm.quote_item_responsible_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
+        // ── STEP 2: Backend rules (only for roles NOT already covered by local) ──
+        if (hasBackendRules) {
+          for (const rule of applicableRules) {
+            if (!evaluateRuleConditions(rule.conditions, item, projectData, projectCustomSections)) continue
+
+            const outputs = rule.outputs || {} as any
+            const tagMappings: TagUserMapping[] = outputs.tag_mappings || []
+
+            // Flat outputs
+            const flatRoles: Array<{ userIds: string[]; role: string }> = [
+              { userIds: (outputs as any).rfq_assignee_user_ids || [], role: 'RFQ_ASSIGNEE' },
+              { userIds: (outputs as any).quote_assignee_user_ids || [], role: 'QUOTE_ASSIGNEE' },
+              { userIds: (outputs as any).rfq_item_responsible_user_ids || [], role: 'RFQ_RESPONSIBLE' },
+              { userIds: (outputs as any).quote_item_responsible_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
             ]
-
-            for (const { userIds, role } of tagRoles) {
+            for (const { userIds, role } of flatRoles) {
               if (userIds.length === 0) continue
+              if (localCovered.has(`${itemProjectItemId}::${role}`)) continue // local takes priority
               assignments.push({ project_item_id: itemProjectItemId, user_ids: userIds, action: 'replace', role })
               itemHasAssignment = true
+            }
+
+            // Tag mappings
+            for (const tm of tagMappings) {
+              if (!uniqueItemTags.includes(tm.tag.toLowerCase())) continue
+              const tagRoles: Array<{ userIds: string[]; role: string }> = [
+                { userIds: tm.rfq_assignee_user_ids || [], role: 'RFQ_ASSIGNEE' },
+                { userIds: tm.quote_assignee_user_ids || [], role: 'QUOTE_ASSIGNEE' },
+                { userIds: tm.rfq_item_responsible_user_ids || [], role: 'RFQ_RESPONSIBLE' },
+                { userIds: tm.quote_item_responsible_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
+              ]
+              for (const { userIds, role } of tagRoles) {
+                if (userIds.length === 0) continue
+                if (localCovered.has(`${itemProjectItemId}::${role}`)) continue
+                assignments.push({ project_item_id: itemProjectItemId, user_ids: userIds, action: 'replace', role })
+                itemHasAssignment = true
+              }
             }
           }
         }
@@ -2353,7 +2424,7 @@ export default function ProcurementDashboard() {
         project_item_id: m.project_item_id,
         user_ids: Array.from(m.user_ids),
         action: 'replace' as const,
-        role: m.role as 'ASSIGNED' | 'RFQ_RESPONSIBLE' | 'QUOTE_RESPONSIBLE',
+        role: m.role,
       }))
 
       // ── Phase 3: Assigning ──
@@ -2378,9 +2449,21 @@ export default function ProcurementDashboard() {
         description: `Applied ${applicableRules.length} rule(s), assigned users to ${matchedItems} item(s). Refreshing...`,
       })
 
-      // Re-fetch items
+      // Re-fetch users (for project-level assignees) + items (for per-item responsible) from API
       try {
-        const freshItems = await getProjectItems(projectId)
+        const [freshUsers, freshItems] = await Promise.all([
+          getProjectUsers(projectId),
+          getProjectItems(projectId),
+        ])
+
+        // Update project-level assignees
+        if (freshUsers) {
+          setProjectUsers(freshUsers.users || [])
+          setRfqAssignees((freshUsers.rfq_responsible_users || []).map(u => u.name).join('; '))
+          setQuoteAssignees((freshUsers.quote_responsible_users || []).map(u => u.name).join('; '))
+        }
+
+        // Update items (per-item responsible names come from API)
         if (freshItems?.items) {
           const exchangeRates: Record<string, number> = {}
           const uniqueSpecNames: string[] = []
@@ -2391,7 +2474,7 @@ export default function ProcurementDashboard() {
           setLineItems(transformed)
         }
       } catch (refreshErr) {
-        console.error('[Auto-Assign] Failed to refresh items:', refreshErr)
+        console.error('[Auto-Assign] Failed to refresh after assign:', refreshErr)
       }
     } catch (error) {
       console.error('[Auto-Assign] Error:', error)
@@ -3269,6 +3352,8 @@ export default function ProcurementDashboard() {
     projectManager: "Project Manager",
     rfqAssignee: "RFQ Assignee",
     quoteAssignee: "Quote Assignee",
+    rfqResponsible: "RFQ Item Responsible",
+    quoteResponsible: "Quote Item Responsible",
     action: "Action",
     assignedTo: "Assigned",
     dueDate: "Due Date",
@@ -4617,92 +4702,24 @@ export default function ProcurementDashboard() {
             </div>
           )}
 
-          {(autoAssignProgress.isRunning || autoAssignProgress.phase === 'done' || autoAssignProgress.phase === 'cancelled') && autoAssignProgress.log.length > 0 && (
-            <div className={`mb-4 p-4 rounded-lg border ${
-              autoAssignProgress.phase === 'cancelled' ? 'bg-yellow-50 border-yellow-200' :
-              autoAssignProgress.phase === 'done' ? 'bg-green-50 border-green-200' :
-              'bg-blue-50 border-blue-200'
-            }`}>
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-3">
-                  {autoAssignProgress.isRunning && (
-                    <div className="animate-spin h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full" />
-                  )}
-                  {autoAssignProgress.phase === 'done' && (
-                    <div className="h-5 w-5 rounded-full bg-green-600 flex items-center justify-center">
-                      <svg className="h-3 w-3 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                    </div>
-                  )}
-                  {autoAssignProgress.phase === 'cancelled' && (
-                    <div className="h-5 w-5 rounded-full bg-yellow-500 flex items-center justify-center">
-                      <X className="h-3 w-3 text-white" />
-                    </div>
-                  )}
-                  <div>
-                    <div className={`font-medium ${
-                      autoAssignProgress.phase === 'cancelled' ? 'text-yellow-900' :
-                      autoAssignProgress.phase === 'done' ? 'text-green-900' :
-                      'text-blue-900'
-                    }`}>
-                      {autoAssignProgress.phase === 'fetching' && 'Loading rules...'}
-                      {autoAssignProgress.phase === 'evaluating' && `Evaluating rules — ${autoAssignProgress.rulesCount} rule(s)`}
-                      {autoAssignProgress.phase === 'assigning' && 'Sending assignments to Factwise...'}
-                      {autoAssignProgress.phase === 'done' && `Done — ${autoAssignProgress.matchedItems} items matched, ${autoAssignProgress.assignmentsCount} assignments`}
-                      {autoAssignProgress.phase === 'cancelled' && 'Cancelled — no changes were made'}
-                    </div>
-                    {autoAssignProgress.phase === 'evaluating' && autoAssignProgress.total > 0 && (
-                      <div className="text-sm text-blue-700">
-                        {autoAssignProgress.current}/{autoAssignProgress.total} items
-                        {autoAssignProgress.matchedItems > 0 && ` — ${autoAssignProgress.matchedItems} matched`}
-                        {autoAssignProgress.assignmentsCount > 0 && `, ${autoAssignProgress.assignmentsCount} assignments`}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  {/* Progress bar during evaluation */}
-                  {autoAssignProgress.phase === 'evaluating' && autoAssignProgress.total > 0 && (
-                    <div className="w-48 h-2 bg-blue-200 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-blue-600 transition-all duration-300"
-                        style={{ width: `${(autoAssignProgress.current / autoAssignProgress.total) * 100}%` }}
-                      />
-                    </div>
-                  )}
-                  {/* Cancel button */}
-                  {autoAssignProgress.isRunning && (
-                    <button
-                      onClick={() => { autoAssignAbortRef.current = true }}
-                      className="text-xs px-3 py-1.5 text-red-700 hover:text-red-900 hover:bg-red-100 rounded border border-red-200 font-medium transition-colors"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                  {/* Dismiss button when done/cancelled */}
-                  {!autoAssignProgress.isRunning && (
-                    <button
-                      onClick={() => setAutoAssignProgress(prev => ({ ...prev, log: [] }))}
-                      className="text-xs px-2 py-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
-                    >
-                      Dismiss
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Activity log */}
-              <div className="mt-2 max-h-24 overflow-y-auto text-xs font-mono space-y-0.5 bg-white/50 rounded p-2">
-                {autoAssignProgress.log.map((line, i) => (
-                  <div key={i} className={`${
-                    autoAssignProgress.phase === 'cancelled' ? 'text-yellow-700' :
-                    autoAssignProgress.phase === 'done' ? 'text-green-700' :
-                    'text-blue-700'
-                  } ${i === autoAssignProgress.log.length - 1 ? 'font-medium' : 'opacity-70'}`}>
-                    {line}
-                  </div>
-                ))}
-              </div>
+          {(autoAssignProgress.isRunning || autoAssignProgress.phase === 'done' || autoAssignProgress.phase === 'cancelled') && (
+            <div className="mb-3 flex items-center gap-3 px-2 py-2 rounded bg-gray-50 border text-sm">
+              {autoAssignProgress.isRunning && (
+                <div className="animate-spin h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full flex-shrink-0" />
+              )}
+              <span className="text-gray-700 flex-1">
+                {autoAssignProgress.phase === 'fetching' && 'Loading rules...'}
+                {autoAssignProgress.phase === 'evaluating' && `Evaluating ${autoAssignProgress.current}/${autoAssignProgress.total} items...`}
+                {autoAssignProgress.phase === 'assigning' && 'Assigning users...'}
+                {autoAssignProgress.phase === 'done' && `Done — ${autoAssignProgress.matchedItems} items, ${autoAssignProgress.assignmentsCount} assignments`}
+                {autoAssignProgress.phase === 'cancelled' && 'Cancelled — no changes made'}
+              </span>
+              {autoAssignProgress.isRunning && (
+                <button onClick={() => { autoAssignAbortRef.current = true }} className="text-xs text-red-600 hover:text-red-800 font-medium">Cancel</button>
+              )}
+              {!autoAssignProgress.isRunning && (
+                <button onClick={() => setAutoAssignProgress(prev => ({ ...prev, phase: 'fetching' as const, log: [], isRunning: false, matchedItems: 0, assignmentsCount: 0 }))} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+              )}
             </div>
           )}
 
@@ -4966,11 +4983,11 @@ export default function ProcurementDashboard() {
                             ) : (
                               <UiTooltip>
                                 <UiTooltipTrigger>
-                                  <span className="flex items-center gap-1 cursor-pointer">
-                                    <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate">
+                                  <span className="flex items-center gap-1 cursor-pointer overflow-hidden" style={{ maxWidth: '100%' }}>
+                                    <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[110px]">
                                       {categories[0].trim()}
                                     </Badge>
-                                    <span className="text-blue-600 font-medium text-xs hover:text-blue-800 whitespace-nowrap">
+                                    <span className="text-blue-600 font-medium text-xs hover:text-blue-800 whitespace-nowrap flex-shrink-0">
                                       +{categories.length - 1}
                                     </span>
                                   </span>
@@ -4990,11 +5007,12 @@ export default function ProcurementDashboard() {
                         )
                       }
 
-                      if (columnKey === "projectManager" || columnKey === "rfqAssignee" || columnKey === "quoteAssignee") {
-                        // Project Manager is project-level; RFQ/Quote Assignee are per-item (filled by auto-assign)
+                      if (columnKey === "projectManager" || columnKey === "rfqAssignee" || columnKey === "quoteAssignee" || columnKey === "rfqResponsible" || columnKey === "quoteResponsible") {
                         const value = columnKey === "projectManager" ? projectManagers
-                          : columnKey === "rfqAssignee" ? (item.rfqAssigneeName || '')
-                          : (item.quoteAssigneeName || '')
+                          : columnKey === "rfqAssignee" ? rfqAssignees  // project-level, same for all items
+                          : columnKey === "quoteAssignee" ? quoteAssignees  // project-level, same for all items
+                          : columnKey === "rfqResponsible" ? (item.rfqResponsibleName || '')  // per-item
+                          : (item.quoteResponsibleName || '')  // per-item
                         return (
                           <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
                             {value ? (
@@ -6300,6 +6318,7 @@ export default function ProcurementDashboard() {
             </div>
             <div className="flex-1 min-h-0">
               <SettingsPanel
+                entityId={projectData.buyer_entity_id}
                 allTags={allTags}
                 allCustomers={projectData.customer ? [projectData.customer] : []}
                 availableUsers={availableUsers}

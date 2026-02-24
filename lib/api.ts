@@ -243,8 +243,11 @@ export interface ProjectItem {
     user_id: string;
     email: string;
     name: string;
+    role?: string;  // ASSIGNED | RFQ_RESPONSIBLE | QUOTE_RESPONSIBLE
   }>;
   assigned_users_count: number;
+  rfq_responsible_users?: Array<{ user_id: string; email: string; name: string }>;
+  quote_responsible_users?: Array<{ user_id: string; email: string; name: string }>;
   delivery_schedules: Array<{
     delivery_schedule_id: string;
     quantity: number;
@@ -552,7 +555,7 @@ export interface BulkAssignRequest {
     project_item_id: string;
     user_ids: string[];
     action: 'replace' | 'add' | 'remove';
-    role?: 'ASSIGNED' | 'RFQ_RESPONSIBLE' | 'QUOTE_RESPONSIBLE';
+    role?: 'ASSIGNED' | 'RFQ_ASSIGNEE' | 'QUOTE_ASSIGNEE' | 'RFQ_RESPONSIBLE' | 'QUOTE_RESPONSIBLE';
   }>;
 }
 

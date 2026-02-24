@@ -865,6 +865,7 @@ export function SettingsDialog({ open, onOpenChange, allTags, allCustomers, curr
 type RoleUser = { user_id: string; name: string; email: string }
 
 export function SettingsPanel({
+  entityId,
   allTags,
   allCustomers,
   availableUsers = [],
@@ -875,6 +876,7 @@ export function SettingsPanel({
   onCancel,
   initialTab = 'users',
 }: {
+  entityId?: string
   allTags: string[]
   allCustomers: string[]
   availableUsers?: RoleUser[]
@@ -891,6 +893,57 @@ export function SettingsPanel({
   const [customerSearch, setCustomerSearch] = useState('')
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [selectedCustomers, setSelectedCustomers] = useState<string[]>([])
+
+  // Rules from backend — shown as read-only mappings
+  const [ruleMappings, setRuleMappings] = useState<{
+    rfqAssigneeMap: Record<string, string[]>
+    quoteAssigneeMap: Record<string, string[]>
+    rfqResponsibleMap: Record<string, string[]>
+    quoteResponsibleMap: Record<string, string[]>
+  }>({ rfqAssigneeMap: {}, quoteAssigneeMap: {}, rfqResponsibleMap: {}, quoteResponsibleMap: {} })
+
+  useEffect(() => {
+    if (!entityId) return
+    const fetchRules = async () => {
+      try {
+        const { getAssignmentRules } = await import('@/lib/api')
+        const res = await getAssignmentRules(entityId)
+        const rules = res.rules || []
+        const maps = { rfqAssigneeMap: {} as Record<string, string[]>, quoteAssigneeMap: {} as Record<string, string[]>, rfqResponsibleMap: {} as Record<string, string[]>, quoteResponsibleMap: {} as Record<string, string[]> }
+        for (const rule of rules) {
+          if (!rule.is_active) continue
+          const outputs = rule.outputs || {} as any
+          // Flat outputs — show as "All matched items" mapping
+          const flatKeys = [
+            { src: 'rfq_assignee_user_ids', dest: 'rfqAssigneeMap' as const },
+            { src: 'quote_assignee_user_ids', dest: 'quoteAssigneeMap' as const },
+            { src: 'rfq_item_responsible_user_ids', dest: 'rfqResponsibleMap' as const },
+            { src: 'quote_item_responsible_user_ids', dest: 'quoteResponsibleMap' as const },
+          ]
+          for (const { src, dest } of flatKeys) {
+            const ids = (outputs as any)[src] || []
+            if (ids.length > 0) {
+              const label = `Rule: ${rule.name}`
+              maps[dest][label] = [...(maps[dest][label] || []), ...ids]
+            }
+          }
+          // Tag mappings
+          const tagMappings = outputs.tag_mappings || []
+          for (const tm of tagMappings) {
+            const tag = tm.tag
+            if (tm.rfq_assignee_user_ids?.length) maps.rfqAssigneeMap[tag] = [...(maps.rfqAssigneeMap[tag] || []), ...tm.rfq_assignee_user_ids]
+            if (tm.quote_assignee_user_ids?.length) maps.quoteAssigneeMap[tag] = [...(maps.quoteAssigneeMap[tag] || []), ...tm.quote_assignee_user_ids]
+            if (tm.rfq_item_responsible_user_ids?.length) maps.rfqResponsibleMap[tag] = [...(maps.rfqResponsibleMap[tag] || []), ...tm.rfq_item_responsible_user_ids]
+            if (tm.quote_item_responsible_user_ids?.length) maps.quoteResponsibleMap[tag] = [...(maps.quoteResponsibleMap[tag] || []), ...tm.quote_item_responsible_user_ids]
+          }
+        }
+        setRuleMappings(maps)
+      } catch (err) {
+        console.warn('[Settings] Failed to fetch rules:', err)
+      }
+    }
+    fetchRules()
+  }, [entityId])
 
   // Multiple formulas state
   const [actionFormulas, setActionFormulas] = useState<ActionFormula[]>([])
@@ -1106,31 +1159,34 @@ export function SettingsPanel({
               {/* Output — 4 role panels */}
               <div>
                 <h3 className="text-lg font-semibold text-slate-900 mb-4">Output</h3>
-                <p className="text-sm text-muted-foreground mb-4">Select tag(s) above, then check users for each role below.</p>
+                <p className="text-sm text-muted-foreground mb-4">RFQ panels use selected tags. Quote panels use selected customers.</p>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   {([
-                    { key: 'rfqAssigneeMap' as const, title: 'RFQ Assignee', desc: 'Project-level RFQ assignment' },
-                    { key: 'quoteAssigneeMap' as const, title: 'Quote Assignee', desc: 'Project-level Quote assignment' },
-                    { key: 'rfqResponsibleMap' as const, title: 'RFQ Item Responsible', desc: 'Item-level — controls Create Event button' },
-                    { key: 'quoteResponsibleMap' as const, title: 'Quote Item Responsible', desc: 'Item-level — controls Create Quote button' },
-                  ] as const).map(({ key, title, desc }) => (
+                    { key: 'rfqAssigneeMap' as const, title: 'RFQ Assignee', desc: 'Project-level RFQ assignment', useCustomer: false },
+                    { key: 'quoteAssigneeMap' as const, title: 'Quote Assignee', desc: 'Project-level Quote assignment', useCustomer: true },
+                    { key: 'rfqResponsibleMap' as const, title: 'RFQ Item Responsible', desc: 'Item-level — controls Create Event button', useCustomer: false },
+                    { key: 'quoteResponsibleMap' as const, title: 'Quote Item Responsible', desc: 'Item-level — controls Create Quote button', useCustomer: true },
+                  ] as const).map(({ key, title, desc, useCustomer }) => {
+                    const selectedKeys = useCustomer ? selectedCustomers : selectedTags
+                    const emptyMsg = useCustomer ? 'Select a customer to assign users' : 'Select a tag to assign users'
+                    return (
                     <Card key={key}>
                       <CardHeader className="pb-2">
                         <CardTitle className="text-sm">{title}</CardTitle>
-                        <CardDescription className="text-xs">{desc}</CardDescription>
+                        <CardDescription className="text-xs">{desc} — mapped by {useCustomer ? 'customer' : 'tag'}</CardDescription>
                       </CardHeader>
                       <CardContent>
-                        {selectedTags.length === 0 ? (
-                          <p className="text-center text-muted-foreground py-4 text-xs border border-dashed rounded-lg">Select a tag to assign users</p>
+                        {selectedKeys.length === 0 ? (
+                          <p className="text-center text-muted-foreground py-4 text-xs border border-dashed rounded-lg">{emptyMsg}</p>
                         ) : (
                           <>
                             <div className="flex flex-wrap gap-1 mb-2">
-                              {selectedTags.map(t => (<Badge key={t} variant="default" className="text-xs">{t}</Badge>))}
+                              {selectedKeys.map(t => (<Badge key={t} variant={useCustomer ? 'outline' : 'default'} className="text-xs">{t}</Badge>))}
                             </div>
                             <ScrollArea className="h-36 border rounded-md p-2">
                               <div className="space-y-1.5">
                                 {availableUsers.map(user => {
-                                  const isChecked = selectedTags.every(tag => (local.users[key][tag] || []).includes(user.user_id))
+                                  const isChecked = selectedKeys.every(k => (local.users[key][k] || []).includes(user.user_id))
                                   return (
                                     <div key={user.user_id} className="flex items-center space-x-2">
                                       <Checkbox
@@ -1139,13 +1195,13 @@ export function SettingsPanel({
                                         onCheckedChange={() => {
                                           setLocal(prev => {
                                             const newMap = { ...prev.users[key] }
-                                            selectedTags.forEach(tag => {
-                                              const current = newMap[tag] || []
+                                            selectedKeys.forEach(k => {
+                                              const current = newMap[k] || []
                                               if (current.includes(user.user_id)) {
-                                                newMap[tag] = current.filter(id => id !== user.user_id)
-                                                if (newMap[tag].length === 0) delete newMap[tag]
+                                                newMap[k] = current.filter(id => id !== user.user_id)
+                                                if (newMap[k].length === 0) delete newMap[k]
                                               } else {
-                                                newMap[tag] = [...current, user.user_id]
+                                                newMap[k] = [...current, user.user_id]
                                               }
                                             })
                                             return { ...prev, users: { ...prev.users, [key]: newMap } }
@@ -1161,7 +1217,7 @@ export function SettingsPanel({
                           </>
                         )}
 
-                        {/* Existing mappings for this role */}
+                        {/* Existing local mappings for this role */}
                         {Object.keys(local.users[key]).length > 0 && (
                           <div className="mt-3 pt-3 border-t space-y-1.5">
                             {Object.entries(local.users[key]).map(([tag, userIds]) => (
@@ -1181,9 +1237,27 @@ export function SettingsPanel({
                             ))}
                           </div>
                         )}
+
+                        {/* Rule-based mappings (from backend rules) */}
+                        {Object.keys(ruleMappings[key] || {}).length > 0 && (
+                          <div className="mt-3 pt-3 border-t space-y-1.5">
+                            <div className="text-xs font-medium text-blue-700 mb-1">From Assignment Rules</div>
+                            {Object.entries(ruleMappings[key] || {}).map(([tag, userIds]) => (
+                              <div key={tag} className="flex items-center gap-1 flex-wrap">
+                                <Badge variant="outline" className="text-xs border-blue-200 text-blue-700">{tag}</Badge>
+                                <span className="text-xs text-muted-foreground">→</span>
+                                {userIds.map(uid => {
+                                  const u = availableUsers.find(au => au.user_id === uid)
+                                  return <Badge key={uid} className="text-xs bg-blue-50 text-blue-700 border border-blue-200">{u?.name || uid.slice(0, 8)}</Badge>
+                                })}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             </div>
