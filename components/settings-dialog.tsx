@@ -72,6 +72,7 @@ export type ActionsSettings = {
   sources: PriceSource[]
   maxAgeDays: number
   criteria?: ActionCriterion[]
+  criteriaAction?: 'Event' | 'Quote' | 'PO' | 'Contract'
 }
 
 export type AppSettings = {
@@ -123,6 +124,7 @@ export const buildDefaultSettings = (name = 'Default'): AppSettings => ({
     sources: ['PO', 'Contract', 'Quote'],
     maxAgeDays: 365,
     criteria: [],
+    criteriaAction: 'Quote',
   },
 })
 
@@ -875,6 +877,7 @@ export function SettingsPanel({
   onSave,
   onCancel,
   initialTab = 'users',
+  onAdminActionRulesLoaded,
 }: {
   entityId?: string
   allTags: string[]
@@ -886,6 +889,7 @@ export function SettingsPanel({
   onSave: (s: AppSettings) => void
   onCancel: () => void
   initialTab?: 'users' | 'prices' | 'actions'
+  onAdminActionRulesLoaded?: (rules: import('@/lib/api').ActionRule[]) => void
 }) {
   const [local, setLocal] = useState<AppSettings>(current)
   const [newItemId, setNewItemId] = useState('')
@@ -902,18 +906,22 @@ export function SettingsPanel({
     quoteResponsibleMap: Record<string, string[]>
   }>({ rfqAssigneeMap: {}, quoteAssigneeMap: {}, rfqResponsibleMap: {}, quoteResponsibleMap: {} })
 
+  // Admin action rules from backend
+  const [adminActionRules, setAdminActionRules] = useState<import('@/lib/api').ActionRule[]>([])
+
   useEffect(() => {
     if (!entityId) return
     const fetchRules = async () => {
       try {
-        const { getAssignmentRules } = await import('@/lib/api')
+        const { getAssignmentRules, getActionRules } = await import('@/lib/api')
+
+        // Fetch assignment rules
         const res = await getAssignmentRules(entityId)
         const rules = res.rules || []
         const maps = { rfqAssigneeMap: {} as Record<string, string[]>, quoteAssigneeMap: {} as Record<string, string[]>, rfqResponsibleMap: {} as Record<string, string[]>, quoteResponsibleMap: {} as Record<string, string[]> }
         for (const rule of rules) {
           if (!rule.is_active) continue
           const outputs = rule.outputs || {} as any
-          // Flat outputs — show as "All matched items" mapping
           const flatKeys = [
             { src: 'rfq_assignee_user_ids', dest: 'rfqAssigneeMap' as const },
             { src: 'quote_assignee_user_ids', dest: 'quoteAssigneeMap' as const },
@@ -927,7 +935,6 @@ export function SettingsPanel({
               maps[dest][label] = [...(maps[dest][label] || []), ...ids]
             }
           }
-          // Tag mappings
           const tagMappings = outputs.tag_mappings || []
           for (const tm of tagMappings) {
             const tag = tm.tag
@@ -938,6 +945,16 @@ export function SettingsPanel({
           }
         }
         setRuleMappings(maps)
+
+        // Fetch action rules
+        try {
+          const actionRes = await getActionRules(entityId)
+          const activeActionRules = (actionRes.rules || []).filter(r => r.is_active)
+          setAdminActionRules(activeActionRules)
+          onAdminActionRulesLoaded?.(activeActionRules)
+        } catch (err) {
+          console.warn('[Settings] Failed to fetch action rules:', err)
+        }
       } catch (err) {
         console.warn('[Settings] Failed to fetch rules:', err)
       }
@@ -1345,10 +1362,52 @@ export function SettingsPanel({
           {/* Actions Tab */}
           <TabsContent value="actions" className="flex-1 px-10 py-6 overflow-y-auto">
             <div className="space-y-6">
+
+              {/* Admin Action Rules (read-only) */}
+              {adminActionRules.length > 0 && (
+                <Card className="border-orange-200 bg-orange-50/30">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-orange-700 border-orange-300 bg-orange-50 text-xs">FROM ADMIN</Badge>
+                      <CardTitle className="text-base">Action Rules ({adminActionRules.length})</CardTitle>
+                    </div>
+                    <CardDescription>These rules are configured by your admin and apply automatically. Local rules below take priority.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {adminActionRules.map((rule) => (
+                      <div key={rule.rule_id} className="flex items-center gap-2 p-3 rounded-lg border border-orange-200 bg-white">
+                        <div className="flex-1 flex flex-wrap items-center gap-1.5 text-sm">
+                          <span className="font-medium text-slate-700">{rule.name}:</span>
+                          {rule.criteria.map((c, i) => (
+                            <React.Fragment key={c.id || i}>
+                              <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-xs font-semibold">
+                                {i === 0 ? 'WHERE' : c.conjunction}
+                              </span>
+                              <span className="text-slate-600">
+                                {c.field} {c.operator} <strong>{c.value}</strong>{c.unit ? ` ${c.unit}` : ''}
+                              </span>
+                            </React.Fragment>
+                          ))}
+                          {rule.criteria.length === 0 && (
+                            <span className="text-slate-500 italic text-xs">All items</span>
+                          )}
+                          <span className="bg-orange-100 text-orange-800 px-2 py-0.5 rounded text-xs font-semibold">THEN</span>
+                          <span className="font-semibold text-orange-800">{rule.action}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Local Action Criteria (editable, overrides admin) */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Action Criteria</CardTitle>
-                  <CardDescription>Build simple WHERE…AND… conditions for assigning actions</CardDescription>
+                  <CardTitle>Local Action Criteria</CardTitle>
+                  <CardDescription>
+                    Build WHERE…AND… conditions to assign actions.
+                    {adminActionRules.length > 0 && ' These override admin rules when they match.'}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   {/* Criteria rows */}
@@ -1357,7 +1416,7 @@ export function SettingsPanel({
                       <div key={row.id} className="flex flex-wrap items-center gap-2 p-2 rounded border">
                         {/* Conjunction */}
                         {idx === 0 ? (
-                          <span className="text-sm text-gray-600 font-semibold mr-2">WHERE</span>
+                          <span className="text-sm text-gray-600 font-semibold mr-2 w-16">WHERE</span>
                         ) : (
                           <Select
                             value={row.conjunction}
@@ -1369,7 +1428,7 @@ export function SettingsPanel({
                               }
                             }))}
                           >
-                            <SelectTrigger className="w-20 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="w-16"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="AND">AND</SelectItem>
                               <SelectItem value="OR">OR</SelectItem>
@@ -1385,7 +1444,7 @@ export function SettingsPanel({
                             actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, field: v as any, operator: 'is', value: '' } : r) }
                           }))}
                         >
-                          <SelectTrigger className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="Purpose">Purpose</SelectItem>
                             <SelectItem value="Item ID Type">Item ID Type</SelectItem>
@@ -1406,9 +1465,8 @@ export function SettingsPanel({
                             actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, operator: v as any } : r) }
                           }))}
                         >
-                          <SelectTrigger className="w-24 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
                           <SelectContent>
-                            {/* Operators vary by field */}
                             {(['Purpose','Item ID Type','Source','Vendor','Tag'].includes(row.field) ? (
                               <>
                                 <SelectItem value="is">is</SelectItem>
@@ -1434,7 +1492,7 @@ export function SettingsPanel({
                         {/* Value editor */}
                         {row.field === 'Purpose' && (
                           <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
-                            <SelectTrigger className="w-28 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="Quote">Quote</SelectItem>
                               <SelectItem value="PO">PO</SelectItem>
@@ -1445,7 +1503,7 @@ export function SettingsPanel({
                         )}
                         {row.field === 'Item ID Type' && (
                           <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
-                            <SelectTrigger className="w-24 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="MPN">MPN</SelectItem>
                               <SelectItem value="CPN">CPN</SelectItem>
@@ -1455,7 +1513,7 @@ export function SettingsPanel({
                         )}
                         {row.field === 'Source' && (
                           <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
-                            <SelectTrigger className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               {DEFAULT_PRICE_SOURCES.map(s => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
                             </SelectContent>
@@ -1463,26 +1521,26 @@ export function SettingsPanel({
                         )}
                         {row.field === 'Tag' && (
                           <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
-                            <SelectTrigger className="w-48 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue placeholder="Select tag" /></SelectTrigger>
+                            <SelectTrigger className="w-40"><SelectValue placeholder="Select tag" /></SelectTrigger>
                             <SelectContent>
                               {allTags.map(tag => (<SelectItem key={tag} value={tag}>{tag}</SelectItem>))}
                             </SelectContent>
                           </Select>
                         )}
                         {row.field === 'Date' && (
-                          <Input type="date" className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500" value={row.value} onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))} />
+                          <Input type="date" className="w-40" value={row.value} onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))} />
                         )}
                         {(row.field === 'Price' || row.field === 'Quantity' || row.field === 'Vendor') && (
                           <>
                             <Input
-                              className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"
+                              className="w-36"
                               placeholder={row.field === 'Vendor' ? 'Enter vendor' : '0'}
                               value={row.value}
                               onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))}
                             />
                             {row.field === 'Price' && (
                               <Select value={row.unit || 'USD'} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, unit: v } : r) } }))}>
-                                <SelectTrigger className="w-36 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                                <SelectTrigger className="w-20"><SelectValue /></SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="USD">USD</SelectItem>
                                   <SelectItem value="INR">INR</SelectItem>
@@ -1506,7 +1564,7 @@ export function SettingsPanel({
                     ))}
                   </div>
 
-                  {/* Add Section */}
+                  {/* Add criteria row */}
                   <div className="mt-3">
                     <button
                       type="button"
@@ -1525,8 +1583,27 @@ export function SettingsPanel({
                         },
                       }))}
                     >
-                      + Add Section
+                      + Add Condition
                     </button>
+                  </div>
+
+                  {/* THEN action selector */}
+                  <Separator className="my-4" />
+                  <div className="flex items-center gap-3">
+                    <span className="bg-slate-900 text-white px-3 py-1 rounded text-sm font-semibold">THEN</span>
+                    <span className="text-sm text-slate-600">assign action</span>
+                    <Select
+                      value={local.actions.criteriaAction || 'Quote'}
+                      onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteriaAction: v as any } }))}
+                    >
+                      <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Event">Event</SelectItem>
+                        <SelectItem value="Quote">Quote</SelectItem>
+                        <SelectItem value="PO">PO</SelectItem>
+                        <SelectItem value="Contract">Contract</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                 </CardContent>
               </Card>

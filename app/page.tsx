@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel, LabelList } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
-import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getAssignmentRules, getRuleFieldOptions, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection } from '@/lib/api'
+import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -504,6 +504,9 @@ export default function ProcurementDashboard() {
   const [settingsProfiles, setSettingsProfiles] = useState<Record<string, AppSettings>>({})
   const [currentSettingsKey, setCurrentSettingsKey] = useState<string>('Default')
 
+  // Admin action rules (fetched by SettingsPanel, used by handleAssignActions)
+  const [adminActionRules, setAdminActionRules] = useState<import('@/lib/api').ActionRule[]>([])
+
   // Helper function to refresh pricing data in chunks (avoids timeout)
   const refreshPricingDataInChunks = async (projectId: string, pricingType: 'digikey' | 'mouser' | 'both') => {
     console.log(`[Pricing Refresh] Starting chunked refresh for ${pricingType}...`)
@@ -894,7 +897,7 @@ export default function ProcurementDashboard() {
         return u.name || u.user_id || u
       }).join('; '),
       vendor: '',
-      action: '',
+      action: item.action || '',
       dueDate: '',
       source: '',
       pricePO: 0,
@@ -1344,6 +1347,19 @@ export default function ProcurementDashboard() {
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
+
+  // Eagerly fetch admin action rules when entity ID becomes available
+  useEffect(() => {
+    const entityId = projectData.buyer_entity_id
+    if (!entityId) return
+    getActionRules(entityId)
+      .then(res => {
+        const active = (res.rules || []).filter(r => r.is_active)
+        setAdminActionRules(active)
+        if (active.length > 0) console.log(`[Dashboard] Loaded ${active.length} admin action rule(s)`)
+      })
+      .catch(err => console.warn('[Dashboard] Failed to fetch action rules:', err))
+  }, [projectData.buyer_entity_id])
 
   const currentSettings: AppSettings = useMemo(() => {
     const raw = settingsProfiles[currentSettingsKey] || buildDefaultSettings('Default')
@@ -2711,6 +2727,15 @@ export default function ProcurementDashboard() {
         }
       }
 
+      // Check if action changed
+      let actionChanged = false
+      if (editFormData.action !== undefined && originalItem && editFormData.action !== originalItem.action) {
+        actionChanged = true
+        hasChanges = true
+        updatePayload.action = editFormData.action
+        console.log('[Edit] Action changed from', originalItem.action, 'to', editFormData.action)
+      }
+
       // Check if category/tags changed
       let tagsChanged = false
       let newTags: string[] = []
@@ -2814,6 +2839,10 @@ export default function ProcurementDashboard() {
               .filter((u: any) => updatePayload.assigned_user_ids.includes(u.user_id))
               .map((u: any) => u.name)
               .join(', ')
+          }
+
+          if (actionChanged) {
+            updatedItem.action = editFormData.action
           }
 
           if (tagsChanged && newTags) {
@@ -2973,8 +3002,97 @@ export default function ProcurementDashboard() {
     document.body.click()
   }
 
+  // ── Criteria Evaluation Engine ──
+  // Evaluates a single criterion against an item
+  const evaluateCriterion = (criterion: { field: string; operator: string; value: string; unit?: string }, item: any): boolean => {
+    const { field, operator, value } = criterion
+    switch (field) {
+      case 'Price': {
+        const itemPrice = parseFloat(item.unitPrice) || 0
+        const targetPrice = parseFloat(value) || 0
+        switch (operator) {
+          case '>=': return itemPrice >= targetPrice
+          case '<=': return itemPrice <= targetPrice
+          case '>': return itemPrice > targetPrice
+          case '<': return itemPrice < targetPrice
+          case '=': return itemPrice === targetPrice
+          default: return false
+        }
+      }
+      case 'Quantity': {
+        const itemQty = parseFloat(item.quantity) || 0
+        const targetQty = parseFloat(value) || 0
+        switch (operator) {
+          case '>=': return itemQty >= targetQty
+          case '<=': return itemQty <= targetQty
+          case '>': return itemQty > targetQty
+          case '<': return itemQty < targetQty
+          case '=': return itemQty === targetQty
+          default: return false
+        }
+      }
+      case 'Vendor': {
+        const itemVendor = (item.vendor || '').toLowerCase()
+        const targetVendor = value.toLowerCase()
+        return operator === 'is' ? itemVendor === targetVendor : itemVendor !== targetVendor
+      }
+      case 'Source': {
+        const itemSource = (item.source || '').toLowerCase()
+        const targetSource = value.toLowerCase()
+        return operator === 'is' ? itemSource === targetSource : itemSource !== targetSource
+      }
+      case 'Tag': {
+        const itemTags = item.category && item.category !== 'Uncategorized'
+          ? String(item.category).split(',').map((t: string) => t.trim().toLowerCase())
+          : []
+        const targetTag = value.toLowerCase()
+        const hasTag = itemTags.includes(targetTag)
+        return operator === 'is' ? hasTag : !hasTag
+      }
+      case 'Date': {
+        // Compare against item creation or some date field — use current date as fallback
+        const targetDate = new Date(value).getTime()
+        const now = Date.now()
+        return operator === 'before' ? now < targetDate : now > targetDate
+      }
+      case 'Purpose': {
+        const itemAction = (item.action || '').toLowerCase()
+        const targetPurpose = value.toLowerCase()
+        return operator === 'is' ? itemAction === targetPurpose : itemAction !== targetPurpose
+      }
+      case 'Item ID Type': {
+        // Check if item has MPN/CPN/HSN based on itemId pattern
+        const itemId = item.itemId || ''
+        const hasType = value === 'MPN' ? /^[A-Z0-9\-]+$/i.test(itemId)
+          : value === 'HSN' ? /^\d{4,8}$/.test(itemId)
+          : true // CPN — assume true if neither MPN nor HSN
+        return operator === 'is' ? hasType : !hasType
+      }
+      default:
+        return false
+    }
+  }
+
+  // Evaluate a full criteria set (WHERE + AND/OR chain) against an item
+  const evaluateCriteria = (criteria: { conjunction: string; field: string; operator: string; value: string; unit?: string }[], item: any): boolean => {
+    if (!criteria || criteria.length === 0) return true // No criteria = match all
+
+    let result = evaluateCriterion(criteria[0], item)
+    for (let i = 1; i < criteria.length; i++) {
+      const c = criteria[i]
+      const val = evaluateCriterion(c, item)
+      if (c.conjunction === 'OR') {
+        result = result || val
+      } else {
+        // AND (default)
+        result = result && val
+      }
+    }
+    return result
+  }
+
   // Assign Actions Handler
-  const handleAssignActions = (scope: 'all' | 'unassigned' | 'selected') => {
+  const handleAssignActions = async (scope: 'all' | 'unassigned' | 'selected') => {
     let idsToUpdate: Set<number>
     if (scope === 'unassigned') {
       idsToUpdate = new Set(lineItems.filter((item: any) => !item.action || item.action.trim() === '').map((i: any) => i.id))
@@ -2984,19 +3102,71 @@ export default function ProcurementDashboard() {
       idsToUpdate = new Set(lineItems.map((i: any) => i.id))
     }
 
+    // Get local criteria from settings
+    const localCriteria = currentSettings.actions?.criteria || []
+    const localAction = currentSettings.actions?.criteriaAction || 'Quote'
+    const hasLocalCriteria = localCriteria.length > 0
+
+    // Evaluate rules and collect items that changed
+    const changedItems: { project_item_id: string; action: string }[] = []
+
     const updatedItems = lineItems.map((item: any) => {
       if (!idsToUpdate.has(item.id)) return item
 
-      // If Price is N/A (0 or missing) → Event, else → Quote
-      const hasPrice = item.unitPrice && item.unitPrice > 0
-      return { ...item, action: hasPrice ? 'Quote' : 'Event' }
+      let newAction: string | null = null
+
+      // Priority 1: Local settings criteria (user's own overrides)
+      if (hasLocalCriteria && evaluateCriteria(localCriteria, item)) {
+        newAction = localAction
+      }
+
+      // Priority 2: Admin action rules (from backend)
+      if (!newAction) {
+        for (const rule of adminActionRules) {
+          if (evaluateCriteria(rule.criteria, item)) {
+            newAction = rule.action
+            break
+          }
+        }
+      }
+
+      if (!newAction) return item // No rule matched
+
+      if (newAction !== item.action) {
+        changedItems.push({ project_item_id: item.project_item_id, action: newAction })
+      }
+      return { ...item, action: newAction }
     })
 
     setLineItems(updatedItems)
 
+    // Persist to backend
+    const projectId = new URLSearchParams(window.location.search).get('project_id') || ''
+    if (projectId && changedItems.length > 0) {
+      const saveActions = async () => {
+        let failed = 0
+        for (const { project_item_id, action } of changedItems) {
+          try {
+            await updateProjectItem(projectId, project_item_id, { action })
+          } catch (err) {
+            failed++
+            console.warn(`[Actions] Failed to save action for ${project_item_id}:`, err)
+          }
+        }
+        if (failed > 0) {
+          toast({ title: "Warning", description: `${failed} item(s) failed to save to server.`, variant: "destructive" })
+        }
+      }
+      saveActions()
+    }
+
+    const skipped = idsToUpdate.size - changedItems.length
+
     toast({
       title: "Actions Assigned",
-      description: `Assigned actions to ${idsToUpdate.size} item(s)`,
+      description: changedItems.length > 0
+        ? `Assigned actions to ${changedItems.length} item(s).${skipped > 0 ? ` ${skipped} item(s) had no matching rule.` : ''}`
+        : `No matching rules found for ${idsToUpdate.size} item(s). Configure rules in Settings or ask admin.`,
     })
 
     document.body.click()
@@ -6364,6 +6534,7 @@ export default function ProcurementDashboard() {
                   setSettingsOpen(false)
                 }}
                 onCancel={() => setSettingsOpen(false)}
+                onAdminActionRulesLoaded={(rules) => setAdminActionRules(rules)}
               />
             </div>
           </div>

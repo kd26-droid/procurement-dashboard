@@ -259,6 +259,7 @@ export interface ProjectItem {
   modified_datetime: string;
   created_by_user_id: string | null;
   modified_by_user_id: string | null;
+  action: string;
   project_id: string;
   enterprise_item_id: string | null;
   bom_info: {
@@ -541,6 +542,7 @@ export interface UpdateItemRequest {
   rate?: number;
   quantity?: number;
   notes?: string;
+  action?: string;
   custom_fields?: Record<string, any>;
   assigned_user_ids?: string[];
 }
@@ -1102,6 +1104,69 @@ export async function getRuleFieldOptions(
     `/organization/entity/${entityId}/assignment-rules/field-options/`,
     { skipSuccessCheck: true }
   );
+}
+
+// ============================================================================
+// Action Rules Engine — Types & API Functions
+// ============================================================================
+
+export type ActionRuleActionType = 'Event' | 'Quote' | 'PO' | 'Contract'
+
+export type ActionRuleCriteriaField =
+  | 'Price'
+  | 'Quantity'
+  | 'Vendor'
+  | 'Source'
+  | 'Tag'
+  | 'Date'
+  | 'Purpose'
+  | 'Item ID Type'
+
+export type ActionRuleCriteriaOperator =
+  | 'is'
+  | 'is_not'
+  | 'before'
+  | 'after'
+  | '='
+  | '>'
+  | '<'
+  | '>='
+  | '<='
+
+export interface ActionRuleCriterion {
+  id: string
+  conjunction: 'WHERE' | 'AND' | 'OR'
+  field: ActionRuleCriteriaField
+  operator: ActionRuleCriteriaOperator
+  value: string
+  unit?: string
+}
+
+export interface ActionRule {
+  rule_id: string
+  name: string
+  template_filter: string[]
+  criteria: ActionRuleCriterion[]
+  action: ActionRuleActionType
+  is_active: boolean
+  created_by?: string | null
+  created_at?: string | null
+}
+
+export interface ActionRuleListResponse {
+  rules: ActionRule[]
+}
+
+/**
+ * Get all action rules for an entity
+ */
+export async function getActionRules(
+  entityId: string
+): Promise<ActionRuleListResponse> {
+  return apiRequest<ActionRuleListResponse>(
+    `/organization/entity/${entityId}/action-rules/`,
+    { skipSuccessCheck: true }
+  )
 }
 
 /**
