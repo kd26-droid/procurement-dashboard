@@ -2393,7 +2393,7 @@ export default function ProcurementDashboard() {
           for (const rule of applicableRules) {
             if (!evaluateRuleConditions(rule.conditions, item, projectData, projectCustomSections)) continue
 
-            const outputs = rule.outputs || {} as any
+            const outputs: any = rule.outputs || {}
             const tagMappings: TagUserMapping[] = outputs.tag_mappings || []
 
             // Project-level outputs (rfq_assignee / quote_assignee — top-level, no tag needed)
