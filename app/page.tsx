@@ -1810,6 +1810,7 @@ export default function ProcurementDashboard() {
       'BOM Name',
       'BOM Slab Qty',
       'Item Qty',
+      'Per Unit Qty',
       'Unit',
       'Event Code',
       'Event Qty',
@@ -1899,6 +1900,7 @@ export default function ProcurementDashboard() {
         escapeCSV(bomName),
         bomSlabQty !== '' ? String(bomSlabQty) : '',
         escapeCSV(item.quantity),
+        bomSlabQty && Number(bomSlabQty) > 0 ? String(Math.round((item.quantity / Number(bomSlabQty)) * 10000) / 10000) : '',
         escapeCSV(item.unit),
         escapeCSV(eventCode),
         eventQty !== '' && eventQty !== null ? String(eventQty) : '',
@@ -2394,26 +2396,22 @@ export default function ProcurementDashboard() {
             const outputs = rule.outputs || {} as any
             const tagMappings: TagUserMapping[] = outputs.tag_mappings || []
 
-            // Flat outputs
-            const flatRoles: Array<{ userIds: string[]; role: string }> = [
-              { userIds: (outputs as any).rfq_assignee_user_ids || [], role: 'RFQ_ASSIGNEE' },
-              { userIds: (outputs as any).quote_assignee_user_ids || [], role: 'QUOTE_ASSIGNEE' },
-              { userIds: (outputs as any).rfq_item_responsible_user_ids || [], role: 'RFQ_RESPONSIBLE' },
-              { userIds: (outputs as any).quote_item_responsible_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
+            // Project-level outputs (rfq_assignee / quote_assignee — top-level, no tag needed)
+            const projectRoles: Array<{ userIds: string[]; role: string }> = [
+              { userIds: outputs.rfq_assignee_user_ids || [], role: 'RFQ_ASSIGNEE' },
+              { userIds: outputs.quote_assignee_user_ids || [], role: 'QUOTE_ASSIGNEE' },
             ]
-            for (const { userIds, role } of flatRoles) {
+            for (const { userIds, role } of projectRoles) {
               if (userIds.length === 0) continue
               if (localCovered.has(`${itemProjectItemId}::${role}`)) continue // local takes priority
               assignments.push({ project_item_id: itemProjectItemId, user_ids: userIds, action: 'replace', role })
               itemHasAssignment = true
             }
 
-            // Tag mappings
+            // Item-level outputs (rfq_item_responsible / quote_item_responsible — per tag)
             for (const tm of tagMappings) {
               if (!uniqueItemTags.includes(tm.tag.toLowerCase())) continue
               const tagRoles: Array<{ userIds: string[]; role: string }> = [
-                { userIds: tm.rfq_assignee_user_ids || [], role: 'RFQ_ASSIGNEE' },
-                { userIds: tm.quote_assignee_user_ids || [], role: 'QUOTE_ASSIGNEE' },
                 { userIds: tm.rfq_item_responsible_user_ids || [], role: 'RFQ_RESPONSIBLE' },
                 { userIds: tm.quote_item_responsible_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
               ]
