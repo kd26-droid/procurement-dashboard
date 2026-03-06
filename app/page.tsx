@@ -2464,7 +2464,7 @@ export default function ProcurementDashboard() {
         project_item_id: m.project_item_id,
         user_ids: Array.from(m.user_ids),
         action: 'replace' as const,
-        role: m.role,
+        role: m.role as 'RFQ_ASSIGNEE' | 'RFQ_RESPONSIBLE' | 'QUOTE_ASSIGNEE' | 'QUOTE_RESPONSIBLE' | 'ASSIGNED',
       }))
 
       // ── Phase 3: Assigning ──
