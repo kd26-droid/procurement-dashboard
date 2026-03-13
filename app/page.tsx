@@ -429,7 +429,7 @@ export default function ProcurementDashboard() {
     "priceMouser",
     "priceEXIM",
   ])
-  const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer"]) // Hide customer column by default
+  const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer", "pricePO", "priceContract", "priceQuote", "priceEXIM"]) // Hide customer + hardcoded module columns by default
   const [savedViews, setSavedViews] = useState<{ [key: string]: { order: string[]; hidden: string[] } }>({})
   const [currentView, setCurrentView] = useState("default")
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null)
@@ -6186,37 +6186,31 @@ export default function ProcurementDashboard() {
             {/* Module Cards */}
             {analyticsData && (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* PO */}
-                <div className="bg-white p-4 rounded-lg border">
+                {/* PO, Contract, EXIM, Quote modules commented out — hardcoded data */}
+                {/* <div className="bg-white p-4 rounded-lg border">
                   <h4 className="text-sm font-medium text-gray-800 mb-2">PO</h4>
                   <div className="h-72">
                     {renderChart(analyticsData.poData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
                   </div>
                 </div>
-
-                {/* Contract */}
                 <div className="bg-white p-4 rounded-lg border">
                   <h4 className="text-sm font-medium text-gray-800 mb-2">Contract</h4>
                   <div className="h-72">
                     {renderChart(analyticsData.contractData, 'composed', 'price', 'quantity', '#f472b6', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
                   </div>
                 </div>
-
-                {/* EXIM */}
                 <div className="bg-white p-4 rounded-lg border">
                   <h4 className="text-sm font-medium text-gray-800 mb-2">EXIM</h4>
                   <div className="h-72">
                     {renderChart(analyticsData.eximData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
                   </div>
                 </div>
-
-                {/* Quote */}
                 <div className="bg-white p-4 rounded-lg border">
                   <h4 className="text-sm font-medium text-gray-800 mb-2">Quote</h4>
                   <div className="h-72">
                     {renderChart(analyticsData.quoteData, 'composed', 'price', 'quantity', '#8b5cf6', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
                   </div>
-                </div>
+                </div> */}
 
                 {/* Online Pricing (full width) */}
                 <div className="bg-white p-4 rounded-lg border lg:col-span-2">
