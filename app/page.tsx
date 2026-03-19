@@ -5192,12 +5192,8 @@ export default function ProcurementDashboard() {
                           }
                         }
 
-                        // Include all price sources for cheapest calculation
+                        // Only use real data sources
                         const prices = [
-                          { source: 'PO', value: (item as any).pricePO },
-                          { source: 'Contract', value: (item as any).priceContract },
-                          { source: 'Quote', value: (item as any).priceQuote },
-                          { source: 'EXIM', value: (item as any).priceEXIM },
                           { source: 'Digi-Key', value: digikeyPrice },
                           { source: 'Mouser', value: mouserPrice },
                         ].filter((p): p is { source: string; value: number } => p.value !== undefined && !isNaN(p.value) && p.value > 0)
