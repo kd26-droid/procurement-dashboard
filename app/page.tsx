@@ -303,7 +303,7 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
   const validPrices = priceOptions.filter(p => p.price > 0);
   const cheapestSource = validPrices.length > 0
     ? validPrices.reduce((min, p) => p.price < min.price ? p : min).source
-    : '';
+    : 'Project';
 
   const vendor = item.vendor || ''
 
@@ -2530,7 +2530,7 @@ export default function ProcurementDashboard() {
         : null
       const unitPrice = cheapest ? cheapest.price : 0
       const totalPrice = Math.round(unitPrice * item.quantity * 100) / 100
-      const cheapestSource = cheapest ? cheapest.source : ''
+      const cheapestSource = cheapest ? cheapest.source : 'Project'
 
       const vendor = item.vendor || ''
 
