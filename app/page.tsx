@@ -283,12 +283,7 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
   priceEXIM = Math.round(mockBasePrice * eximVariation * variation * 100) / 100;
 
   // Determine cheapest source from all available prices
-  const priceOptions: { source: string; price: number }[] = [
-    { source: 'PO', price: pricePO },
-    { source: 'Contract', price: priceContract },
-    { source: 'Quote', price: priceQuote },
-    { source: 'EXIM', price: priceEXIM },
-  ];
+  const priceOptions: { source: string; price: number }[] = [];
 
   // Add Digikey/Mouser if available
   if (digikeyPricing?.status === 'available') {
@@ -2526,13 +2521,9 @@ export default function ProcurementDashboard() {
       const priceDigikey = Math.round(mockPriceForSource(item, 'Online - Digikey') * 100) / 100
       const priceEXIM = Math.round(mockPriceForSource(item, 'EXIM') * 100) / 100
 
-      // Find cheapest for unitPrice, totalPrice, and source
+      // Find cheapest for unitPrice, totalPrice, and source (only real data sources)
       const priceSources = [
-        { source: 'PO', price: pricePO },
-        { source: 'Contract', price: priceContract },
-        { source: 'Quote', price: priceQuote },
         { source: 'Digi-Key', price: priceDigikey },
-        { source: 'EXIM', price: priceEXIM },
       ].filter(p => p.price > 0)
       const cheapest = priceSources.length > 0
         ? priceSources.reduce((min, p) => p.price < min.price ? p : min)
