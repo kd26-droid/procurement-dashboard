@@ -310,16 +310,7 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
     ? validPrices.reduce((min, p) => p.price < min.price ? p : min).source
     : '';
 
-  // Assign vendor name when source is PO or Contract
-  const PO_VENDORS = ['Avnet', 'Jabil', 'Flex Ltd', 'Celestica', 'Sanmina']
-  const CONTRACT_VENDORS = ['Arrow Electronics', 'Plexus Corp', 'Venture Corp', 'KeyTronic', 'Creation Technologies']
-  const itemId = item.id || 0
-  let vendor = item.vendor || ''
-  if (cheapestSource === 'PO') {
-    vendor = PO_VENDORS[itemId % PO_VENDORS.length]
-  } else if (cheapestSource === 'Contract') {
-    vendor = CONTRACT_VENDORS[itemId % CONTRACT_VENDORS.length]
-  }
+  const vendor = item.vendor || ''
 
   return {
     ...item,
@@ -2550,15 +2541,7 @@ export default function ProcurementDashboard() {
       const totalPrice = Math.round(unitPrice * item.quantity * 100) / 100
       const cheapestSource = cheapest ? cheapest.source : ''
 
-      // Assign vendor name when source is PO or Contract
-      const PO_VENDORS = ['Tata Steel', 'Bharat Forge', 'Larsen & Toubro', 'Mahindra CIE', 'Jindal Steel']
-      const CONTRACT_VENDORS = ['Reliance Industries', 'Adani Enterprises', 'Godrej & Boyce', 'Thermax Ltd', 'Kirloskar Brothers']
-      let vendor = item.vendor || ''
-      if (cheapestSource === 'PO') {
-        vendor = PO_VENDORS[item.id % PO_VENDORS.length]
-      } else if (cheapestSource === 'Contract') {
-        vendor = CONTRACT_VENDORS[item.id % CONTRACT_VENDORS.length]
-      }
+      const vendor = item.vendor || ''
 
       return { ...item, pricePO, priceContract, priceQuote, priceDigikey, priceEXIM, unitPrice, totalPrice, source: cheapestSource, vendor }
     })
