@@ -5205,7 +5205,7 @@ export default function ProcurementDashboard() {
                         return (
                           <td key={columnKey} className="p-2 text-center" style={stickyStyle}>
                             <span className="text-xs font-medium text-gray-900">
-                              {cheapest ? cheapest.source : 'Project'}
+                              Project
                             </span>
                           </td>
                         )
