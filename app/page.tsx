@@ -1739,10 +1739,6 @@ export default function ProcurementDashboard() {
       'Unit Price',
       'Total Price',
       'Source (Cheapest)',
-      'PO Price',
-      'Contract Price',
-      'Quote Price',
-      'EXIM Price',
     )
 
     // Only add Digikey columns if API keys are configured
@@ -1830,10 +1826,6 @@ export default function ProcurementDashboard() {
         formatPrice(item.unitPrice),
         formatPrice(item.totalPrice),
         escapeCSV(item.source),
-        formatPrice(item.pricePO),
-        formatPrice(item.priceContract),
-        formatPrice(item.priceQuote),
-        formatPrice(item.priceEXIM),
       )
 
       // Only add Digikey values if enabled
