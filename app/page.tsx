@@ -2522,7 +2522,7 @@ export default function ProcurementDashboard() {
         : null
       const unitPrice = cheapest ? cheapest.price : 0
       const totalPrice = Math.round(unitPrice * item.quantity * 100) / 100
-      const cheapestSource = cheapest ? cheapest.source : 'Project'
+      const cheapestSource = 'Project'
 
       const vendor = item.vendor || ''
 
