@@ -391,14 +391,10 @@ export default function ProcurementDashboard() {
     "vendor",
     "unitPrice",
     "source",
-    "pricePO",
-    "priceContract",
-    "priceQuote",
     "priceDigikey",
     "priceMouser",
-    "priceEXIM",
   ])
-  const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer", "pricePO", "priceContract", "priceQuote", "priceEXIM"]) // Hide customer + hardcoded module columns by default
+  const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer"])
   const [savedViews, setSavedViews] = useState<{ [key: string]: { order: string[]; hidden: string[] } }>({})
   const [currentView, setCurrentView] = useState("default")
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null)
