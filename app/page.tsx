@@ -1758,14 +1758,25 @@ export default function ProcurementDashboard() {
       return str
     }
 
-    // Helper to format price
-    const formatPrice = (price: any): string => {
+    // Helper to get currency symbol from currency code
+    const getCurrencySymbolForExport = (code: string): string => {
+      const symbols: Record<string, string> = {
+        'INR': '₹', 'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥',
+        'CNY': '¥', 'AUD': 'A$', 'CAD': 'C$', 'SGD': 'S$', 'AED': 'AED ',
+        'SAR': 'SAR ', 'MYR': 'RM', 'THB': '฿', 'KRW': '₩',
+      }
+      return symbols[code] || `${code} `
+    }
+
+    // Helper to format price with currency symbol
+    const formatPrice = (price: any, currencySymbol: string = ''): string => {
       if (price === null || price === undefined || price === 0) return ''
-      return typeof price === 'number' ? price.toFixed(2) : String(price)
+      const formatted = typeof price === 'number' ? price.toFixed(5) : String(price)
+      return currencySymbol ? `${currencySymbol}${formatted}` : formatted
     }
 
     // Helper to get distributor price details
-    const getDistributorPrice = (pricing: any): { unitPrice: string; quantityPrice: string; stock: string; status: string } => {
+    const getDistributorPrice = (pricing: any, currencySymbol: string = ''): { unitPrice: string; quantityPrice: string; stock: string; status: string } => {
       if (!pricing) return { unitPrice: '', quantityPrice: '', stock: '', status: 'N/A' }
 
       if (pricing.status === 'not_configured') {
@@ -1781,9 +1792,12 @@ export default function ProcurementDashboard() {
         return { unitPrice: '', quantityPrice: '', stock: '', status: pricing.status_message || pricing.status || 'N/A' }
       }
 
+      // Use converted currency if available, otherwise use the pricing's original currency
+      const priceCurrencySymbol = pricing.currency ? getCurrencySymbolForExport(pricing.currency) : currencySymbol
+
       return {
-        unitPrice: formatPrice(pricing.unit_price),
-        quantityPrice: formatPrice(pricing.quantity_price),
+        unitPrice: formatPrice(pricing.unit_price, priceCurrencySymbol),
+        quantityPrice: formatPrice(pricing.quantity_price, priceCurrencySymbol),
         stock: pricing.stock !== null && pricing.stock !== undefined ? String(pricing.stock) : '',
         status: 'Available'
       }
@@ -1865,8 +1879,9 @@ export default function ProcurementDashboard() {
     const rows: string[][] = []
 
     filteredAndSortedItems.forEach((item: any) => {
-      const digikeyDetails = getDistributorPrice(item.digikey_pricing)
-      const mouserDetails = getDistributorPrice(item.mouser_pricing)
+      const itemCurrencySymbol = item.currency?.symbol || getCurrencySymbolForExport(item.currency?.code || '')
+      const digikeyDetails = getDistributorPrice(item.digikey_pricing, itemCurrencySymbol)
+      const mouserDetails = getDistributorPrice(item.mouser_pricing, itemCurrencySymbol)
 
       // Parse tags for this item
       const itemTags = item.category && item.category !== 'Uncategorized'
@@ -1927,13 +1942,13 @@ export default function ProcurementDashboard() {
         escapeCSV(item.dueDate),
         escapeCSV(item.vendor),
         escapeCSV(item.currency?.code || ''),
-        formatPrice(item.unitPrice),
-        formatPrice(item.totalPrice),
+        formatPrice(item.unitPrice, itemCurrencySymbol),
+        formatPrice(item.totalPrice, itemCurrencySymbol),
         escapeCSV(item.source),
-        formatPrice(item.pricePO),
-        formatPrice(item.priceContract),
-        formatPrice(item.priceQuote),
-        formatPrice(item.priceEXIM),
+        formatPrice(item.pricePO, itemCurrencySymbol),
+        formatPrice(item.priceContract, itemCurrencySymbol),
+        formatPrice(item.priceQuote, itemCurrencySymbol),
+        formatPrice(item.priceEXIM, itemCurrencySymbol),
       )
 
       // Only add Digikey values if enabled
@@ -5747,9 +5762,9 @@ export default function ProcurementDashboard() {
                                     ? "text-green-700 bg-green-50 px-2 py-1 rounded"
                                     : "text-gray-900"
                               }`}
-                              title={hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(2)}` : "N/A"}
+                              title={hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(5)}` : "N/A"}
                             >
-                              {hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(2)}` : "-"}
+                              {hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(5)}` : "-"}
                             </span>
                           </td>
                         )
@@ -5820,9 +5835,9 @@ export default function ProcurementDashboard() {
                           <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
                               className={`text-xs font-semibold ${hasPrice ? "text-gray-900" : "text-red-700"}`}
-                              title={hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(2)}` : "N/A"}
+                              title={hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(5)}` : "N/A"}
                             >
-                              {hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(2)}` : "N/A"}
+                              {hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(5)}` : "N/A"}
                             </span>
                           </td>
                         )
@@ -5834,9 +5849,9 @@ export default function ProcurementDashboard() {
                           <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
                               className={`text-xs font-medium ${hasPrice ? "text-gray-900" : "text-red-700"}`}
-                              title={hasPrice ? `$${item.totalPrice.toFixed(2)}` : "N/A"}
+                              title={hasPrice ? `${(item as any).currency?.symbol || '₹'}${item.totalPrice.toFixed(5)}` : "N/A"}
                             >
-                              {hasPrice ? `$${item.totalPrice.toFixed(2)}` : "N/A"}
+                              {hasPrice ? `${(item as any).currency?.symbol || '₹'}${item.totalPrice.toFixed(5)}` : "N/A"}
                             </span>
                           </td>
                         )
