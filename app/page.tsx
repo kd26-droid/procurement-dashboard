@@ -282,13 +282,8 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
   priceQuote = Math.round(mockBasePrice * quoteVariation * variation * 100) / 100;
   priceEXIM = Math.round(mockBasePrice * eximVariation * variation * 100) / 100;
 
-  // Determine cheapest source from all available prices
-  const priceOptions: { source: string; price: number }[] = [
-    { source: 'PO', price: pricePO },
-    { source: 'Contract', price: priceContract },
-    { source: 'Quote', price: priceQuote },
-    { source: 'EXIM', price: priceEXIM },
-  ];
+  // Determine cheapest source — only real distributor data (Digikey/Mouser)
+  const priceOptions: { source: string; price: number }[] = [];
 
   // Add Digikey/Mouser if available
   if (digikeyPricing?.status === 'available') {
@@ -304,22 +299,13 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
     }
   }
 
-  // Find cheapest source
+  // Find cheapest source — always Project (no hardcoded sources)
   const validPrices = priceOptions.filter(p => p.price > 0);
   const cheapestSource = validPrices.length > 0
     ? validPrices.reduce((min, p) => p.price < min.price ? p : min).source
-    : '';
+    : 'Project';
 
-  // Assign vendor name when source is PO or Contract
-  const PO_VENDORS = ['Avnet', 'Jabil', 'Flex Ltd', 'Celestica', 'Sanmina']
-  const CONTRACT_VENDORS = ['Arrow Electronics', 'Plexus Corp', 'Venture Corp', 'KeyTronic', 'Creation Technologies']
-  const itemId = item.id || 0
-  let vendor = item.vendor || ''
-  if (cheapestSource === 'PO') {
-    vendor = PO_VENDORS[itemId % PO_VENDORS.length]
-  } else if (cheapestSource === 'Contract') {
-    vendor = CONTRACT_VENDORS[itemId % CONTRACT_VENDORS.length]
-  }
+  const vendor = item.vendor || ''
 
   return {
     ...item,
@@ -422,14 +408,10 @@ export default function ProcurementDashboard() {
     "vendor",
     "unitPrice",
     "source",
-    "pricePO",
-    "priceContract",
-    "priceQuote",
     "priceDigikey",
     "priceMouser",
-    "priceEXIM",
   ])
-  const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer", "pricePO", "priceContract", "priceQuote", "priceEXIM"]) // Hide customer + hardcoded module columns by default
+  const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer"])
   const [savedViews, setSavedViews] = useState<{ [key: string]: { order: string[]; hidden: string[] } }>({})
   const [currentView, setCurrentView] = useState("default")
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null)
@@ -1850,10 +1832,6 @@ export default function ProcurementDashboard() {
       'Unit Price',
       'Total Price',
       'Source (Cheapest)',
-      'PO Price',
-      'Contract Price',
-      'Quote Price',
-      'EXIM Price',
     )
 
     // Only add Digikey columns if API keys are configured
@@ -1945,10 +1923,6 @@ export default function ProcurementDashboard() {
         formatPrice(item.unitPrice, itemCurrencySymbol),
         formatPrice(item.totalPrice, itemCurrencySymbol),
         escapeCSV(item.source),
-        formatPrice(item.pricePO, itemCurrencySymbol),
-        formatPrice(item.priceContract, itemCurrencySymbol),
-        formatPrice(item.priceQuote, itemCurrencySymbol),
-        formatPrice(item.priceEXIM, itemCurrencySymbol),
       )
 
       // Only add Digikey values if enabled
@@ -2996,17 +2970,8 @@ export default function ProcurementDashboard() {
         : null
       const unitPrice = cheapest ? cheapest.price : 0
       const totalPrice = Math.round(unitPrice * item.quantity * 100) / 100
-      const cheapestSource = cheapest ? cheapest.source : ''
-
-      // Assign vendor name when source is PO or Contract
-      const PO_VENDORS = ['Tata Steel', 'Bharat Forge', 'Larsen & Toubro', 'Mahindra CIE', 'Jindal Steel']
-      const CONTRACT_VENDORS = ['Reliance Industries', 'Adani Enterprises', 'Godrej & Boyce', 'Thermax Ltd', 'Kirloskar Brothers']
-      let vendor = item.vendor || ''
-      if (cheapestSource === 'PO') {
-        vendor = PO_VENDORS[item.id % PO_VENDORS.length]
-      } else if (cheapestSource === 'Contract') {
-        vendor = CONTRACT_VENDORS[item.id % CONTRACT_VENDORS.length]
-      }
+      const cheapestSource = 'Project'
+      const vendor = item.vendor || ''
 
       return { ...item, pricePO, priceContract, priceQuote, priceDigikey, priceEXIM, unitPrice, totalPrice, source: cheapestSource, vendor }
     })
@@ -5771,58 +5736,11 @@ export default function ProcurementDashboard() {
                       }
 
                       if (columnKey === "source") {
-                        // Find cheapest price source (including Digikey and Mouser pricing with quantity-based prices)
-                        // Use quantity_price if available, otherwise fall back to unit_price
-                        // NEW: Only use pricing if status is 'available'
-                        const digikeyPricingForSource = (item as any).digikey_pricing
-                        const digikeyBasePrice = digikeyPricingForSource?.status === 'available'
-                          ? (digikeyPricingForSource?.quantity_price ?? digikeyPricingForSource?.unit_price)
-                          : undefined
-                        const digikeyPrice = digikeyBasePrice ?
-                          (typeof digikeyBasePrice === 'number' ? digikeyBasePrice : parseFloat(digikeyBasePrice)) :
-                          undefined
-
-                        // Convert Mouser USD price to item's currency for comparison (use quantity_price if available)
-                        // NEW: Only use pricing if status is 'available'
-                        let mouserPrice = undefined
-                        const mouserPricingForSource = (item as any).mouser_pricing
-                        const mouserBasePrice = mouserPricingForSource?.status === 'available'
-                          ? (mouserPricingForSource?.quantity_price ?? mouserPricingForSource?.unit_price)
-                          : undefined
-                        if (mouserBasePrice) {
-                          const mouserUsdPrice = typeof mouserBasePrice === 'number' ? mouserBasePrice : parseFloat(mouserBasePrice)
-
-                          // Get target currency from ITEM (not Digikey)
-                          const itemCurrency = (item as any).currency
-                          const targetCurrency = itemCurrency?.code || 'USD'
-
-                          if (targetCurrency === 'USD') {
-                            mouserPrice = mouserUsdPrice
-                          } else {
-                            const exchangeRateKey = `USD_TO_${targetCurrency}`
-                            const exchangeRate = exchangeRates[exchangeRateKey]
-                            mouserPrice = exchangeRate ? mouserUsdPrice * exchangeRate : mouserUsdPrice
-                          }
-                        }
-
-                        // Include all price sources for cheapest calculation
-                        const prices = [
-                          { source: 'PO', value: (item as any).pricePO },
-                          { source: 'Contract', value: (item as any).priceContract },
-                          { source: 'Quote', value: (item as any).priceQuote },
-                          { source: 'EXIM', value: (item as any).priceEXIM },
-                          { source: 'Digi-Key', value: digikeyPrice },
-                          { source: 'Mouser', value: mouserPrice },
-                        ].filter((p): p is { source: string; value: number } => p.value !== undefined && !isNaN(p.value) && p.value > 0)
-
-                        const cheapest = prices.length > 0
-                          ? prices.reduce((min: { source: string; value: number }, p: { source: string; value: number }) => p.value < min.value ? p : min)
-                          : null
-
+                        // Source column is always "Project" — no hardcoded distributor sources
                         return (
                           <td key={columnKey} className="p-2 text-center" style={stickyStyle}>
                             <span className="text-xs font-medium text-gray-900">
-                              {cheapest ? cheapest.source : 'Project'}
+                              Project
                             </span>
                           </td>
                         )
