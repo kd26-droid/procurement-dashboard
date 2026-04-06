@@ -29,7 +29,7 @@ import {
   Link2,
   Building2,
   Globe,
-  Filter
+  Filter,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -56,6 +56,8 @@ export type ItemIdType = 'HSN' | 'MPN' | 'CPN'
 export type UsersSettings = {
   rfqAssigneeMap: Record<string, string[]>
   quoteAssigneeMap: Record<string, string[]>
+  rfqResponsibleMap: Record<string, string[]>
+  quoteResponsibleMap: Record<string, string[]>
 }
 
 export type PricesSettings = {
@@ -70,6 +72,7 @@ export type ActionsSettings = {
   sources: PriceSource[]
   maxAgeDays: number
   criteria?: ActionCriterion[]
+  criteriaAction?: 'Event' | 'Quote' | 'PO' | 'Contract'
 }
 
 export type AppSettings = {
@@ -101,7 +104,7 @@ const DEFAULT_PRICE_SOURCES: PriceSource[] = [
 // --- HELPER FUNCTIONS ---
 export const buildDefaultSettings = (name = 'Default'): AppSettings => ({
   name,
-  users: { rfqAssigneeMap: {}, quoteAssigneeMap: {} },
+  users: { rfqAssigneeMap: {}, quoteAssigneeMap: {}, rfqResponsibleMap: {}, quoteResponsibleMap: {} },
   prices: {
     mappingItemId: {
       'Direct - Materials': 'Item ID',
@@ -121,6 +124,7 @@ export const buildDefaultSettings = (name = 'Default'): AppSettings => ({
     sources: ['PO', 'Contract', 'Quote'],
     maxAgeDays: 365,
     criteria: [],
+    criteriaAction: 'Quote',
   },
 })
 
@@ -863,6 +867,7 @@ export function SettingsDialog({ open, onOpenChange, allTags, allCustomers, curr
 type RoleUser = { user_id: string; name: string; email: string }
 
 export function SettingsPanel({
+  entityId,
   allTags,
   allCustomers,
   availableUsers = [],
@@ -872,7 +877,9 @@ export function SettingsPanel({
   onSave,
   onCancel,
   initialTab = 'users',
+  onAdminActionRulesLoaded,
 }: {
+  entityId?: string
   allTags: string[]
   allCustomers: string[]
   availableUsers?: RoleUser[]
@@ -882,6 +889,7 @@ export function SettingsPanel({
   onSave: (s: AppSettings) => void
   onCancel: () => void
   initialTab?: 'users' | 'prices' | 'actions'
+  onAdminActionRulesLoaded?: (rules: import('@/lib/api').ActionRule[]) => void
 }) {
   const [local, setLocal] = useState<AppSettings>(current)
   const [newItemId, setNewItemId] = useState('')
@@ -889,6 +897,71 @@ export function SettingsPanel({
   const [customerSearch, setCustomerSearch] = useState('')
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [selectedCustomers, setSelectedCustomers] = useState<string[]>([])
+
+  // Rules from backend — shown as read-only mappings
+  const [ruleMappings, setRuleMappings] = useState<{
+    rfqAssigneeMap: Record<string, string[]>
+    quoteAssigneeMap: Record<string, string[]>
+    rfqResponsibleMap: Record<string, string[]>
+    quoteResponsibleMap: Record<string, string[]>
+  }>({ rfqAssigneeMap: {}, quoteAssigneeMap: {}, rfqResponsibleMap: {}, quoteResponsibleMap: {} })
+
+  // Admin action rules from backend
+  const [adminActionRules, setAdminActionRules] = useState<import('@/lib/api').ActionRule[]>([])
+
+  useEffect(() => {
+    if (!entityId) return
+    const fetchRules = async () => {
+      try {
+        const { getAssignmentRules, getActionRules } = await import('@/lib/api')
+
+        // Fetch assignment rules
+        const res = await getAssignmentRules(entityId)
+        const rules = res.rules || []
+        const maps = { rfqAssigneeMap: {} as Record<string, string[]>, quoteAssigneeMap: {} as Record<string, string[]>, rfqResponsibleMap: {} as Record<string, string[]>, quoteResponsibleMap: {} as Record<string, string[]> }
+        for (const rule of rules) {
+          if (!rule.is_active) continue
+          const outputs = rule.outputs || {} as any
+          const flatKeys = [
+            { src: 'rfq_assignee_user_ids', dest: 'rfqAssigneeMap' as const },
+            { src: 'quote_assignee_user_ids', dest: 'quoteAssigneeMap' as const },
+            { src: 'rfq_item_responsible_user_ids', dest: 'rfqResponsibleMap' as const },
+            { src: 'quote_item_responsible_user_ids', dest: 'quoteResponsibleMap' as const },
+          ]
+          for (const { src, dest } of flatKeys) {
+            const ids = (outputs as any)[src] || []
+            if (ids.length > 0) {
+              const label = `Rule: ${rule.name}`
+              maps[dest][label] = [...(maps[dest][label] || []), ...ids]
+            }
+          }
+          const tagMappings = outputs.tag_mappings || []
+          for (const tm of tagMappings) {
+            const tag = tm.tag
+            if (tm.rfq_assignee_user_ids?.length) maps.rfqAssigneeMap[tag] = [...(maps.rfqAssigneeMap[tag] || []), ...tm.rfq_assignee_user_ids]
+            if (tm.quote_assignee_user_ids?.length) maps.quoteAssigneeMap[tag] = [...(maps.quoteAssigneeMap[tag] || []), ...tm.quote_assignee_user_ids]
+            if (tm.rfq_item_responsible_user_ids?.length) maps.rfqResponsibleMap[tag] = [...(maps.rfqResponsibleMap[tag] || []), ...tm.rfq_item_responsible_user_ids]
+            if (tm.quote_item_responsible_user_ids?.length) maps.quoteResponsibleMap[tag] = [...(maps.quoteResponsibleMap[tag] || []), ...tm.quote_item_responsible_user_ids]
+          }
+        }
+        setRuleMappings(maps)
+
+        // Fetch action rules
+        try {
+          const actionRes = await getActionRules(entityId)
+          const activeActionRules = (actionRes.rules || []).filter(r => r.is_active)
+          setAdminActionRules(activeActionRules)
+          onAdminActionRulesLoaded?.(activeActionRules)
+        } catch (err) {
+          console.warn('[Settings] Failed to fetch action rules:', err)
+        }
+      } catch (err) {
+        console.warn('[Settings] Failed to fetch rules:', err)
+      }
+    }
+    fetchRules()
+  }, [entityId])
+
   // Multiple formulas state
   const [actionFormulas, setActionFormulas] = useState<ActionFormula[]>([])
   const [currentFormula, setCurrentFormula] = useState<ActionFormula>({
@@ -904,6 +977,10 @@ export function SettingsPanel({
   useEffect(() => {
     // Reset content whenever current changes
     const localCopy = JSON.parse(JSON.stringify(current))
+
+    // Ensure new user map keys exist (backward compat for old localStorage)
+    if (!localCopy.users.rfqResponsibleMap) localCopy.users.rfqResponsibleMap = {}
+    if (!localCopy.users.quoteResponsibleMap) localCopy.users.quoteResponsibleMap = {}
 
     // Add default criteria for Actions if none exist
     if (!localCopy.actions.criteria || localCopy.actions.criteria.length === 0) {
@@ -933,11 +1010,15 @@ export function SettingsPanel({
     setSelectedCustomers(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c])
   }
 
-  const linkTagsToCustomersFor = (mapKey: 'rfqAssigneeMap' | 'quoteAssigneeMap') => {
-    if (selectedTags.length === 0 || selectedCustomers.length === 0) return
+  type UserMapKey = 'rfqAssigneeMap' | 'quoteAssigneeMap' | 'rfqResponsibleMap' | 'quoteResponsibleMap'
+
+  const linkTagsToUsersFor = (mapKey: UserMapKey) => {
+    if (selectedTags.length === 0) return
     setLocal(prev => {
       const newMap = { ...prev.users[mapKey] }
       selectedTags.forEach(tag => {
+        // For assignee maps, link to selected customers; for responsible maps, link to selected users
+        // But since we're now using user IDs for all, we check selectedCustomers for backward compat
         newMap[tag] = [...selectedCustomers]
       })
       return { ...prev, users: { ...prev.users, [mapKey]: newMap } }
@@ -946,7 +1027,10 @@ export function SettingsPanel({
     setSelectedCustomers([])
   }
 
-  const removeTagMapping = (tag: string, mapKey: 'rfqAssigneeMap' | 'quoteAssigneeMap') => {
+  // Keep old name for backward compat in the JSX that hasn't changed
+  const linkTagsToCustomersFor = linkTagsToUsersFor
+
+  const removeTagMapping = (tag: string, mapKey: UserMapKey) => {
     setLocal(prev => {
       const newMap = { ...prev.users[mapKey] }
       delete newMap[tag]
@@ -1089,164 +1173,110 @@ export function SettingsPanel({
                 </div>
               </div>
 
-              {/* Output */}
+              {/* Output — 4 role panels */}
               <div>
                 <h3 className="text-lg font-semibold text-slate-900 mb-4">Output</h3>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                  <Card>
-                    <CardHeader><CardTitle>RFQ Assignee</CardTitle></CardHeader>
-                    <CardContent>
-                      {selectedTags.length === 0 ? (
-                        <p className="text-center text-muted-foreground py-6 text-sm border border-dashed rounded-lg">Select a tag to assign RFQ users</p>
-                      ) : (
-                        <>
-                          <div className="flex flex-wrap gap-1 mb-3">
-                            {selectedTags.map(t => (<Badge key={t} variant="default" className="text-xs">{t}</Badge>))}
-                          </div>
-                          <ScrollArea className="h-48 border rounded-md p-2">
-                            <div className="space-y-2">
-                              {availableUsers.map(user => {
-                                const isChecked = selectedTags.every(tag => (local.users.rfqAssigneeMap[tag] || []).includes(user.user_id))
-                                return (
-                                  <div key={user.user_id} className="flex items-center space-x-2">
-                                    <Checkbox
-                                      id={`rfq-${user.user_id}`}
-                                      checked={isChecked}
-                                      onCheckedChange={() => {
-                                        setLocal(prev => {
-                                          const newMap = { ...prev.users.rfqAssigneeMap }
-                                          selectedTags.forEach(tag => {
-                                            const current = newMap[tag] || []
-                                            if (current.includes(user.user_id)) {
-                                              newMap[tag] = current.filter(id => id !== user.user_id)
-                                              if (newMap[tag].length === 0) delete newMap[tag]
-                                            } else {
-                                              newMap[tag] = [...current, user.user_id]
-                                            }
-                                          })
-                                          return { ...prev, users: { ...prev.users, rfqAssigneeMap: newMap } }
-                                        })
-                                      }}
-                                    />
-                                    <Label htmlFor={`rfq-${user.user_id}`} className="text-sm cursor-pointer">{user.name}</Label>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          </ScrollArea>
-                        </>
-                      )}
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader><CardTitle>Quote Assignee</CardTitle></CardHeader>
-                    <CardContent>
-                      {selectedCustomers.length === 0 ? (
-                        <p className="text-center text-muted-foreground py-6 text-sm border border-dashed rounded-lg">Select a customer to assign Quote users</p>
-                      ) : (
-                        <>
-                          <div className="flex flex-wrap gap-1 mb-3">
-                            {selectedCustomers.map(c => (<Badge key={c} variant="default" className="text-xs">{c}</Badge>))}
-                          </div>
-                          <ScrollArea className="h-48 border rounded-md p-2">
-                            <div className="space-y-2">
-                              {availableUsers.map(user => {
-                                const isChecked = selectedCustomers.every(cust => (local.users.quoteAssigneeMap[cust] || []).includes(user.user_id))
-                                return (
-                                  <div key={user.user_id} className="flex items-center space-x-2">
-                                    <Checkbox
-                                      id={`quote-${user.user_id}`}
-                                      checked={isChecked}
-                                      onCheckedChange={() => {
-                                        setLocal(prev => {
-                                          const newMap = { ...prev.users.quoteAssigneeMap }
-                                          selectedCustomers.forEach(cust => {
-                                            const current = newMap[cust] || []
-                                            if (current.includes(user.user_id)) {
-                                              newMap[cust] = current.filter(id => id !== user.user_id)
-                                              if (newMap[cust].length === 0) delete newMap[cust]
-                                            } else {
-                                              newMap[cust] = [...current, user.user_id]
-                                            }
-                                          })
-                                          return { ...prev, users: { ...prev.users, quoteAssigneeMap: newMap } }
-                                        })
-                                      }}
-                                    />
-                                    <Label htmlFor={`quote-${user.user_id}`} className="text-sm cursor-pointer">{user.name}</Label>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          </ScrollArea>
-                        </>
-                      )}
-                    </CardContent>
-                  </Card>
-                </div>
-              </div>
-
-              {/* Real-time Mapping Preview */}
-              {(Object.keys(local.users.rfqAssigneeMap).length > 0 || Object.keys(local.users.quoteAssigneeMap).length > 0) && (
-              <div>
-                <h3 className="text-lg font-semibold text-slate-900 mb-4">Current Mappings</h3>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                  {Object.keys(local.users.rfqAssigneeMap).length > 0 && (
-                    <Card>
-                      <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">RFQ Assignee Mappings</CardTitle></CardHeader>
+                <p className="text-sm text-muted-foreground mb-4">RFQ panels use selected tags. Quote panels use selected customers.</p>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {([
+                    { key: 'rfqAssigneeMap' as const, title: 'RFQ Assignee', desc: 'Project-level RFQ assignment', useCustomer: false },
+                    { key: 'quoteAssigneeMap' as const, title: 'Quote Assignee', desc: 'Project-level Quote assignment', useCustomer: true },
+                    { key: 'rfqResponsibleMap' as const, title: 'RFQ Item Responsible', desc: 'Item-level — controls Create Event button', useCustomer: false },
+                    { key: 'quoteResponsibleMap' as const, title: 'Quote Item Responsible', desc: 'Item-level — controls Create Quote button', useCustomer: true },
+                  ] as const).map(({ key, title, desc, useCustomer }) => {
+                    const selectedKeys = useCustomer ? selectedCustomers : selectedTags
+                    const emptyMsg = useCustomer ? 'Select a customer to assign users' : 'Select a tag to assign users'
+                    return (
+                    <Card key={key}>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm">{title}</CardTitle>
+                        <CardDescription className="text-xs">{desc} — mapped by {useCustomer ? 'customer' : 'tag'}</CardDescription>
+                      </CardHeader>
                       <CardContent>
-                        <div className="space-y-2">
-                          {Object.entries(local.users.rfqAssigneeMap).map(([tag, userIds]) => (
-                            <div key={tag} className="flex items-start justify-between p-2 border rounded-md">
-                              <div>
-                                <Badge variant="outline" className="text-xs mr-2">{tag}</Badge>
+                        {selectedKeys.length === 0 ? (
+                          <p className="text-center text-muted-foreground py-4 text-xs border border-dashed rounded-lg">{emptyMsg}</p>
+                        ) : (
+                          <>
+                            <div className="flex flex-wrap gap-1 mb-2">
+                              {selectedKeys.map(t => (<Badge key={t} variant={useCustomer ? 'outline' : 'default'} className="text-xs">{t}</Badge>))}
+                            </div>
+                            <ScrollArea className="h-36 border rounded-md p-2">
+                              <div className="space-y-1.5">
+                                {availableUsers.map(user => {
+                                  const isChecked = selectedKeys.every(k => (local.users[key][k] || []).includes(user.user_id))
+                                  return (
+                                    <div key={user.user_id} className="flex items-center space-x-2">
+                                      <Checkbox
+                                        id={`${key}-${user.user_id}`}
+                                        checked={isChecked}
+                                        onCheckedChange={() => {
+                                          setLocal(prev => {
+                                            const newMap = { ...prev.users[key] }
+                                            selectedKeys.forEach(k => {
+                                              const current = newMap[k] || []
+                                              if (current.includes(user.user_id)) {
+                                                newMap[k] = current.filter(id => id !== user.user_id)
+                                                if (newMap[k].length === 0) delete newMap[k]
+                                              } else {
+                                                newMap[k] = [...current, user.user_id]
+                                              }
+                                            })
+                                            return { ...prev, users: { ...prev.users, [key]: newMap } }
+                                          })
+                                        }}
+                                      />
+                                      <Label htmlFor={`${key}-${user.user_id}`} className="text-xs cursor-pointer">{user.name}</Label>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            </ScrollArea>
+                          </>
+                        )}
+
+                        {/* Existing local mappings for this role */}
+                        {Object.keys(local.users[key]).length > 0 && (
+                          <div className="mt-3 pt-3 border-t space-y-1.5">
+                            {Object.entries(local.users[key]).map(([tag, userIds]) => (
+                              <div key={tag} className="flex items-center justify-between">
+                                <div className="flex items-center gap-1 flex-wrap">
+                                  <Badge variant="outline" className="text-xs">{tag}</Badge>
+                                  <span className="text-xs text-muted-foreground">→</span>
+                                  {userIds.map(uid => {
+                                    const u = availableUsers.find(au => au.user_id === uid)
+                                    return <Badge key={uid} variant="secondary" className="text-xs">{u?.name || uid.slice(0, 8)}</Badge>
+                                  })}
+                                </div>
+                                <Button variant="ghost" size="sm" className="h-5 w-5 p-0 hover:bg-red-50 hover:text-red-600 shrink-0" onClick={() => removeTagMapping(tag, key)}>
+                                  <Trash2 className="h-3 w-3" />
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Rule-based mappings (from backend rules) */}
+                        {Object.keys(ruleMappings[key] || {}).length > 0 && (
+                          <div className="mt-3 pt-3 border-t space-y-1.5">
+                            <div className="text-xs font-medium text-blue-700 mb-1">From Assignment Rules</div>
+                            {Object.entries(ruleMappings[key] || {}).map(([tag, userIds]) => (
+                              <div key={tag} className="flex items-center gap-1 flex-wrap">
+                                <Badge variant="outline" className="text-xs border-blue-200 text-blue-700">{tag}</Badge>
                                 <span className="text-xs text-muted-foreground">→</span>
                                 {userIds.map(uid => {
                                   const u = availableUsers.find(au => au.user_id === uid)
-                                  return <Badge key={uid} variant="secondary" className="text-xs ml-1">{u?.name || uid}</Badge>
+                                  return <Badge key={uid} className="text-xs bg-blue-50 text-blue-700 border border-blue-200">{u?.name || uid.slice(0, 8)}</Badge>
                                 })}
                               </div>
-                              <Button variant="ghost" size="sm" className="h-6 w-6 p-0 hover:bg-red-50 hover:text-red-600" onClick={() => setLocal(prev => {
-                                const newMap = { ...prev.users.rfqAssigneeMap }
-                                delete newMap[tag]
-                                return { ...prev, users: { ...prev.users, rfqAssigneeMap: newMap } }
-                              })}><Trash2 className="h-3 w-3" /></Button>
-                            </div>
-                          ))}
-                        </div>
+                            ))}
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
-                  )}
-                  {Object.keys(local.users.quoteAssigneeMap).length > 0 && (
-                    <Card>
-                      <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">Quote Assignee Mappings</CardTitle></CardHeader>
-                      <CardContent>
-                        <div className="space-y-2">
-                          {Object.entries(local.users.quoteAssigneeMap).map(([cust, userIds]) => (
-                            <div key={cust} className="flex items-start justify-between p-2 border rounded-md">
-                              <div>
-                                <Badge variant="outline" className="text-xs mr-2">{cust}</Badge>
-                                <span className="text-xs text-muted-foreground">→</span>
-                                {userIds.map(uid => {
-                                  const u = availableUsers.find(au => au.user_id === uid)
-                                  return <Badge key={uid} variant="secondary" className="text-xs ml-1">{u?.name || uid}</Badge>
-                                })}
-                              </div>
-                              <Button variant="ghost" size="sm" className="h-6 w-6 p-0 hover:bg-red-50 hover:text-red-600" onClick={() => setLocal(prev => {
-                                const newMap = { ...prev.users.quoteAssigneeMap }
-                                delete newMap[cust]
-                                return { ...prev, users: { ...prev.users, quoteAssigneeMap: newMap } }
-                              })}><Trash2 className="h-3 w-3" /></Button>
-                            </div>
-                          ))}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )}
+                    )
+                  })}
                 </div>
               </div>
-              )}
             </div>
           </TabsContent>
 
@@ -1332,10 +1362,52 @@ export function SettingsPanel({
           {/* Actions Tab */}
           <TabsContent value="actions" className="flex-1 px-10 py-6 overflow-y-auto">
             <div className="space-y-6">
+
+              {/* Admin Action Rules (read-only) */}
+              {adminActionRules.length > 0 && (
+                <Card className="border-orange-200 bg-orange-50/30">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-orange-700 border-orange-300 bg-orange-50 text-xs">FROM ADMIN</Badge>
+                      <CardTitle className="text-base">Action Rules ({adminActionRules.length})</CardTitle>
+                    </div>
+                    <CardDescription>These rules are configured by your admin and apply automatically. Local rules below take priority.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {adminActionRules.map((rule) => (
+                      <div key={rule.rule_id} className="flex items-center gap-2 p-3 rounded-lg border border-orange-200 bg-white">
+                        <div className="flex-1 flex flex-wrap items-center gap-1.5 text-sm">
+                          <span className="font-medium text-slate-700">{rule.name}:</span>
+                          {rule.criteria.map((c, i) => (
+                            <React.Fragment key={c.id || i}>
+                              <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-xs font-semibold">
+                                {i === 0 ? 'WHERE' : c.conjunction}
+                              </span>
+                              <span className="text-slate-600">
+                                {c.field} {c.operator} <strong>{c.value}</strong>{c.unit ? ` ${c.unit}` : ''}
+                              </span>
+                            </React.Fragment>
+                          ))}
+                          {rule.criteria.length === 0 && (
+                            <span className="text-slate-500 italic text-xs">All items</span>
+                          )}
+                          <span className="bg-orange-100 text-orange-800 px-2 py-0.5 rounded text-xs font-semibold">THEN</span>
+                          <span className="font-semibold text-orange-800">{rule.action}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Local Action Criteria (editable, overrides admin) */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Action Criteria</CardTitle>
-                  <CardDescription>Build simple WHERE…AND… conditions for assigning actions</CardDescription>
+                  <CardTitle>Local Action Criteria</CardTitle>
+                  <CardDescription>
+                    Build WHERE…AND… conditions to assign actions.
+                    {adminActionRules.length > 0 && ' These override admin rules when they match.'}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   {/* Criteria rows */}
@@ -1344,7 +1416,7 @@ export function SettingsPanel({
                       <div key={row.id} className="flex flex-wrap items-center gap-2 p-2 rounded border">
                         {/* Conjunction */}
                         {idx === 0 ? (
-                          <span className="text-sm text-gray-600 font-semibold mr-2">WHERE</span>
+                          <span className="text-sm text-gray-600 font-semibold mr-2 w-16">WHERE</span>
                         ) : (
                           <Select
                             value={row.conjunction}
@@ -1356,7 +1428,7 @@ export function SettingsPanel({
                               }
                             }))}
                           >
-                            <SelectTrigger className="w-20 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="w-16"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="AND">AND</SelectItem>
                               <SelectItem value="OR">OR</SelectItem>
@@ -1372,7 +1444,7 @@ export function SettingsPanel({
                             actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, field: v as any, operator: 'is', value: '' } : r) }
                           }))}
                         >
-                          <SelectTrigger className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="Purpose">Purpose</SelectItem>
                             <SelectItem value="Item ID Type">Item ID Type</SelectItem>
@@ -1393,9 +1465,8 @@ export function SettingsPanel({
                             actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, operator: v as any } : r) }
                           }))}
                         >
-                          <SelectTrigger className="w-24 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
                           <SelectContent>
-                            {/* Operators vary by field */}
                             {(['Purpose','Item ID Type','Source','Vendor','Tag'].includes(row.field) ? (
                               <>
                                 <SelectItem value="is">is</SelectItem>
@@ -1421,7 +1492,7 @@ export function SettingsPanel({
                         {/* Value editor */}
                         {row.field === 'Purpose' && (
                           <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
-                            <SelectTrigger className="w-28 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="Quote">Quote</SelectItem>
                               <SelectItem value="PO">PO</SelectItem>
@@ -1432,7 +1503,7 @@ export function SettingsPanel({
                         )}
                         {row.field === 'Item ID Type' && (
                           <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
-                            <SelectTrigger className="w-24 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="MPN">MPN</SelectItem>
                               <SelectItem value="CPN">CPN</SelectItem>
@@ -1442,7 +1513,7 @@ export function SettingsPanel({
                         )}
                         {row.field === 'Source' && (
                           <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
-                            <SelectTrigger className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               {DEFAULT_PRICE_SOURCES.map(s => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
                             </SelectContent>
@@ -1450,26 +1521,26 @@ export function SettingsPanel({
                         )}
                         {row.field === 'Tag' && (
                           <Select value={row.value} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) } }))}>
-                            <SelectTrigger className="w-48 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue placeholder="Select tag" /></SelectTrigger>
+                            <SelectTrigger className="w-40"><SelectValue placeholder="Select tag" /></SelectTrigger>
                             <SelectContent>
                               {allTags.map(tag => (<SelectItem key={tag} value={tag}>{tag}</SelectItem>))}
                             </SelectContent>
                           </Select>
                         )}
                         {row.field === 'Date' && (
-                          <Input type="date" className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500" value={row.value} onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))} />
+                          <Input type="date" className="w-40" value={row.value} onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))} />
                         )}
                         {(row.field === 'Price' || row.field === 'Quantity' || row.field === 'Vendor') && (
                           <>
                             <Input
-                              className="w-40 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"
+                              className="w-36"
                               placeholder={row.field === 'Vendor' ? 'Enter vendor' : '0'}
                               value={row.value}
                               onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))}
                             />
                             {row.field === 'Price' && (
                               <Select value={row.unit || 'USD'} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, unit: v } : r) } }))}>
-                                <SelectTrigger className="w-36 border-2 border-blue-300 bg-blue-50 hover:border-blue-400 focus:border-blue-500"><SelectValue /></SelectTrigger>
+                                <SelectTrigger className="w-20"><SelectValue /></SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="USD">USD</SelectItem>
                                   <SelectItem value="INR">INR</SelectItem>
@@ -1493,7 +1564,7 @@ export function SettingsPanel({
                     ))}
                   </div>
 
-                  {/* Add Section */}
+                  {/* Add criteria row */}
                   <div className="mt-3">
                     <button
                       type="button"
@@ -1512,8 +1583,27 @@ export function SettingsPanel({
                         },
                       }))}
                     >
-                      + Add Section
+                      + Add Condition
                     </button>
+                  </div>
+
+                  {/* THEN action selector */}
+                  <Separator className="my-4" />
+                  <div className="flex items-center gap-3">
+                    <span className="bg-slate-900 text-white px-3 py-1 rounded text-sm font-semibold">THEN</span>
+                    <span className="text-sm text-slate-600">assign action</span>
+                    <Select
+                      value={local.actions.criteriaAction || 'Quote'}
+                      onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteriaAction: v as any } }))}
+                    >
+                      <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Event">Event</SelectItem>
+                        <SelectItem value="Quote">Quote</SelectItem>
+                        <SelectItem value="PO">PO</SelectItem>
+                        <SelectItem value="Contract">Contract</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                 </CardContent>
               </Card>

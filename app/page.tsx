@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel, LabelList } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
-import { getProjectId, getProjectItems, getProjectOverview, getProjectUsers, updateProjectItem, bulkAssignUsers, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, type ProjectItem } from '@/lib/api'
+import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -282,7 +282,7 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
   priceQuote = Math.round(mockBasePrice * quoteVariation * variation * 100) / 100;
   priceEXIM = Math.round(mockBasePrice * eximVariation * variation * 100) / 100;
 
-  // Determine cheapest source from all available prices
+  // Determine cheapest source — only real distributor data (Digikey/Mouser)
   const priceOptions: { source: string; price: number }[] = [];
 
   // Add Digikey/Mouser if available
@@ -299,7 +299,7 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
     }
   }
 
-  // Find cheapest source
+  // Find cheapest source — always Project (no hardcoded sources)
   const validPrices = priceOptions.filter(p => p.price > 0);
   const cheapestSource = validPrices.length > 0
     ? validPrices.reduce((min, p) => p.price < min.price ? p : min).source
@@ -331,6 +331,9 @@ export default function ProcurementDashboard() {
     created: "",
     deadline: "",
     customer: "",
+    buyer_entity_id: "",
+    buyer_entity_name: "",
+    template_id: "",
   })
   const [projectUsers, setProjectUsers] = useState<Array<{user_id: string, name: string, email: string, role: string}>>([])
   // Project-level role arrays (same for all items)
@@ -341,6 +344,8 @@ export default function ProcurementDashboard() {
   const [userRolesMap, setUserRolesMap] = useState<Record<string, string[]>>({})
   // All enterprise users available for role assignment
   const [availableUsers, setAvailableUsers] = useState<Array<{user_id: string, name: string, email: string}>>([])
+  // Users assigned to at least one section in the project (eligible for item-level assignment)
+  const [sectionAssignedUsers, setSectionAssignedUsers] = useState<Array<{user_id: string, name: string, email: string}>>([])
   // Currently assigned users per role (raw arrays from API)
   const [rfqResponsibleUsers, setRfqResponsibleUsers] = useState<Array<{user_id: string, name: string, email: string}>>([])
   const [quoteResponsibleUsers, setQuoteResponsibleUsers] = useState<Array<{user_id: string, name: string, email: string}>>([])
@@ -372,7 +377,17 @@ export default function ProcurementDashboard() {
   const [isLoadingAllItems, setIsLoadingAllItems] = useState(false)
   const [loadingError, setLoadingError] = useState<{ message: string; canRetry: boolean } | null>(null)
   const loadingAbortRef = useRef(false)
-  const [autoAssignProgress, setAutoAssignProgress] = useState({ current: 0, total: 0, isRunning: false })
+  const autoAssignAbortRef = useRef(false)
+  const [autoAssignProgress, setAutoAssignProgress] = useState<{
+    current: number
+    total: number
+    isRunning: boolean
+    phase: 'fetching' | 'evaluating' | 'assigning' | 'done' | 'cancelled'
+    rulesCount: number
+    matchedItems: number
+    assignmentsCount: number
+    log: string[]  // recent activity log lines
+  }>({ current: 0, total: 0, isRunning: false, phase: 'fetching', rulesCount: 0, matchedItems: 0, assignmentsCount: 0, log: [] })
 
   const [columnOrder, setColumnOrder] = useState([
     "itemId",
@@ -385,6 +400,8 @@ export default function ProcurementDashboard() {
     "projectManager",
     "rfqAssignee",
     "quoteAssignee",
+    "rfqResponsible",
+    "quoteResponsible",
     "action",
     "assignedTo",
     "dueDate",
@@ -423,10 +440,12 @@ export default function ProcurementDashboard() {
     bom: 140,
     quantity: 80,
     unit: 60,
-    category: 128,
-    projectManager: 130,
-    rfqAssignee: 130,
-    quoteAssignee: 130,
+    category: 170,
+    projectManager: 160,
+    rfqAssignee: 160,
+    quoteAssignee: 160,
+    rfqResponsible: 160,
+    quoteResponsible: 160,
     action: 80,
     assignedTo: 144,
     dueDate: 100,
@@ -466,6 +485,9 @@ export default function ProcurementDashboard() {
   const [settingsInitialTab, setSettingsInitialTab] = useState<'users' | 'prices' | 'actions'>('users')
   const [settingsProfiles, setSettingsProfiles] = useState<Record<string, AppSettings>>({})
   const [currentSettingsKey, setCurrentSettingsKey] = useState<string>('Default')
+
+  // Admin action rules (fetched by SettingsPanel, used by handleAssignActions)
+  const [adminActionRules, setAdminActionRules] = useState<import('@/lib/api').ActionRule[]>([])
 
   // Helper function to refresh pricing data in chunks (avoids timeout)
   const refreshPricingDataInChunks = async (projectId: string, pricingType: 'digikey' | 'mouser' | 'both') => {
@@ -665,6 +687,10 @@ export default function ProcurementDashboard() {
         // IMPORTANT: Skip pricing jobs on initial load - we'll trigger them after all data is loaded
         const initialItemsResponse = await getProjectItems(projectId, { limit: 100, offset: 0, skip_pricing_jobs: true })
         console.log('[Dashboard] Initial load:', initialItemsResponse.items.length, 'items of', initialItemsResponse.total)
+        // DEBUG: Check what assigned_users looks like from API
+        if (initialItemsResponse.items.length > 0) {
+          console.log('[Dashboard] DEBUG assigned_users on first item:', JSON.stringify(initialItemsResponse.items[0].assigned_users))
+        }
 
         // Set project data
         setProjectData({
@@ -674,6 +700,9 @@ export default function ProcurementDashboard() {
           created: overviewResponse.project.validity_from || '',
           deadline: overviewResponse.project.deadline || '',
           customer: overviewResponse.project.customer_name || '',
+          buyer_entity_id: overviewResponse.project.buyer_entity_id || '',
+          buyer_entity_name: overviewResponse.project.buyer_entity_name || '',
+          template_id: overviewResponse.project.template_id || '',
         })
 
         console.log('[Dashboard] Project:', overviewResponse.project.project_name)
@@ -713,6 +742,12 @@ export default function ProcurementDashboard() {
         if (usersResponse.available_users) {
           setAvailableUsers(usersResponse.available_users)
           console.log('[Dashboard] Available users for assignment:', usersResponse.available_users.length)
+        }
+
+        // Store section-assigned users (eligible for item-level assignment)
+        if (usersResponse.section_assigned_users) {
+          setSectionAssignedUsers(usersResponse.section_assigned_users)
+          console.log('[Dashboard] Section-assigned users:', usersResponse.section_assigned_users.length)
         }
 
         // Set available tags (ALL organization-level tags from backend)
@@ -823,16 +858,28 @@ export default function ProcurementDashboard() {
       original_custom_tags: item.custom_tags || [],
       assignedTo: item.assigned_users.map(u => u.name).join(', '),
       assigned_user_ids: item.assigned_users.map(u => u.user_id),
+      _debug_assigned_users: item.assigned_users, // TEMP DEBUG — remove later
       unitPrice: item.rate || 0,
       totalPrice: item.amount || 0,
       currency: item.currency,
       event_quantity: item.event_quantity ?? null,
       bom_slab_quantity: item.bom_slab_quantity || 0,
       enterprise_item_id: item.enterprise_item_id || null,
-      rfqAssigneeName: '',  // per-item, filled by auto-assign
-      quoteAssigneeName: '',  // per-item, filled by auto-assign
+      // RFQ/Quote Assignee are PROJECT-level (same for all items) — populated from column render using state
+      rfqAssigneeName: '',  // filled from rfqAssignees state in column render
+      quoteAssigneeName: '',  // filled from quoteAssignees state in column render
+      // RFQ/Quote Item Responsible are PER-ITEM — from items API
+      // API may return objects [{user_id, name}] or just ID strings ["uuid"] — handle both
+      rfqResponsibleName: (item.rfq_responsible_users || []).map((u: any) => {
+        if (typeof u === 'string') { const found = projectUsers.find(pu => pu.user_id === u); return found?.name || u }
+        return u.name || u.user_id || u
+      }).join('; '),
+      quoteResponsibleName: (item.quote_responsible_users || []).map((u: any) => {
+        if (typeof u === 'string') { const found = projectUsers.find(pu => pu.user_id === u); return found?.name || u }
+        return u.name || u.user_id || u
+      }).join('; '),
       vendor: '',
-      action: '',
+      action: item.action || '',
       dueDate: '',
       source: '',
       pricePO: 0,
@@ -1283,6 +1330,19 @@ export default function ProcurementDashboard() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
+  // Eagerly fetch admin action rules when entity ID becomes available
+  useEffect(() => {
+    const entityId = projectData.buyer_entity_id
+    if (!entityId) return
+    getActionRules(entityId)
+      .then(res => {
+        const active = (res.rules || []).filter(r => r.is_active)
+        setAdminActionRules(active)
+        if (active.length > 0) console.log(`[Dashboard] Loaded ${active.length} admin action rule(s)`)
+      })
+      .catch(err => console.warn('[Dashboard] Failed to fetch action rules:', err))
+  }, [projectData.buyer_entity_id])
+
   const currentSettings: AppSettings = useMemo(() => {
     const raw = settingsProfiles[currentSettingsKey] || buildDefaultSettings('Default')
     // Migrate old tagUserMap → rfqAssigneeMap/quoteAssigneeMap if needed
@@ -1291,9 +1351,29 @@ export default function ProcurementDashboard() {
       users: {
         rfqAssigneeMap: raw.users?.rfqAssigneeMap || (raw.users as any)?.tagUserMap || {},
         quoteAssigneeMap: raw.users?.quoteAssigneeMap || {},
+        rfqResponsibleMap: raw.users?.rfqResponsibleMap || {},
+        quoteResponsibleMap: raw.users?.quoteResponsibleMap || {},
       },
     }
   }, [settingsProfiles, currentSettingsKey])
+
+  // Eligible users for item-level assignment: section-assigned + PM + RFQ Assignee + Quote Assignee
+  const eligibleUsers = useMemo(() => {
+    const userMap = new Map<string, { user_id: string; name: string; email: string }>()
+    // Section-assigned users
+    for (const u of sectionAssignedUsers) {
+      userMap.set(u.user_id, u)
+    }
+    // Project managers, RFQ assignees, Quote assignees
+    for (const u of [...rfqResponsibleUsers, ...quoteResponsibleUsers]) {
+      if (!userMap.has(u.user_id)) userMap.set(u.user_id, u)
+    }
+    // Project managers from projectUsers (role === 'PROJECT_MANAGER' or from the PM list)
+    for (const u of projectUsers) {
+      if (!userMap.has(u.user_id)) userMap.set(u.user_id, u)
+    }
+    return Array.from(userMap.values())
+  }, [sectionAssignedUsers, rfqResponsibleUsers, quoteResponsibleUsers, projectUsers])
 
   const allTags = useMemo(() => {
     const set = new Set<string>()
@@ -1660,14 +1740,25 @@ export default function ProcurementDashboard() {
       return str
     }
 
-    // Helper to format price
-    const formatPrice = (price: any): string => {
+    // Helper to get currency symbol from currency code
+    const getCurrencySymbolForExport = (code: string): string => {
+      const symbols: Record<string, string> = {
+        'INR': '₹', 'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥',
+        'CNY': '¥', 'AUD': 'A$', 'CAD': 'C$', 'SGD': 'S$', 'AED': 'AED ',
+        'SAR': 'SAR ', 'MYR': 'RM', 'THB': '฿', 'KRW': '₩',
+      }
+      return symbols[code] || `${code} `
+    }
+
+    // Helper to format price with currency symbol
+    const formatPrice = (price: any, currencySymbol: string = ''): string => {
       if (price === null || price === undefined || price === 0) return ''
-      return typeof price === 'number' ? price.toFixed(2) : String(price)
+      const formatted = typeof price === 'number' ? price.toFixed(5) : String(price)
+      return currencySymbol ? `${currencySymbol}${formatted}` : formatted
     }
 
     // Helper to get distributor price details
-    const getDistributorPrice = (pricing: any): { unitPrice: string; quantityPrice: string; stock: string; status: string } => {
+    const getDistributorPrice = (pricing: any, currencySymbol: string = ''): { unitPrice: string; quantityPrice: string; stock: string; status: string } => {
       if (!pricing) return { unitPrice: '', quantityPrice: '', stock: '', status: 'N/A' }
 
       if (pricing.status === 'not_configured') {
@@ -1683,9 +1774,12 @@ export default function ProcurementDashboard() {
         return { unitPrice: '', quantityPrice: '', stock: '', status: pricing.status_message || pricing.status || 'N/A' }
       }
 
+      // Use converted currency if available, otherwise use the pricing's original currency
+      const priceCurrencySymbol = pricing.currency ? getCurrencySymbolForExport(pricing.currency) : currencySymbol
+
       return {
-        unitPrice: formatPrice(pricing.unit_price),
-        quantityPrice: formatPrice(pricing.quantity_price),
+        unitPrice: formatPrice(pricing.unit_price, priceCurrencySymbol),
+        quantityPrice: formatPrice(pricing.quantity_price, priceCurrencySymbol),
         stock: pricing.stock !== null && pricing.stock !== undefined ? String(pricing.stock) : '',
         status: 'Available'
       }
@@ -1712,6 +1806,7 @@ export default function ProcurementDashboard() {
       'BOM Name',
       'BOM Slab Qty',
       'Item Qty',
+      'Per Unit Qty',
       'Unit',
       'Event Code',
       'Event Qty',
@@ -1727,6 +1822,8 @@ export default function ProcurementDashboard() {
       'Project Manager',
       'RFQ Assignee',
       'Quote Assignee',
+      'RFQ Item Responsible',
+      'Quote Item Responsible',
       'Action',
       'Assigned To',
       'Due Date',
@@ -1760,8 +1857,9 @@ export default function ProcurementDashboard() {
     const rows: string[][] = []
 
     filteredAndSortedItems.forEach((item: any) => {
-      const digikeyDetails = getDistributorPrice(item.digikey_pricing)
-      const mouserDetails = getDistributorPrice(item.mouser_pricing)
+      const itemCurrencySymbol = item.currency?.symbol || getCurrencySymbolForExport(item.currency?.code || '')
+      const digikeyDetails = getDistributorPrice(item.digikey_pricing, itemCurrencySymbol)
+      const mouserDetails = getDistributorPrice(item.mouser_pricing, itemCurrencySymbol)
 
       // Parse tags for this item
       const itemTags = item.category && item.category !== 'Uncategorized'
@@ -1795,6 +1893,7 @@ export default function ProcurementDashboard() {
         escapeCSV(bomName),
         bomSlabQty !== '' ? String(bomSlabQty) : '',
         escapeCSV(item.quantity),
+        bomSlabQty && Number(bomSlabQty) > 0 ? String(Math.round((item.quantity / Number(bomSlabQty)) * 10000) / 10000) : '',
         escapeCSV(item.unit),
         escapeCSV(eventCode),
         eventQty !== '' && eventQty !== null ? String(eventQty) : '',
@@ -1805,11 +1904,13 @@ export default function ProcurementDashboard() {
         row.push(escapeCSV(itemTags[t] || ''))
       }
 
-      // Add role columns (PM is project-level, RFQ/Quote are per-item from auto-assign)
+      // Add role columns
       row.push(
         escapeCSV(projectManagers),
         escapeCSV(item.rfqAssigneeName || ''),
         escapeCSV(item.quoteAssigneeName || ''),
+        escapeCSV(item.rfqResponsibleName || ''),
+        escapeCSV(item.quoteResponsibleName || ''),
       )
 
       // Add remaining columns
@@ -1819,8 +1920,8 @@ export default function ProcurementDashboard() {
         escapeCSV(item.dueDate),
         escapeCSV(item.vendor),
         escapeCSV(item.currency?.code || ''),
-        formatPrice(item.unitPrice),
-        formatPrice(item.totalPrice),
+        formatPrice(item.unitPrice, itemCurrencySymbol),
+        formatPrice(item.totalPrice, itemCurrencySymbol),
         escapeCSV(item.source),
       )
 
@@ -1970,111 +2071,445 @@ export default function ProcurementDashboard() {
   }
 
   // Auto Assign Users Handler — fills RFQ Assignee & Quote Assignee columns per item
-  const handleAutoAssignUsers = async (scope: 'all' | 'unassigned' | 'selected') => {
+  // ─── Rule Evaluation Helpers ───
+
+  /**
+   * Extract the value from a project custom field based on its type.
+   * Backend stores values in type-specific columns: text_value, integer_value, decimal_value, etc.
+   */
+  const getCustomFieldValue = (field: { type: string; text_value?: string | null; integer_value?: number | null; decimal_value?: number | null; date_value?: string | null; multi_choice_value?: string[] | null }): string | string[] => {
+    const t = field.type.toUpperCase()
+    if (t === 'MULTI_CHOICE' && Array.isArray(field.multi_choice_value)) {
+      return field.multi_choice_value
+    }
+    if ((t === 'INTEGER' || t === 'FLOAT' || t === 'DECIMAL') && field.integer_value != null) {
+      return String(field.integer_value)
+    }
+    if ((t === 'FLOAT' || t === 'DECIMAL') && field.decimal_value != null) {
+      return String(field.decimal_value)
+    }
+    if (t === 'DATE' && field.date_value) {
+      return field.date_value
+    }
+    // Default: text_value covers CHOICE, SHORTTEXT, LONGTEXT, etc.
+    return field.text_value || ''
+  }
+
+  /**
+   * Get a field value from an item or project for rule condition evaluation.
+   * Returns string or string[] depending on field.
+   *
+   * For CUSTOM fields, checks in order:
+   * 1. Project-level custom sections (section_type: "OTHER") — same for all items
+   * 2. Item-level custom_fields, additional_details, attributes
+   */
+  const getFieldValue = (
+    condition: AssignmentRuleCondition,
+    item: any,
+    project: typeof projectData,
+    projectCustomSections?: ProjectCustomSection[]
+  ): string | string[] => {
+    if (condition.field_type === 'BUILTIN') {
+      switch (condition.field) {
+        case 'tags': {
+          const tags = [
+            ...(item.original_tags || []),
+            ...(item.original_custom_tags || []),
+          ]
+          return [...new Set(tags)]
+        }
+        case 'customer_name':
+          return project.customer || ''
+        case 'buyer_entity_name':
+          return project.buyer_entity_name || ''
+        case 'project_code':
+          return project.id || ''
+        default:
+          return ''
+      }
+    }
+
+    // CUSTOM fields
+    const fieldName = condition.field
+    const sectionName = condition.section_name
+
+    // 1. Check project-level custom sections (section_type: "OTHER")
+    if (projectCustomSections) {
+      for (const section of projectCustomSections) {
+        // Match section name if specified on the condition
+        if (sectionName && section.name !== sectionName) continue
+        // Only check project-level sections (OTHER), not item-level (ITEM)
+        // But if no section_name filter, check all sections
+        for (const field of section.custom_fields) {
+          if (field.name === fieldName) {
+            return getCustomFieldValue(field)
+          }
+        }
+      }
+    }
+
+    // 2. Check item-level: custom_fields, additional_details, attributes
+    if (item.custom_fields && item.custom_fields[fieldName] !== undefined) {
+      const val = item.custom_fields[fieldName]
+      return Array.isArray(val) ? val : String(val)
+    }
+    if (item.additional_details && item.additional_details[fieldName] !== undefined) {
+      const val = item.additional_details[fieldName]
+      return Array.isArray(val) ? val : String(val)
+    }
+    if (Array.isArray(item.attributes)) {
+      const attr = item.attributes.find(
+        (a: any) => a.attribute_name === fieldName
+      )
+      if (attr?.attribute_values?.length > 0) {
+        return attr.attribute_values.map((v: any) => v.value || String(v))
+      }
+    }
+    return ''
+  }
+
+  /**
+   * Evaluate a single condition against a field value. Case-insensitive.
+   */
+  const evaluateCondition = (
+    operator: string,
+    fieldValue: string | string[],
+    conditionValue: string
+  ): boolean => {
+    const cv = conditionValue.toLowerCase()
+
+    if (Array.isArray(fieldValue)) {
+      const lowerValues = fieldValue.map((v) => v.toLowerCase())
+      switch (operator) {
+        case 'contains':
+          return lowerValues.some((v) => v.includes(cv) || cv.includes(v))
+        case 'does_not_contain':
+          return !lowerValues.some((v) => v.includes(cv) || cv.includes(v))
+        case 'is':
+          return lowerValues.includes(cv)
+        case 'is_not':
+          return !lowerValues.includes(cv)
+        default:
+          return false
+      }
+    }
+
+    const fv = String(fieldValue).toLowerCase()
+    switch (operator) {
+      case 'is':
+        return fv === cv
+      case 'is_not':
+        return fv !== cv
+      case 'contains':
+        return fv.includes(cv)
+      case 'does_not_contain':
+        return !fv.includes(cv)
+      default:
+        return false
+    }
+  }
+
+  /**
+   * Evaluate all conditions of a rule against an item. Handles AND/OR conjunctions.
+   */
+  const evaluateRuleConditions = (
+    conditions: AssignmentRuleCondition[],
+    item: any,
+    project: typeof projectData,
+    projectCustomSections?: ProjectCustomSection[]
+  ): boolean => {
+    if (conditions.length === 0) return true
+
+    let result = true
+    for (let i = 0; i < conditions.length; i++) {
+      const cond = conditions[i]
+      const fieldValue = getFieldValue(cond, item, project, projectCustomSections)
+      const match = evaluateCondition(cond.operator, fieldValue, cond.value)
+
+      if (i === 0) {
+        result = match
+      } else {
+        const conjunction = cond.conjunction || 'AND'
+        if (conjunction === 'AND') {
+          result = result && match
+        } else {
+          result = result || match
+        }
+      }
+    }
+    return result
+  }
+
+  // ─── Auto Assign Users (Phase 4: Rules Engine) ───
+
+  const handleAutoAssignUsers = async (scope: 'all' | 'unassigned' | 'selected', ruleOverrides?: Record<string, boolean>) => {
+    const resetProgress = () => setAutoAssignProgress({ current: 0, total: 0, isRunning: false, phase: 'done', rulesCount: 0, matchedItems: 0, assignmentsCount: 0, log: [] })
+    const addLog = (msg: string) => setAutoAssignProgress(prev => ({ ...prev, log: [...prev.log.slice(-19), msg] }))
+
+    autoAssignAbortRef.current = false
+
     try {
-      const rfqMap = currentSettings.users.rfqAssigneeMap || {}
-      const quoteMap = currentSettings.users.quoteAssigneeMap || {}
+      const entityId = projectData.buyer_entity_id
+      const templateId = projectData.template_id
+      const projectId = new URLSearchParams(window.location.search).get('project_id') || ''
 
-      console.log('[Auto-Assign] RFQ map (tag→user_ids):', rfqMap)
-      console.log('[Auto-Assign] Quote map (customer→user_ids):', quoteMap)
-
-      if (Object.keys(rfqMap).length === 0 && Object.keys(quoteMap).length === 0) {
-        toast({
-          title: "No Mappings",
-          description: "No RFQ or Quote assignee mappings found. Configure them in Settings first.",
-          variant: "destructive",
-        })
+      if (!entityId) {
+        toast({ title: "Error", description: "Could not determine entity ID for this project. Please reload.", variant: "destructive" })
         return
       }
 
-      // Determine which items to process based on scope
-      let itemIdsToProcess: Set<number>
-      if (scope === 'selected') {
-        itemIdsToProcess = new Set(selectedItems)
-      } else if (scope === 'unassigned') {
-        // "unassigned" = items where both RFQ and Quote assignee columns are empty
-        itemIdsToProcess = new Set(
-          lineItems
-            .filter((item: any) => !item.rfqAssigneeName && !item.quoteAssigneeName)
-            .map((item: any) => item.id)
-        )
-      } else {
-        itemIdsToProcess = new Set(lineItems.map((item: any) => item.id))
+      // ── Phase 1: Fetching ──
+      setAutoAssignProgress({ current: 0, total: 0, isRunning: true, phase: 'fetching', rulesCount: 0, matchedItems: 0, assignmentsCount: 0, log: ['Fetching rules and project details...'] })
+
+      const [rulesResponse, projectDetail] = await Promise.all([
+        getAssignmentRules(entityId),
+        getProjectDetail(projectId).catch((err) => {
+          console.warn('[Auto-Assign] Failed to fetch project detail:', err)
+          return { custom_sections: [] } as { custom_sections: ProjectCustomSection[] }
+        }),
+      ])
+
+      if (autoAssignAbortRef.current) { resetProgress(); toast({ title: "Cancelled", description: "Auto-assign was cancelled. No changes were made." }); return }
+
+      const allRules = rulesResponse.rules || []
+      const projectCustomSections = projectDetail.custom_sections || []
+
+      // Filter applicable rules
+      let applicableRules = allRules.filter((rule: AssignmentRule) => {
+        if (!rule.is_active) return false
+        if (rule.template_filter.length > 0 && templateId) return rule.template_filter.includes(templateId)
+        return true
+      })
+      if (ruleOverrides) {
+        applicableRules = applicableRules.filter((rule: AssignmentRule) => ruleOverrides[rule.rule_id] !== false)
       }
 
-      console.log(`[Auto-Assign] Processing ${itemIdsToProcess.size} items with scope: ${scope}`)
+      // Local settings tag-user mappings (user's own, HIGHEST priority)
+      const localMaps = currentSettings.users
+      const hasLocalMappings = Object.values(localMaps).some(m => Object.keys(m).length > 0)
+      const hasBackendRules = applicableRules.length > 0
 
-      let updated = 0
-      let skipped = 0
+      if (!hasLocalMappings && !hasBackendRules) {
+        resetProgress()
+        toast({ title: "No Rules", description: "No local mappings or backend rules found. Configure mappings in Settings or ask admin to create rules.", variant: "destructive" })
+        return
+      }
 
-      // Build updates for all matching items in one pass
-      setLineItems((prevItems: any[]) => prevItems.map((item: any) => {
-        if (!itemIdsToProcess.has(item.id)) return item
+      if (hasLocalMappings) addLog(`Local settings: ${Object.values(localMaps).reduce((n, m) => n + Object.keys(m).length, 0)} tag mappings`)
+      if (hasBackendRules) addLog(`Backend rules: ${applicableRules.length} rule(s): ${applicableRules.map(r => r.name).join(', ')}`)
 
-        // --- RFQ Assignee: match item tags → rfqAssigneeMap ---
-        const rfqUserIds = new Set<string>()
-        const itemTags = Array.isArray(item.category)
-          ? (item.category as string[])
-          : String(item.category || '').split(',').map((s: string) => s.trim()).filter(Boolean)
+      // Determine items
+      let itemsToProcess: any[]
+      if (scope === 'selected') {
+        const selectedSet = new Set(selectedItems)
+        itemsToProcess = lineItems.filter((item: any) => selectedSet.has(item.id))
+      } else if (scope === 'unassigned') {
+        itemsToProcess = lineItems.filter((item: any) => !item.rfqAssigneeName && !item.quoteAssigneeName)
+      } else {
+        itemsToProcess = [...lineItems]
+      }
 
-        itemTags.forEach((tag: string) => {
-          const mappedUserIds = rfqMap[tag]
-          if (mappedUserIds) {
-            mappedUserIds.forEach((uid: string) => rfqUserIds.add(uid))
+      addLog(`Evaluating ${itemsToProcess.length} items (scope: ${scope})`)
+
+      // ── Phase 2: Evaluating ──
+      setAutoAssignProgress(prev => ({ ...prev, phase: 'evaluating', total: itemsToProcess.length, rulesCount: applicableRules.length }))
+
+      const assignments: Array<{ project_item_id: string; user_ids: string[]; action: 'replace'; role: string }> = []
+      // Track which item+role combos are covered by local mappings (they take priority)
+      const localCovered = new Set<string>()
+      let matchedItems = 0
+
+      for (let i = 0; i < itemsToProcess.length; i++) {
+        if (autoAssignAbortRef.current) {
+          setAutoAssignProgress(prev => ({ ...prev, phase: 'cancelled', isRunning: false }))
+          toast({ title: "Cancelled", description: `Stopped after evaluating ${i} of ${itemsToProcess.length} items. No changes were made.` })
+          return
+        }
+
+        const item = itemsToProcess[i]
+        const itemProjectItemId = item.project_item_id
+        if (!itemProjectItemId) {
+          setAutoAssignProgress(prev => ({ ...prev, current: i + 1 }))
+          continue
+        }
+
+        const itemTags = [...(item.original_tags || []), ...(item.original_custom_tags || [])].map((t: string) => t.toLowerCase())
+        const uniqueItemTags = [...new Set(itemTags)]
+        let itemHasAssignment = false
+
+        // ── STEP 1: Local settings mappings (PRIORITY) ──
+        // RFQ panels mapped by TAG, Quote panels mapped by CUSTOMER
+        if (hasLocalMappings) {
+          const projectCustomer = (projectData.customer || '').toLowerCase()
+
+          // Tag-based: RFQ Assignee, RFQ Item Responsible
+          const tagRoleKeys: Array<{ mapKey: keyof typeof localMaps; role: string }> = [
+            { mapKey: 'rfqAssigneeMap', role: 'RFQ_ASSIGNEE' },
+            { mapKey: 'rfqResponsibleMap', role: 'RFQ_RESPONSIBLE' },
+          ]
+          for (const { mapKey, role } of tagRoleKeys) {
+            const map = localMaps[mapKey]
+            for (const tag of uniqueItemTags) {
+              const userIds = map[tag] || map[tag.charAt(0).toUpperCase() + tag.slice(1)] || Object.entries(map).find(([k]) => k.toLowerCase() === tag)?.[1]
+              if (userIds && userIds.length > 0) {
+                assignments.push({ project_item_id: itemProjectItemId, user_ids: userIds, action: 'replace', role })
+                localCovered.add(`${itemProjectItemId}::${role}`)
+                itemHasAssignment = true
+              }
+            }
           }
-        })
 
-        // --- Quote Assignee: match project customer → quoteAssigneeMap ---
-        const quoteUserIds = new Set<string>()
-        const customerName = projectData.customer || ''
-        if (customerName && quoteMap[customerName]) {
-          quoteMap[customerName].forEach((uid: string) => quoteUserIds.add(uid))
+          // Customer-based: Quote Assignee, Quote Item Responsible
+          const customerRoleKeys: Array<{ mapKey: keyof typeof localMaps; role: string }> = [
+            { mapKey: 'quoteAssigneeMap', role: 'QUOTE_ASSIGNEE' },
+            { mapKey: 'quoteResponsibleMap', role: 'QUOTE_RESPONSIBLE' },
+          ]
+          for (const { mapKey, role } of customerRoleKeys) {
+            const map = localMaps[mapKey]
+            if (projectCustomer) {
+              const userIds = Object.entries(map).find(([k]) => k.toLowerCase() === projectCustomer)?.[1]
+              if (userIds && userIds.length > 0) {
+                assignments.push({ project_item_id: itemProjectItemId, user_ids: userIds, action: 'replace', role })
+                localCovered.add(`${itemProjectItemId}::${role}`)
+                itemHasAssignment = true
+              }
+            }
+          }
         }
 
-        // Skip if no matches at all
-        if (rfqUserIds.size === 0 && quoteUserIds.size === 0) {
-          skipped++
-          return item
+        // ── STEP 2: Backend rules (only for roles NOT already covered by local) ──
+        if (hasBackendRules) {
+          for (const rule of applicableRules) {
+            if (!evaluateRuleConditions(rule.conditions, item, projectData, projectCustomSections)) continue
+
+            const outputs: any = rule.outputs || {}
+            const tagMappings: TagUserMapping[] = outputs.tag_mappings || []
+
+            // Project-level outputs (rfq_assignee / quote_assignee — top-level, no tag needed)
+            const projectRoles: Array<{ userIds: string[]; role: string }> = [
+              { userIds: outputs.rfq_assignee_user_ids || [], role: 'RFQ_ASSIGNEE' },
+              { userIds: outputs.quote_assignee_user_ids || [], role: 'QUOTE_ASSIGNEE' },
+            ]
+            for (const { userIds, role } of projectRoles) {
+              if (userIds.length === 0) continue
+              if (localCovered.has(`${itemProjectItemId}::${role}`)) continue // local takes priority
+              assignments.push({ project_item_id: itemProjectItemId, user_ids: userIds, action: 'replace', role })
+              itemHasAssignment = true
+            }
+
+            // Item-level outputs (rfq_item_responsible / quote_item_responsible — per tag)
+            for (const tm of tagMappings) {
+              if (!uniqueItemTags.includes(tm.tag.toLowerCase())) continue
+              const tagRoles: Array<{ userIds: string[]; role: string }> = [
+                { userIds: tm.rfq_item_responsible_user_ids || [], role: 'RFQ_RESPONSIBLE' },
+                { userIds: tm.quote_item_responsible_user_ids || [], role: 'QUOTE_RESPONSIBLE' },
+              ]
+              for (const { userIds, role } of tagRoles) {
+                if (userIds.length === 0) continue
+                if (localCovered.has(`${itemProjectItemId}::${role}`)) continue
+                assignments.push({ project_item_id: itemProjectItemId, user_ids: userIds, action: 'replace', role })
+                itemHasAssignment = true
+              }
+            }
+          }
         }
 
-        // Resolve user IDs to names
-        const rfqNames = Array.from(rfqUserIds).map(resolveUserName).join('; ')
-        const quoteNames = Array.from(quoteUserIds).map(resolveUserName).join('; ')
+        if (itemHasAssignment) {
+          matchedItems++
+          addLog(`${item.name || item.itemCode || itemProjectItemId.slice(0, 8)} → matched (${assignments.length} assignments so far)`)
+        }
 
-        // Only update fields that have new values
-        const newRfq = rfqNames || item.rfqAssigneeName
-        const newQuote = quoteNames || item.quoteAssigneeName
+        setAutoAssignProgress(prev => ({ ...prev, current: i + 1, matchedItems, assignmentsCount: assignments.length }))
 
-        if (newRfq !== item.rfqAssigneeName || newQuote !== item.quoteAssigneeName) {
-          updated++
+        // Yield to UI every 10 items so progress bar updates
+        if (i % 10 === 9) await new Promise(r => setTimeout(r, 0))
+      }
+
+      // Check abort again before sending
+      if (autoAssignAbortRef.current) {
+        setAutoAssignProgress(prev => ({ ...prev, phase: 'cancelled', isRunning: false }))
+        toast({ title: "Cancelled", description: "Auto-assign was cancelled. No changes were made." })
+        return
+      }
+
+      if (assignments.length === 0) {
+        resetProgress()
+        toast({ title: "No Matches", description: "Rules conditions did not match any items, or no users are configured in rule outputs." })
+        return
+      }
+
+      // Merge assignments
+      const mergedMap = new Map<string, { project_item_id: string; user_ids: Set<string>; role: string }>()
+      for (const a of assignments) {
+        const key = `${a.project_item_id}::${a.role}`
+        if (!mergedMap.has(key)) {
+          mergedMap.set(key, { project_item_id: a.project_item_id, user_ids: new Set(a.user_ids), role: a.role })
         } else {
-          skipped++
-          return item
+          a.user_ids.forEach((uid) => mergedMap.get(key)!.user_ids.add(uid))
         }
+      }
 
-        console.log(`[Auto-Assign] Item ${item.itemId}: RFQ="${rfqNames}", Quote="${quoteNames}"`)
-
-        return {
-          ...item,
-          rfqAssigneeName: newRfq,
-          quoteAssigneeName: newQuote,
-        }
+      const mergedAssignments = Array.from(mergedMap.values()).map((m) => ({
+        project_item_id: m.project_item_id,
+        user_ids: Array.from(m.user_ids),
+        action: 'replace' as const,
+        role: m.role as 'RFQ_ASSIGNEE' | 'RFQ_RESPONSIBLE' | 'QUOTE_ASSIGNEE' | 'QUOTE_RESPONSIBLE' | 'ASSIGNED',
       }))
 
-      console.log(`[Auto-Assign] Done: ${updated} updated, ${skipped} skipped`)
+      // ── Phase 3: Assigning ──
+      addLog(`Sending ${mergedAssignments.length} assignments to Factwise...`)
+      setAutoAssignProgress(prev => ({ ...prev, phase: 'assigning' }))
+
+      // Final abort check
+      if (autoAssignAbortRef.current) {
+        setAutoAssignProgress(prev => ({ ...prev, phase: 'cancelled', isRunning: false }))
+        toast({ title: "Cancelled", description: "Auto-assign was cancelled before sending to Factwise. No changes were made." })
+        return
+      }
+
+      const result = await bulkAssignUsersWithRoles(projectId, mergedAssignments)
+      console.log('[Auto-Assign] Bulk-assign result:', result)
+
+      addLog(`Done! ${result.updated} assignments applied, ${result.failed} failed.`)
+      setAutoAssignProgress(prev => ({ ...prev, phase: 'done', isRunning: false }))
 
       toast({
         title: "Users Assigned Successfully",
-        description: `Auto-assigned users to ${updated} item(s)${skipped > 0 ? `, skipped ${skipped} item(s)` : ''}`,
+        description: `Applied ${applicableRules.length} rule(s), assigned users to ${matchedItems} item(s). Refreshing...`,
       })
+
+      // Re-fetch users (for project-level assignees) + items (for per-item responsible) from API
+      try {
+        const [freshUsers, freshItems] = await Promise.all([
+          getProjectUsers(projectId),
+          getProjectItems(projectId),
+        ])
+
+        // Update project-level assignees
+        if (freshUsers) {
+          setProjectUsers(freshUsers.users || [])
+          setRfqAssignees((freshUsers.rfq_responsible_users || []).map(u => u.name).join('; '))
+          setQuoteAssignees((freshUsers.quote_responsible_users || []).map(u => u.name).join('; '))
+          if (freshUsers.section_assigned_users) setSectionAssignedUsers(freshUsers.section_assigned_users)
+        }
+
+        // Update items (per-item responsible names come from API)
+        if (freshItems?.items) {
+          const exchangeRates: Record<string, number> = {}
+          const uniqueSpecNames: string[] = []
+          const uniqueCustomIdNames: string[] = []
+          const transformed = freshItems.items.map((item: ProjectItem, index: number) =>
+            transformApiItem(item, index, exchangeRates, uniqueSpecNames, uniqueCustomIdNames)
+          )
+          setLineItems(transformed)
+        }
+      } catch (refreshErr) {
+        console.error('[Auto-Assign] Failed to refresh after assign:', refreshErr)
+      }
     } catch (error) {
       console.error('[Auto-Assign] Error:', error)
-
-      toast({
-        title: "Error",
-        description: error instanceof Error ? error.message : "An unexpected error occurred",
-        variant: "destructive",
-      })
+      resetProgress()
+      toast({ title: "Error", description: error instanceof Error ? error.message : "An unexpected error occurred", variant: "destructive" })
     }
 
     document.body.click()
@@ -2279,6 +2714,15 @@ export default function ProcurementDashboard() {
         }
       }
 
+      // Check if action changed
+      let actionChanged = false
+      if (editFormData.action !== undefined && originalItem && editFormData.action !== originalItem.action) {
+        actionChanged = true
+        hasChanges = true
+        updatePayload.action = editFormData.action
+        console.log('[Edit] Action changed from', originalItem.action, 'to', editFormData.action)
+      }
+
       // Check if category/tags changed
       let tagsChanged = false
       let newTags: string[] = []
@@ -2382,6 +2826,10 @@ export default function ProcurementDashboard() {
               .filter((u: any) => updatePayload.assigned_user_ids.includes(u.user_id))
               .map((u: any) => u.name)
               .join(', ')
+          }
+
+          if (actionChanged) {
+            updatedItem.action = editFormData.action
           }
 
           if (tagsChanged && newTags) {
@@ -2509,9 +2957,13 @@ export default function ProcurementDashboard() {
       const priceDigikey = Math.round(mockPriceForSource(item, 'Online - Digikey') * 100) / 100
       const priceEXIM = Math.round(mockPriceForSource(item, 'EXIM') * 100) / 100
 
-      // Find cheapest for unitPrice, totalPrice, and source (only real data sources)
+      // Find cheapest for unitPrice, totalPrice, and source
       const priceSources = [
+        { source: 'PO', price: pricePO },
+        { source: 'Contract', price: priceContract },
+        { source: 'Quote', price: priceQuote },
         { source: 'Digi-Key', price: priceDigikey },
+        { source: 'EXIM', price: priceEXIM },
       ].filter(p => p.price > 0)
       const cheapest = priceSources.length > 0
         ? priceSources.reduce((min, p) => p.price < min.price ? p : min)
@@ -2519,7 +2971,6 @@ export default function ProcurementDashboard() {
       const unitPrice = cheapest ? cheapest.price : 0
       const totalPrice = Math.round(unitPrice * item.quantity * 100) / 100
       const cheapestSource = 'Project'
-
       const vendor = item.vendor || ''
 
       return { ...item, pricePO, priceContract, priceQuote, priceDigikey, priceEXIM, unitPrice, totalPrice, source: cheapestSource, vendor }
@@ -2529,8 +2980,97 @@ export default function ProcurementDashboard() {
     document.body.click()
   }
 
+  // ── Criteria Evaluation Engine ──
+  // Evaluates a single criterion against an item
+  const evaluateCriterion = (criterion: { field: string; operator: string; value: string; unit?: string }, item: any): boolean => {
+    const { field, operator, value } = criterion
+    switch (field) {
+      case 'Price': {
+        const itemPrice = parseFloat(item.unitPrice) || 0
+        const targetPrice = parseFloat(value) || 0
+        switch (operator) {
+          case '>=': return itemPrice >= targetPrice
+          case '<=': return itemPrice <= targetPrice
+          case '>': return itemPrice > targetPrice
+          case '<': return itemPrice < targetPrice
+          case '=': return itemPrice === targetPrice
+          default: return false
+        }
+      }
+      case 'Quantity': {
+        const itemQty = parseFloat(item.quantity) || 0
+        const targetQty = parseFloat(value) || 0
+        switch (operator) {
+          case '>=': return itemQty >= targetQty
+          case '<=': return itemQty <= targetQty
+          case '>': return itemQty > targetQty
+          case '<': return itemQty < targetQty
+          case '=': return itemQty === targetQty
+          default: return false
+        }
+      }
+      case 'Vendor': {
+        const itemVendor = (item.vendor || '').toLowerCase()
+        const targetVendor = value.toLowerCase()
+        return operator === 'is' ? itemVendor === targetVendor : itemVendor !== targetVendor
+      }
+      case 'Source': {
+        const itemSource = (item.source || '').toLowerCase()
+        const targetSource = value.toLowerCase()
+        return operator === 'is' ? itemSource === targetSource : itemSource !== targetSource
+      }
+      case 'Tag': {
+        const itemTags = item.category && item.category !== 'Uncategorized'
+          ? String(item.category).split(',').map((t: string) => t.trim().toLowerCase())
+          : []
+        const targetTag = value.toLowerCase()
+        const hasTag = itemTags.includes(targetTag)
+        return operator === 'is' ? hasTag : !hasTag
+      }
+      case 'Date': {
+        // Compare against item creation or some date field — use current date as fallback
+        const targetDate = new Date(value).getTime()
+        const now = Date.now()
+        return operator === 'before' ? now < targetDate : now > targetDate
+      }
+      case 'Purpose': {
+        const itemAction = (item.action || '').toLowerCase()
+        const targetPurpose = value.toLowerCase()
+        return operator === 'is' ? itemAction === targetPurpose : itemAction !== targetPurpose
+      }
+      case 'Item ID Type': {
+        // Check if item has MPN/CPN/HSN based on itemId pattern
+        const itemId = item.itemId || ''
+        const hasType = value === 'MPN' ? /^[A-Z0-9\-]+$/i.test(itemId)
+          : value === 'HSN' ? /^\d{4,8}$/.test(itemId)
+          : true // CPN — assume true if neither MPN nor HSN
+        return operator === 'is' ? hasType : !hasType
+      }
+      default:
+        return false
+    }
+  }
+
+  // Evaluate a full criteria set (WHERE + AND/OR chain) against an item
+  const evaluateCriteria = (criteria: { conjunction: string; field: string; operator: string; value: string; unit?: string }[], item: any): boolean => {
+    if (!criteria || criteria.length === 0) return true // No criteria = match all
+
+    let result = evaluateCriterion(criteria[0], item)
+    for (let i = 1; i < criteria.length; i++) {
+      const c = criteria[i]
+      const val = evaluateCriterion(c, item)
+      if (c.conjunction === 'OR') {
+        result = result || val
+      } else {
+        // AND (default)
+        result = result && val
+      }
+    }
+    return result
+  }
+
   // Assign Actions Handler
-  const handleAssignActions = (scope: 'all' | 'unassigned' | 'selected') => {
+  const handleAssignActions = async (scope: 'all' | 'unassigned' | 'selected') => {
     let idsToUpdate: Set<number>
     if (scope === 'unassigned') {
       idsToUpdate = new Set(lineItems.filter((item: any) => !item.action || item.action.trim() === '').map((i: any) => i.id))
@@ -2540,19 +3080,71 @@ export default function ProcurementDashboard() {
       idsToUpdate = new Set(lineItems.map((i: any) => i.id))
     }
 
+    // Get local criteria from settings
+    const localCriteria = currentSettings.actions?.criteria || []
+    const localAction = currentSettings.actions?.criteriaAction || 'Quote'
+    const hasLocalCriteria = localCriteria.length > 0
+
+    // Evaluate rules and collect items that changed
+    const changedItems: { project_item_id: string; action: string }[] = []
+
     const updatedItems = lineItems.map((item: any) => {
       if (!idsToUpdate.has(item.id)) return item
 
-      // If Price is N/A (0 or missing) → Event, else → Quote
-      const hasPrice = item.unitPrice && item.unitPrice > 0
-      return { ...item, action: hasPrice ? 'Quote' : 'Event' }
+      let newAction: string | null = null
+
+      // Priority 1: Local settings criteria (user's own overrides)
+      if (hasLocalCriteria && evaluateCriteria(localCriteria, item)) {
+        newAction = localAction
+      }
+
+      // Priority 2: Admin action rules (from backend)
+      if (!newAction) {
+        for (const rule of adminActionRules) {
+          if (evaluateCriteria(rule.criteria, item)) {
+            newAction = rule.action
+            break
+          }
+        }
+      }
+
+      if (!newAction) return item // No rule matched
+
+      if (newAction !== item.action) {
+        changedItems.push({ project_item_id: item.project_item_id, action: newAction })
+      }
+      return { ...item, action: newAction }
     })
 
     setLineItems(updatedItems)
 
+    // Persist to backend
+    const projectId = new URLSearchParams(window.location.search).get('project_id') || ''
+    if (projectId && changedItems.length > 0) {
+      const saveActions = async () => {
+        let failed = 0
+        for (const { project_item_id, action } of changedItems) {
+          try {
+            await updateProjectItem(projectId, project_item_id, { action })
+          } catch (err) {
+            failed++
+            console.warn(`[Actions] Failed to save action for ${project_item_id}:`, err)
+          }
+        }
+        if (failed > 0) {
+          toast({ title: "Warning", description: `${failed} item(s) failed to save to server.`, variant: "destructive" })
+        }
+      }
+      saveActions()
+    }
+
+    const skipped = idsToUpdate.size - changedItems.length
+
     toast({
       title: "Actions Assigned",
-      description: `Assigned actions to ${idsToUpdate.size} item(s)`,
+      description: changedItems.length > 0
+        ? `Assigned actions to ${changedItems.length} item(s).${skipped > 0 ? ` ${skipped} item(s) had no matching rule.` : ''}`
+        : `No matching rules found for ${idsToUpdate.size} item(s). Configure rules in Settings or ask admin.`,
     })
 
     document.body.click()
@@ -2935,6 +3527,8 @@ export default function ProcurementDashboard() {
     projectManager: "Project Manager",
     rfqAssignee: "RFQ Assignee",
     quoteAssignee: "Quote Assignee",
+    rfqResponsible: "RFQ Item Responsible",
+    quoteResponsible: "Quote Item Responsible",
     action: "Action",
     assignedTo: "Assigned",
     dueDate: "Due Date",
@@ -4283,29 +4877,24 @@ export default function ProcurementDashboard() {
             </div>
           )}
 
-          {autoAssignProgress.isRunning && (
-            <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="animate-spin h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full" />
-                  <div>
-                    <div className="font-medium text-blue-900">
-                      Auto-assigning users...
-                    </div>
-                    <div className="text-sm text-blue-700">
-                      {autoAssignProgress.current}/{autoAssignProgress.total} items processed
-                      ({autoAssignProgress.total > 0 ? ((autoAssignProgress.current / autoAssignProgress.total) * 100).toFixed(0) : 0}%)
-                    </div>
-                  </div>
-                </div>
-
-                <div className="w-64 h-2 bg-blue-200 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-600 transition-all duration-300"
-                    style={{ width: `${autoAssignProgress.total > 0 ? (autoAssignProgress.current / autoAssignProgress.total) * 100 : 0}%` }}
-                  />
-                </div>
-              </div>
+          {(autoAssignProgress.isRunning || autoAssignProgress.phase === 'done' || autoAssignProgress.phase === 'cancelled') && (
+            <div className="mb-3 flex items-center gap-3 px-2 py-2 rounded bg-gray-50 border text-sm">
+              {autoAssignProgress.isRunning && (
+                <div className="animate-spin h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full flex-shrink-0" />
+              )}
+              <span className="text-gray-700 flex-1">
+                {autoAssignProgress.phase === 'fetching' && 'Loading rules...'}
+                {autoAssignProgress.phase === 'evaluating' && `Evaluating ${autoAssignProgress.current}/${autoAssignProgress.total} items...`}
+                {autoAssignProgress.phase === 'assigning' && 'Assigning users...'}
+                {autoAssignProgress.phase === 'done' && `Done — ${autoAssignProgress.matchedItems} items, ${autoAssignProgress.assignmentsCount} assignments`}
+                {autoAssignProgress.phase === 'cancelled' && 'Cancelled — no changes made'}
+              </span>
+              {autoAssignProgress.isRunning && (
+                <button onClick={() => { autoAssignAbortRef.current = true }} className="text-xs text-red-600 hover:text-red-800 font-medium">Cancel</button>
+              )}
+              {!autoAssignProgress.isRunning && (
+                <button onClick={() => setAutoAssignProgress(prev => ({ ...prev, phase: 'fetching' as const, log: [], isRunning: false, matchedItems: 0, assignmentsCount: 0 }))} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+              )}
             </div>
           )}
 
@@ -4569,11 +5158,11 @@ export default function ProcurementDashboard() {
                             ) : (
                               <UiTooltip>
                                 <UiTooltipTrigger>
-                                  <span className="flex items-center gap-1 cursor-pointer">
-                                    <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate">
+                                  <span className="flex items-center gap-1 cursor-pointer overflow-hidden" style={{ maxWidth: '100%' }}>
+                                    <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[110px]">
                                       {categories[0].trim()}
                                     </Badge>
-                                    <span className="text-blue-600 font-medium text-xs hover:text-blue-800 whitespace-nowrap">
+                                    <span className="text-blue-600 font-medium text-xs hover:text-blue-800 whitespace-nowrap flex-shrink-0">
                                       +{categories.length - 1}
                                     </span>
                                   </span>
@@ -4593,11 +5182,12 @@ export default function ProcurementDashboard() {
                         )
                       }
 
-                      if (columnKey === "projectManager" || columnKey === "rfqAssignee" || columnKey === "quoteAssignee") {
-                        // Project Manager is project-level; RFQ/Quote Assignee are per-item (filled by auto-assign)
+                      if (columnKey === "projectManager" || columnKey === "rfqAssignee" || columnKey === "quoteAssignee" || columnKey === "rfqResponsible" || columnKey === "quoteResponsible") {
                         const value = columnKey === "projectManager" ? projectManagers
-                          : columnKey === "rfqAssignee" ? (item.rfqAssigneeName || '')
-                          : (item.quoteAssigneeName || '')
+                          : columnKey === "rfqAssignee" ? rfqAssignees  // project-level, same for all items
+                          : columnKey === "quoteAssignee" ? quoteAssignees  // project-level, same for all items
+                          : columnKey === "rfqResponsible" ? (item.rfqResponsibleName || '')  // per-item
+                          : (item.quoteResponsibleName || '')  // per-item
                         return (
                           <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
                             {value ? (
@@ -5137,59 +5727,16 @@ export default function ProcurementDashboard() {
                                     ? "text-green-700 bg-green-50 px-2 py-1 rounded"
                                     : "text-gray-900"
                               }`}
-                              title={hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(2)}` : "N/A"}
+                              title={hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(5)}` : "N/A"}
                             >
-                              {hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(2)}` : "-"}
+                              {hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(5)}` : "-"}
                             </span>
                           </td>
                         )
                       }
 
                       if (columnKey === "source") {
-                        // Find cheapest price source (including Digikey and Mouser pricing with quantity-based prices)
-                        // Use quantity_price if available, otherwise fall back to unit_price
-                        // NEW: Only use pricing if status is 'available'
-                        const digikeyPricingForSource = (item as any).digikey_pricing
-                        const digikeyBasePrice = digikeyPricingForSource?.status === 'available'
-                          ? (digikeyPricingForSource?.quantity_price ?? digikeyPricingForSource?.unit_price)
-                          : undefined
-                        const digikeyPrice = digikeyBasePrice ?
-                          (typeof digikeyBasePrice === 'number' ? digikeyBasePrice : parseFloat(digikeyBasePrice)) :
-                          undefined
-
-                        // Convert Mouser USD price to item's currency for comparison (use quantity_price if available)
-                        // NEW: Only use pricing if status is 'available'
-                        let mouserPrice = undefined
-                        const mouserPricingForSource = (item as any).mouser_pricing
-                        const mouserBasePrice = mouserPricingForSource?.status === 'available'
-                          ? (mouserPricingForSource?.quantity_price ?? mouserPricingForSource?.unit_price)
-                          : undefined
-                        if (mouserBasePrice) {
-                          const mouserUsdPrice = typeof mouserBasePrice === 'number' ? mouserBasePrice : parseFloat(mouserBasePrice)
-
-                          // Get target currency from ITEM (not Digikey)
-                          const itemCurrency = (item as any).currency
-                          const targetCurrency = itemCurrency?.code || 'USD'
-
-                          if (targetCurrency === 'USD') {
-                            mouserPrice = mouserUsdPrice
-                          } else {
-                            const exchangeRateKey = `USD_TO_${targetCurrency}`
-                            const exchangeRate = exchangeRates[exchangeRateKey]
-                            mouserPrice = exchangeRate ? mouserUsdPrice * exchangeRate : mouserUsdPrice
-                          }
-                        }
-
-                        // Only use real data sources
-                        const prices = [
-                          { source: 'Digi-Key', value: digikeyPrice },
-                          { source: 'Mouser', value: mouserPrice },
-                        ].filter((p): p is { source: string; value: number } => p.value !== undefined && !isNaN(p.value) && p.value > 0)
-
-                        const cheapest = prices.length > 0
-                          ? prices.reduce((min: { source: string; value: number }, p: { source: string; value: number }) => p.value < min.value ? p : min)
-                          : null
-
+                        // Source column is always "Project" — no hardcoded distributor sources
                         return (
                           <td key={columnKey} className="p-2 text-center" style={stickyStyle}>
                             <span className="text-xs font-medium text-gray-900">
@@ -5206,9 +5753,9 @@ export default function ProcurementDashboard() {
                           <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
                               className={`text-xs font-semibold ${hasPrice ? "text-gray-900" : "text-red-700"}`}
-                              title={hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(2)}` : "N/A"}
+                              title={hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(5)}` : "N/A"}
                             >
-                              {hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(2)}` : "N/A"}
+                              {hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(5)}` : "N/A"}
                             </span>
                           </td>
                         )
@@ -5220,9 +5767,9 @@ export default function ProcurementDashboard() {
                           <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
                               className={`text-xs font-medium ${hasPrice ? "text-gray-900" : "text-red-700"}`}
-                              title={hasPrice ? `$${item.totalPrice.toFixed(2)}` : "N/A"}
+                              title={hasPrice ? `${(item as any).currency?.symbol || '₹'}${item.totalPrice.toFixed(5)}` : "N/A"}
                             >
-                              {hasPrice ? `$${item.totalPrice.toFixed(2)}` : "N/A"}
+                              {hasPrice ? `${(item as any).currency?.symbol || '₹'}${item.totalPrice.toFixed(5)}` : "N/A"}
                             </span>
                           </td>
                         )
@@ -5414,6 +5961,8 @@ export default function ProcurementDashboard() {
           setSettingsInitialTab('users')
           setSettingsOpen(true)
         }}
+        entityId={projectData.buyer_entity_id}
+        templateId={projectData.template_id}
       />
 
       <AutoFillPricesPopover
@@ -5891,9 +6440,10 @@ export default function ProcurementDashboard() {
             </div>
             <div className="flex-1 min-h-0">
               <SettingsPanel
+                entityId={projectData.buyer_entity_id}
                 allTags={allTags}
                 allCustomers={projectData.customer ? [projectData.customer] : []}
-                availableUsers={availableUsers}
+                availableUsers={eligibleUsers}
                 rfqResponsibleUsers={rfqResponsibleUsers}
                 quoteResponsibleUsers={quoteResponsibleUsers}
                 current={currentSettings}
@@ -5909,6 +6459,7 @@ export default function ProcurementDashboard() {
                   setSettingsOpen(false)
                 }}
                 onCancel={() => setSettingsOpen(false)}
+                onAdminActionRulesLoaded={(rules) => setAdminActionRules(rules)}
               />
             </div>
           </div>

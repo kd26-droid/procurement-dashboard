@@ -75,6 +75,7 @@ async function apiRequest<T>(
     timeoutMs?: number;
     maxRetries?: number;
     retryDelayMs?: number;
+    skipSuccessCheck?: boolean;
   } = {}
 ): Promise<T> {
   const token = getAuthToken();
@@ -83,7 +84,7 @@ async function apiRequest<T>(
     throw new Error('Authentication token not found. Please provide token in URL.');
   }
 
-  const { timeoutMs = 45000, maxRetries = 3, retryDelayMs = 1000, ...fetchOptions } = options;
+  const { timeoutMs = 45000, maxRetries = 3, retryDelayMs = 1000, skipSuccessCheck = false, ...fetchOptions } = options;
 
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
@@ -135,7 +136,7 @@ async function apiRequest<T>(
 
       const data = await response.json();
 
-      if (!data.success) {
+      if (!skipSuccessCheck && !data.success) {
         throw new Error(data.error || 'API request failed');
       }
 
@@ -175,12 +176,14 @@ export interface ProjectOverview {
     project_code: string;
     project_name: string;
     customer_name: string;
+    buyer_entity_id: string;
     buyer_entity_name: string;
     deadline: string | null;
     validity_from: string | null;
     status: string;
     description: string;
     tags: string[];
+    template_id?: string;
   };
   summary: {
     total_items: number;
@@ -240,8 +243,11 @@ export interface ProjectItem {
     user_id: string;
     email: string;
     name: string;
+    role?: string;  // ASSIGNED | RFQ_RESPONSIBLE | QUOTE_RESPONSIBLE
   }>;
   assigned_users_count: number;
+  rfq_responsible_users?: Array<{ user_id: string; email: string; name: string }>;
+  quote_responsible_users?: Array<{ user_id: string; email: string; name: string }>;
   delivery_schedules: Array<{
     delivery_schedule_id: string;
     quantity: number;
@@ -253,6 +259,7 @@ export interface ProjectItem {
   modified_datetime: string;
   created_by_user_id: string | null;
   modified_by_user_id: string | null;
+  action: string;
   project_id: string;
   enterprise_item_id: string | null;
   bom_info: {
@@ -495,6 +502,7 @@ export interface ProjectUsersResponse {
   rfq_responsible_users?: ProjectUser[];
   quote_responsible_users?: ProjectUser[];
   available_users?: ProjectUser[];
+  section_assigned_users?: ProjectUser[];
   total: number;
 }
 
@@ -534,6 +542,7 @@ export interface UpdateItemRequest {
   rate?: number;
   quantity?: number;
   notes?: string;
+  action?: string;
   custom_fields?: Record<string, any>;
   assigned_user_ids?: string[];
 }
@@ -549,6 +558,7 @@ export interface BulkAssignRequest {
     project_item_id: string;
     user_ids: string[];
     action: 'replace' | 'add' | 'remove';
+    role?: 'ASSIGNED' | 'RFQ_ASSIGNEE' | 'QUOTE_ASSIGNEE' | 'RFQ_RESPONSIBLE' | 'QUOTE_RESPONSIBLE';
   }>;
 }
 
@@ -565,6 +575,38 @@ export interface BulkAssignResponse {
 // ============================================================================
 // API Functions
 // ============================================================================
+
+/**
+ * Get project detail including custom sections/fields from template
+ */
+export interface ProjectCustomField {
+  name: string;
+  type: string; // CHOICE, MULTI_CHOICE, SHORTTEXT, LONGTEXT, INTEGER, FLOAT, DATE, etc.
+  text_value?: string | null;
+  integer_value?: number | null;
+  decimal_value?: number | null;
+  date_value?: string | null;
+  multi_choice_value?: string[] | null;
+}
+
+export interface ProjectCustomSection {
+  name: string;
+  section_type: 'OTHER' | 'ITEM'; // OTHER = project-level, ITEM = item-level
+  custom_fields: ProjectCustomField[];
+}
+
+export interface ProjectDetailResponse {
+  success?: boolean;
+  custom_sections?: ProjectCustomSection[];
+  [key: string]: any;
+}
+
+export async function getProjectDetail(projectId: string): Promise<ProjectDetailResponse> {
+  return apiRequest<ProjectDetailResponse>(
+    `/organization/project/${projectId}/`,
+    { skipSuccessCheck: true }
+  );
+}
 
 /**
  * Get project overview and summary statistics
@@ -914,6 +956,231 @@ export async function triggerMouserPricing(
     `/organization/project/${projectId}/strategy/mouser/fetch/`,
     {
       method: 'POST'
+    }
+  );
+}
+
+// ============================================================================
+// Assignment Rules Engine — Types & API Functions
+// ============================================================================
+
+export interface AssignmentRuleCondition {
+  field: string;
+  field_type: 'BUILTIN' | 'CUSTOM';
+  operator: 'is' | 'is_not' | 'contains' | 'does_not_contain';
+  value: string;
+  section_name?: string;
+  conjunction?: 'AND' | 'OR';
+}
+
+export interface TagUserMapping {
+  tag: string;
+  rfq_assignee_user_ids: string[];
+  quote_assignee_user_ids: string[];
+  rfq_item_responsible_user_ids: string[];
+  quote_item_responsible_user_ids: string[];
+}
+
+export interface AssignmentRuleOutputs {
+  tag_mappings: TagUserMapping[];
+}
+
+export interface AssignmentRule {
+  rule_id: string;
+  name: string;
+  template_filter: string[];
+  conditions: AssignmentRuleCondition[];
+  outputs: AssignmentRuleOutputs;
+  is_active: boolean;
+  created_by?: string | null;
+  created_at?: string | null;
+}
+
+export interface AssignmentRuleListResponse {
+  rules: AssignmentRule[];
+}
+
+export interface CreateAssignmentRuleRequest {
+  name: string;
+  template_filter?: string[];
+  conditions?: AssignmentRuleCondition[];
+  outputs?: AssignmentRuleOutputs;
+}
+
+export interface UpdateAssignmentRuleRequest extends CreateAssignmentRuleRequest {
+  is_active?: boolean;
+}
+
+export interface FieldOption {
+  field: string;
+  label: string;
+  type: string;
+  values: string[];
+  section_name?: string;
+}
+
+export interface TemplateFieldOptions {
+  template_id: string;
+  template_name: string;
+  custom_fields: FieldOption[];
+}
+
+export interface FieldOptionsResponse {
+  builtin_fields: FieldOption[];
+  templates: TemplateFieldOptions[];
+  users: { user_id: string; name: string }[];
+}
+
+/**
+ * Get all assignment rules for an entity
+ */
+export async function getAssignmentRules(
+  entityId: string
+): Promise<AssignmentRuleListResponse> {
+  return apiRequest<AssignmentRuleListResponse>(
+    `/organization/entity/${entityId}/assignment-rules/`,
+    { skipSuccessCheck: true }
+  );
+}
+
+/**
+ * Create a new assignment rule
+ */
+export async function createAssignmentRule(
+  entityId: string,
+  rule: CreateAssignmentRuleRequest
+): Promise<AssignmentRule> {
+  return apiRequest<AssignmentRule>(
+    `/organization/entity/${entityId}/assignment-rules/`,
+    {
+      method: 'POST',
+      body: JSON.stringify(rule),
+      skipSuccessCheck: true,
+    }
+  );
+}
+
+/**
+ * Update an existing assignment rule
+ */
+export async function updateAssignmentRule(
+  entityId: string,
+  ruleId: string,
+  rule: UpdateAssignmentRuleRequest
+): Promise<AssignmentRule> {
+  return apiRequest<AssignmentRule>(
+    `/organization/entity/${entityId}/assignment-rules/${ruleId}/`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(rule),
+      skipSuccessCheck: true,
+    }
+  );
+}
+
+/**
+ * Delete an assignment rule
+ */
+export async function deleteAssignmentRule(
+  entityId: string,
+  ruleId: string
+): Promise<{ success: boolean }> {
+  return apiRequest<{ success: boolean }>(
+    `/organization/entity/${entityId}/assignment-rules/${ruleId}/`,
+    {
+      method: 'DELETE',
+      skipSuccessCheck: true,
+    }
+  );
+}
+
+/**
+ * Get available fields and values for the rule builder UI
+ */
+export async function getRuleFieldOptions(
+  entityId: string
+): Promise<FieldOptionsResponse> {
+  return apiRequest<FieldOptionsResponse>(
+    `/organization/entity/${entityId}/assignment-rules/field-options/`,
+    { skipSuccessCheck: true }
+  );
+}
+
+// ============================================================================
+// Action Rules Engine — Types & API Functions
+// ============================================================================
+
+export type ActionRuleActionType = 'Event' | 'Quote' | 'PO' | 'Contract'
+
+export type ActionRuleCriteriaField =
+  | 'Price'
+  | 'Quantity'
+  | 'Vendor'
+  | 'Source'
+  | 'Tag'
+  | 'Date'
+  | 'Purpose'
+  | 'Item ID Type'
+
+export type ActionRuleCriteriaOperator =
+  | 'is'
+  | 'is_not'
+  | 'before'
+  | 'after'
+  | '='
+  | '>'
+  | '<'
+  | '>='
+  | '<='
+
+export interface ActionRuleCriterion {
+  id: string
+  conjunction: 'WHERE' | 'AND' | 'OR'
+  field: ActionRuleCriteriaField
+  operator: ActionRuleCriteriaOperator
+  value: string
+  unit?: string
+}
+
+export interface ActionRule {
+  rule_id: string
+  name: string
+  template_filter: string[]
+  criteria: ActionRuleCriterion[]
+  action: ActionRuleActionType
+  is_active: boolean
+  created_by?: string | null
+  created_at?: string | null
+}
+
+export interface ActionRuleListResponse {
+  rules: ActionRule[]
+}
+
+/**
+ * Get all action rules for an entity
+ */
+export async function getActionRules(
+  entityId: string
+): Promise<ActionRuleListResponse> {
+  return apiRequest<ActionRuleListResponse>(
+    `/organization/entity/${entityId}/action-rules/`,
+    { skipSuccessCheck: true }
+  )
+}
+
+/**
+ * Bulk assign users to items with role support
+ */
+export async function bulkAssignUsersWithRoles(
+  projectId: string,
+  assignments: BulkAssignRequest['assignments']
+): Promise<BulkAssignResponse> {
+  return apiRequest<BulkAssignResponse>(
+    `/organization/project/${projectId}/strategy/bulk-assign/`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ assignments }),
     }
   );
 }
