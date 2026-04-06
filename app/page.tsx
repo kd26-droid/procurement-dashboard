@@ -1835,13 +1835,9 @@ export default function ProcurementDashboard() {
     )
 
     // Only add Digikey columns if API keys are configured
-    if (digikeyEnabled) {
-      headers.push('Digi-Key Unit Price', 'Digi-Key Qty Price', 'Digi-Key Stock', 'Digi-Key Status')
-    }
-    // Only add Mouser columns if API keys are configured
-    if (mouserEnabled) {
-      headers.push('Mouser Unit Price', 'Mouser Qty Price', 'Mouser Stock', 'Mouser Status')
-    }
+    // Always include Digikey and Mouser columns
+    headers.push('Digi-Key Unit Price', 'Digi-Key Qty Price', 'Digi-Key Stock', 'Digi-Key Status')
+    headers.push('Mouser Unit Price', 'Mouser Qty Price', 'Mouser Stock', 'Mouser Status')
 
     // Add dynamic spec columns
     specColumns.forEach(specName => {
@@ -1925,24 +1921,19 @@ export default function ProcurementDashboard() {
         escapeCSV(item.source),
       )
 
-      // Only add Digikey values if enabled
-      if (digikeyEnabled) {
-        row.push(
-          digikeyDetails.unitPrice,
-          digikeyDetails.quantityPrice,
-          digikeyDetails.stock,
-          escapeCSV(digikeyDetails.status),
-        )
-      }
-      // Only add Mouser values if enabled
-      if (mouserEnabled) {
-        row.push(
-          mouserDetails.unitPrice,
-          mouserDetails.quantityPrice,
-          mouserDetails.stock,
-          escapeCSV(mouserDetails.status),
-        )
-      }
+      // Always add Digikey and Mouser values
+      row.push(
+        digikeyDetails.unitPrice,
+        digikeyDetails.quantityPrice,
+        digikeyDetails.stock,
+        escapeCSV(digikeyDetails.status),
+      )
+      row.push(
+        mouserDetails.unitPrice,
+        mouserDetails.quantityPrice,
+        mouserDetails.stock,
+        escapeCSV(mouserDetails.status),
+      )
 
       // Add dynamic spec values
       specColumns.forEach(specName => {
@@ -3507,11 +3498,8 @@ export default function ProcurementDashboard() {
   const specColumnKeys = specColumns.map(specName => `spec_${specName.replace(/\s+/g, '_')}`)
   const allColumns = [...columnOrder.slice(0, 3), ...specColumnKeys, ...columnOrder.slice(3)] // Insert specs after itemId, description, bom
 
-  // Hide Digikey/Mouser columns if API keys not configured
-  const distributorHiddenCols = [
-    ...(!digikeyEnabled ? ['priceDigikey'] : []),
-    ...(!mouserEnabled ? ['priceMouser'] : []),
-  ]
+  // Always show Digikey/Mouser columns regardless of API key configuration
+  const distributorHiddenCols: string[] = []
   const visibleColumns = allColumns.filter((col) => !hiddenColumns.includes(col) && !distributorHiddenCols.includes(col))
 
   // Build column labels dynamically with spec columns
@@ -4690,9 +4678,7 @@ export default function ProcurementDashboard() {
                   <div className="p-2 space-y-1">
                     {Object.entries(columnLabels)
                     .filter(([columnKey]) => {
-                      // Hide distributor columns from menu if API keys not configured
-                      if (columnKey === 'priceDigikey' && !digikeyEnabled) return false
-                      if (columnKey === 'priceMouser' && !mouserEnabled) return false
+                      // Always show distributor columns in the menu
                       return true
                     })
                     .map(([columnKey, label]) => {
