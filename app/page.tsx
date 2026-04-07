@@ -13,9 +13,26 @@ import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel, LabelList } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
-import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion } from '@/lib/api'
+import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, searchVendors, getItemCustomVendors, addItemCustomVendors, removeItemCustomVendor, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion, type CustomVendor } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
 import { useToast } from "@/hooks/use-toast"
+import {
+  usePricingLookup,
+  loadPricingSettings,
+  savePricingSettings,
+  DEFAULT_PRICING_SETTINGS,
+  type PricingLookupSettings,
+} from "@/hooks/use-pricing-lookup"
+import { PricingLookupSettingsButton } from "@/components/pricing-lookup-settings"
+import {
+  fetchMpnHistory,
+  getAdminPrice,
+  isExpiredContract,
+  navigateInFactwise,
+  buildFactwiseUrl,
+  type PricingRecord,
+  type PricingSourceType,
+} from "@/lib/pricingRepo"
 import {
   Settings,
   Users,
@@ -548,6 +565,15 @@ export default function ProcurementDashboard() {
   // Ref to prevent double loading in React Strict Mode
   const loadingStartedRef = useRef(false)
   const [vendorSearchTerm, setVendorSearchTerm] = useState("")
+  // Edit-popup custom vendor state
+  const [editVendorSearchInput, setEditVendorSearchInput] = useState("")
+  const [editVendorSearchResults, setEditVendorSearchResults] = useState<CustomVendor[]>([])
+  const [editVendorSearching, setEditVendorSearching] = useState(false)
+  const [editVendorSelectedIds, setEditVendorSelectedIds] = useState<string[]>([])
+  const [editAttachedVendors, setEditAttachedVendors] = useState<CustomVendor[]>([])  // common-intersection in bulk mode
+  const [editVendorMutating, setEditVendorMutating] = useState(false)
+  // True once the user has added or removed any custom vendor in this edit session — enables the Save button
+  const [editVendorDirty, setEditVendorDirty] = useState(false)
   const [userSearchTerm, setUserSearchTerm] = useState("")
   const [selectedItems, setSelectedItems] = useState<number[]>([])
   const [editingItem, setEditingItem] = useState<any | null>(null)
@@ -601,6 +627,10 @@ export default function ProcurementDashboard() {
     "vendor",
     "unitPrice",
     "source",
+    "pricePO",
+    "priceContract",
+    "priceQuote",
+    "priceRFQ",
     "priceDigikey",
     "priceMouser",
   ])
@@ -615,6 +645,18 @@ export default function ProcurementDashboard() {
   const [customIdColumns, setCustomIdColumns] = useState<string[]>([])
   // Dynamic internal notes column name (from Item Directory template)
   const [internalNotesLabel, setInternalNotesLabel] = useState<string>('Internal Notes')
+
+  // Pricing repo lookup settings — persisted to localStorage
+  const [pricingSettings, setPricingSettings] = useState<PricingLookupSettings>(DEFAULT_PRICING_SETTINGS)
+  // Gate: pricing repo fetch only runs after the user explicitly clicks "Load Pricing"
+  const [pricingEnabled, setPricingEnabled] = useState<boolean>(false)
+  useEffect(() => {
+    setPricingSettings(loadPricingSettings())
+  }, [])
+  const updatePricingSettings = (next: PricingLookupSettings) => {
+    setPricingSettings(next)
+    savePricingSettings(next)
+  }
 
   // Distributor enabled flags (based on API keys configured in admin)
   const [digikeyEnabled, setDigikeyEnabled] = useState(false)
@@ -666,6 +708,11 @@ export default function ProcurementDashboard() {
   const [actionResultsLoading, setActionResultsLoading] = useState(false)
   const [showAnalyticsPopup, setShowAnalyticsPopup] = useState(false)
   const [selectedItemForAnalytics, setSelectedItemForAnalytics] = useState<any>(null)
+  // Full pricing-repo history for the currently-open analytics popup (lazy-loaded)
+  const [analyticsMpnHistory, setAnalyticsMpnHistory] = useState<PricingRecord[] | null>(null)
+  const [analyticsHistoryLoading, setAnalyticsHistoryLoading] = useState(false)
+  // Confirmation dialog: cell click → confirm before navigating to source doc
+  const [pendingNavRecord, setPendingNavRecord] = useState<PricingRecord | null>(null)
   const [showEditDialog, setShowEditDialog] = useState(false)
   const [editFormData, setEditFormData] = useState<any>({})
 
@@ -1072,6 +1119,7 @@ export default function ProcurementDashboard() {
         return u.name || u.user_id || u
       }).join('; '),
       vendor: '',
+      custom_vendors: [] as CustomVendor[],  // populated when edit popup opens or bulk-loaded later
       action: item.action || '',
       dueDate: '',
       source: '',
@@ -1231,8 +1279,70 @@ export default function ProcurementDashboard() {
       setIsLoadingAllItems(false)
       setLoadingError(null)
       triggerPricingJobs(projectId)
+      // Custom vendor hydration kicks off via useEffect([allItemsLoaded])
     }
   }
+
+  // Background hydrator: fetch custom_vendors for every loaded line item in small parallel waves.
+  // Background hydrator: fetch custom_vendors for every loaded line item in small parallel waves.
+  // Runs once after items finish loading — and only runs once per session per project.
+  // Note: this is a temporary workaround until the backend batches custom_vendors into the items endpoint.
+  const customVendorHydrationDoneRef = useRef(false)
+  useEffect(() => {
+    if (!allItemsLoaded) return
+    if (customVendorHydrationDoneRef.current) return
+    if (lineItems.length === 0) return
+
+    const projectId = getProjectId()
+    if (!projectId) return
+
+    customVendorHydrationDoneRef.current = true
+    let cancelled = false
+
+    const run = async () => {
+      // Snapshot IDs directly from the setter to avoid stale closure on lineItems
+      const snapshot: Array<{ id: number; project_item_id: string }> = []
+      lineItems.forEach((li: any) => {
+        if (li.project_item_id) snapshot.push({ id: li.id, project_item_id: li.project_item_id })
+      })
+      if (snapshot.length === 0) return
+      console.log(`[Custom Vendors] Hydrating ${snapshot.length} items in background...`)
+
+      const CONCURRENCY = 8
+      let i = 0
+      while (i < snapshot.length) {
+        if (cancelled) return
+        const wave = snapshot.slice(i, i + CONCURRENCY)
+        i += CONCURRENCY
+        const results = await Promise.all(
+          wave.map(({ id, project_item_id }) =>
+            getItemCustomVendors(projectId, project_item_id)
+              .then(res => ({ id, vendors: res.custom_vendors || [] }))
+              .catch(err => {
+                console.warn('[Custom Vendors] Failed for', project_item_id, err)
+                return null
+              })
+          )
+        )
+        if (cancelled) return
+        const byId = new Map<number, CustomVendor[]>()
+        for (const r of results) {
+          if (r) byId.set(r.id, r.vendors)
+        }
+        if (byId.size > 0) {
+          setLineItems((prev: any[]) =>
+            prev.map(li => (byId.has(li.id) ? { ...li, custom_vendors: byId.get(li.id)! } : li))
+          )
+        }
+      }
+      console.log('[Custom Vendors] Hydration complete')
+    }
+
+    run()
+    return () => { cancelled = true }
+    // We intentionally only trigger on allItemsLoaded flipping true.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allItemsLoaded])
 
   // Retry only the failed chunks
   const retryFailedChunks = async () => {
@@ -1807,6 +1917,39 @@ export default function ProcurementDashboard() {
     }
   }
 
+  // ── Pricing repo v2 cheapest-by-MPN lookup ──
+  // Gated by pricingEnabled — only fires after the user clicks "Load Pricing"
+  const pricingLookup = usePricingLookup(lineItems, pricingSettings, pricingEnabled)
+
+  // Load full pricing-repo history for the currently-selected analytics item
+  useEffect(() => {
+    if (!showAnalyticsPopup || !selectedItemForAnalytics) {
+      setAnalyticsMpnHistory(null)
+      return
+    }
+    const mpn = pricingLookup.itemIdToMpn.get(selectedItemForAnalytics.id) ?? null
+    if (!mpn) {
+      setAnalyticsMpnHistory([])
+      return
+    }
+    let cancelled = false
+    setAnalyticsHistoryLoading(true)
+    fetchMpnHistory(mpn)
+      .then((rows) => {
+        if (cancelled) return
+        setAnalyticsMpnHistory(rows)
+        setAnalyticsHistoryLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setAnalyticsMpnHistory([])
+        setAnalyticsHistoryLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [showAnalyticsPopup, selectedItemForAnalytics, pricingLookup.itemIdToMpn])
+
   const filteredAndSortedItems = useMemo(() => {
     let filtered = lineItems.filter((item: any) => {
       const term = searchTerm.toLowerCase()
@@ -2107,7 +2250,11 @@ export default function ProcurementDashboard() {
         escapeCSV(item.action),
         escapeCSV(item.assignedTo),
         escapeCSV(item.dueDate),
-        escapeCSV(item.vendor),
+        escapeCSV(
+          Array.isArray(item.custom_vendors) && item.custom_vendors.length > 0
+            ? item.custom_vendors.map((v: CustomVendor) => v.vendor_name).join('; ')
+            : (item.vendor || '')
+        ),
         escapeCSV(item.currency?.code || ''),
         formatPrice(item.unitPrice, itemCurrencySymbol),
         formatPrice(item.totalPrice, itemCurrencySymbol),
@@ -2936,14 +3083,22 @@ export default function ProcurementDashboard() {
         }
       }
 
-      // If nothing changed, show message and return
+      // If nothing else changed, just close — custom vendor mutations have already been committed
       if (!hasChanges) {
-        toast({
-          title: "No Changes",
-          description: "No fields were modified",
-        })
+        if (editVendorDirty) {
+          toast({
+            title: "Saved",
+            description: "Vendor changes saved",
+          })
+        } else {
+          toast({
+            title: "No Changes",
+            description: "No fields were modified",
+          })
+        }
         setShowEditDialog(false)
         setEditFormData({})
+        setEditVendorDirty(false)
         return
       }
 
@@ -3335,11 +3490,71 @@ export default function ProcurementDashboard() {
   }
 
   // Manual Edit Handlers
-  const handleOpenEdit = () => {
+  const handleOpenEdit = async () => {
     if (selectedItems.length === 0) return
 
     // Get the selected line items
     const itemsToEdit = lineItems.filter((item: any) => selectedItems.includes(item.id))
+
+    // Reset custom-vendor popup state
+    setEditVendorSearchInput("")
+    setEditVendorSearchResults([])
+    setEditVendorSelectedIds([])
+    setEditAttachedVendors([])
+    setEditVendorSearching(false)
+    setEditVendorMutating(false)
+    setEditVendorDirty(false)
+
+    // Fetch attached vendors for each selected item in parallel, then:
+    // - single item: use that item's list as-is
+    // - bulk: intersect by enterprise_vendor_master_id
+    const projectIdForFetch = getProjectId()
+    if (projectIdForFetch) {
+      try {
+        const fetched = await Promise.all(
+          itemsToEdit.map((it: any) =>
+            getItemCustomVendors(projectIdForFetch, it.project_item_id)
+              .then(res => ({ itemId: it.id, project_item_id: it.project_item_id, vendors: res.custom_vendors || [] }))
+              .catch(() => ({ itemId: it.id, project_item_id: it.project_item_id, vendors: [] as CustomVendor[] }))
+          )
+        )
+
+        // Mirror results onto lineItems so the vendor column renders correctly
+        setLineItems((prev: any[]) =>
+          prev.map(li => {
+            const match = fetched.find(f => f.itemId === li.id)
+            return match ? { ...li, custom_vendors: match.vendors } : li
+          })
+        )
+
+        if (itemsToEdit.length === 1) {
+          setEditAttachedVendors(fetched[0]?.vendors || [])
+        } else {
+          // Intersection by vendor ID
+          const idCounts = new Map<string, { count: number; vendor: CustomVendor }>()
+          for (const row of fetched) {
+            const seen = new Set<string>()
+            for (const v of row.vendors) {
+              if (seen.has(v.enterprise_vendor_master_id)) continue
+              seen.add(v.enterprise_vendor_master_id)
+              const prev = idCounts.get(v.enterprise_vendor_master_id)
+              if (prev) {
+                idCounts.set(v.enterprise_vendor_master_id, { count: prev.count + 1, vendor: prev.vendor })
+              } else {
+                idCounts.set(v.enterprise_vendor_master_id, { count: 1, vendor: v })
+              }
+            }
+          }
+          const common: CustomVendor[] = []
+          idCounts.forEach(({ count, vendor }) => {
+            if (count === itemsToEdit.length) common.push(vendor)
+          })
+          setEditAttachedVendors(common)
+        }
+      } catch (err) {
+        console.warn('[Edit] Failed to load custom vendors for selected items:', err)
+      }
+    }
 
     // For bulk edit, use common values or empty strings
     if (selectedItems.length === 1) {
@@ -3427,6 +3642,235 @@ export default function ProcurementDashboard() {
     setShowEditDialog(true)
   }
 
+  // Debounced server-side vendor search (edit popup only)
+  useEffect(() => {
+    if (!showEditDialog) return
+    const query = editVendorSearchInput.trim()
+    // Reset results when cleared
+    if (query.length === 0) {
+      setEditVendorSearchResults([])
+      setEditVendorSearching(false)
+      return
+    }
+    const projectId = getProjectId()
+    if (!projectId) return
+
+    setEditVendorSearching(true)
+    const handle = setTimeout(async () => {
+      try {
+        // Single-item: exclude vendors already attached to that item via backend param
+        const excludeForItemId = !editFormData.isBulk && editFormData.project_item_id
+          ? String(editFormData.project_item_id)
+          : undefined
+        const res = await searchVendors(projectId, {
+          search: query,
+          limit: 30,
+          excludeForItemId,
+        })
+        // In bulk mode we additionally hide vendors already common across all items
+        const alreadyCommonIds = new Set(editAttachedVendors.map(v => v.enterprise_vendor_master_id))
+        const filtered = editFormData.isBulk
+          ? res.vendors.filter(v => !alreadyCommonIds.has(v.enterprise_vendor_master_id))
+          : res.vendors
+        setEditVendorSearchResults(filtered)
+      } catch (err) {
+        console.warn('[Vendor search] Failed:', err)
+        setEditVendorSearchResults([])
+      } finally {
+        setEditVendorSearching(false)
+      }
+    }, 300)
+
+    return () => clearTimeout(handle)
+  }, [editVendorSearchInput, showEditDialog, editFormData.isBulk, editFormData.project_item_id, editAttachedVendors])
+
+  // Auto-add on row click — POST a single vendor immediately to all targeted items
+  const handleAddSingleVendor = async (enterpriseVendorMasterId: string) => {
+    const projectId = getProjectId()
+    if (!projectId) return
+    const targetItems = lineItems.filter((item: any) => selectedItems.includes(item.id))
+    if (targetItems.length === 0) return
+
+    // Optimistic: remove from current results so it disappears from the list immediately
+    setEditVendorSearchResults(prev => prev.filter(v => v.enterprise_vendor_master_id !== enterpriseVendorMasterId))
+
+    setEditVendorMutating(true)
+    try {
+      const results = await Promise.all(
+        targetItems.map((it: any) =>
+          addItemCustomVendors(projectId, it.project_item_id, [enterpriseVendorMasterId])
+            .then(res => ({ itemId: it.id, project_item_id: it.project_item_id, vendors: res.custom_vendors || [] }))
+            .catch((err) => {
+              console.warn('[Add vendor] Failed for item', it.project_item_id, err)
+              return { itemId: it.id, project_item_id: it.project_item_id, vendors: null as CustomVendor[] | null }
+            })
+        )
+      )
+
+      // Mirror each item's updated custom_vendors back onto lineItems
+      setLineItems((prev: any[]) =>
+        prev.map(li => {
+          const match = results.find(r => r.itemId === li.id)
+          return match && match.vendors ? { ...li, custom_vendors: match.vendors } : li
+        })
+      )
+
+      // Refresh popup pills: single = that item's list; bulk = intersection
+      if (!editFormData.isBulk) {
+        const only = results[0]
+        setEditAttachedVendors(only?.vendors || [])
+      } else {
+        const idCounts = new Map<string, { count: number; vendor: CustomVendor }>()
+        for (const row of results) {
+          if (!row.vendors) continue
+          const seen = new Set<string>()
+          for (const v of row.vendors) {
+            if (seen.has(v.enterprise_vendor_master_id)) continue
+            seen.add(v.enterprise_vendor_master_id)
+            const prev = idCounts.get(v.enterprise_vendor_master_id)
+            if (prev) {
+              idCounts.set(v.enterprise_vendor_master_id, { count: prev.count + 1, vendor: prev.vendor })
+            } else {
+              idCounts.set(v.enterprise_vendor_master_id, { count: 1, vendor: v })
+            }
+          }
+        }
+        const common: CustomVendor[] = []
+        const totalTargets = targetItems.length
+        idCounts.forEach(({ count, vendor }) => {
+          if (count === totalTargets) common.push(vendor)
+        })
+        setEditAttachedVendors(common)
+      }
+
+      setEditVendorDirty(true)
+      toast({
+        title: "Vendor added",
+        description: editFormData.isBulk
+          ? `Added to ${targetItems.length} items`
+          : undefined,
+      })
+    } finally {
+      setEditVendorMutating(false)
+    }
+  }
+
+  // Add selected vendors (single item = POST once; bulk = POST for every selected item)
+  const handleAddCustomVendors = async () => {
+    if (editVendorSelectedIds.length === 0) return
+    const projectId = getProjectId()
+    if (!projectId) return
+    const idsToAdd = [...editVendorSelectedIds]
+    const targetItems = lineItems.filter((item: any) => selectedItems.includes(item.id))
+    if (targetItems.length === 0) return
+
+    setEditVendorMutating(true)
+    try {
+      const results = await Promise.all(
+        targetItems.map((it: any) =>
+          addItemCustomVendors(projectId, it.project_item_id, idsToAdd)
+            .then(res => ({ itemId: it.id, project_item_id: it.project_item_id, vendors: res.custom_vendors || [] }))
+            .catch((err) => {
+              console.warn('[Add vendor] Failed for item', it.project_item_id, err)
+              return { itemId: it.id, project_item_id: it.project_item_id, vendors: null as CustomVendor[] | null }
+            })
+        )
+      )
+
+      // Update each item's custom_vendors in lineItems
+      setLineItems((prev: any[]) =>
+        prev.map(li => {
+          const match = results.find(r => r.itemId === li.id)
+          return match && match.vendors ? { ...li, custom_vendors: match.vendors } : li
+        })
+      )
+
+      // Recompute the popup's visible vendor list (single: the one item's list; bulk: intersection)
+      if (!editFormData.isBulk) {
+        const only = results[0]
+        setEditAttachedVendors(only?.vendors || [])
+      } else {
+        const idCounts = new Map<string, { count: number; vendor: CustomVendor }>()
+        for (const row of results) {
+          if (!row.vendors) continue
+          const seen = new Set<string>()
+          for (const v of row.vendors) {
+            if (seen.has(v.enterprise_vendor_master_id)) continue
+            seen.add(v.enterprise_vendor_master_id)
+            const prev = idCounts.get(v.enterprise_vendor_master_id)
+            if (prev) {
+              idCounts.set(v.enterprise_vendor_master_id, { count: prev.count + 1, vendor: prev.vendor })
+            } else {
+              idCounts.set(v.enterprise_vendor_master_id, { count: 1, vendor: v })
+            }
+          }
+        }
+        const common: CustomVendor[] = []
+        const totalTargets = targetItems.length
+        idCounts.forEach(({ count, vendor }) => {
+          if (count === totalTargets) common.push(vendor)
+        })
+        setEditAttachedVendors(common)
+      }
+
+      setEditVendorSelectedIds([])
+      setEditVendorSearchInput("")
+      setEditVendorSearchResults([])
+      setEditVendorDirty(true)
+
+      toast({
+        title: "Vendors added",
+        description: editFormData.isBulk
+          ? `Added ${idsToAdd.length} vendor(s) to ${targetItems.length} items`
+          : `Added ${idsToAdd.length} vendor(s)`,
+      })
+    } finally {
+      setEditVendorMutating(false)
+    }
+  }
+
+  // Remove a vendor from the active item(s). Single: one DELETE. Bulk: DELETE on every selected item.
+  const handleRemoveCustomVendor = async (enterpriseVendorMasterId: string) => {
+    const projectId = getProjectId()
+    if (!projectId) return
+    const targetItems = lineItems.filter((item: any) => selectedItems.includes(item.id))
+    if (targetItems.length === 0) return
+
+    setEditVendorMutating(true)
+    try {
+      await Promise.all(
+        targetItems.map((it: any) =>
+          removeItemCustomVendor(projectId, it.project_item_id, enterpriseVendorMasterId)
+            .catch(err => console.warn('[Remove vendor] Failed for item', it.project_item_id, err))
+        )
+      )
+
+      // Update lineItems: strip the removed vendor from every targeted item
+      setLineItems((prev: any[]) =>
+        prev.map(li => {
+          if (!selectedItems.includes(li.id)) return li
+          const existing: CustomVendor[] = Array.isArray(li.custom_vendors) ? li.custom_vendors : []
+          return {
+            ...li,
+            custom_vendors: existing.filter(v => v.enterprise_vendor_master_id !== enterpriseVendorMasterId),
+          }
+        })
+      )
+
+      setEditAttachedVendors(prev => prev.filter(v => v.enterprise_vendor_master_id !== enterpriseVendorMasterId))
+      setEditVendorDirty(true)
+
+      toast({
+        title: "Vendor removed",
+        description: editFormData.isBulk
+          ? `Removed from ${targetItems.length} items`
+          : `Removed vendor`,
+      })
+    } finally {
+      setEditVendorMutating(false)
+    }
+  }
+
   const handleSaveEdit = async () => {
     if (selectedItems.length === 0) return
 
@@ -3447,12 +3891,22 @@ export default function ProcurementDashboard() {
     // Check if category changed - compare with original for both single and bulk
     const categoryChanged = editFormData.category !== editFormData.originalCategory
 
-    // If no changes, don't proceed
+    // If no other changes, close — custom vendor mutations are already committed.
     if (!assignedToChanged && !categoryChanged) {
-      toast({
-        title: "No Changes",
-        description: "No fields were modified",
-      })
+      if (editVendorDirty) {
+        toast({
+          title: "Saved",
+          description: "Vendor changes saved",
+        })
+      } else {
+        toast({
+          title: "No Changes",
+          description: "No fields were modified",
+        })
+      }
+      setShowEditDialog(false)
+      setEditFormData({})
+      setEditVendorDirty(false)
       return
     }
 
@@ -3673,8 +4127,8 @@ export default function ProcurementDashboard() {
     if (!editFormData || Object.keys(editFormData).length === 0) return false
     const assignedToChanged = editFormData.assignedTo !== editFormData.originalAssignedTo
     const categoryChanged = editFormData.category !== editFormData.originalCategory
-    return assignedToChanged || categoryChanged
-  }, [editFormData])
+    return assignedToChanged || categoryChanged || editVendorDirty
+  }, [editFormData, editVendorDirty])
 
   const handleColumnDrag = (draggedCol: string, targetCol: string) => {
     const draggedIndex = columnOrder.indexOf(draggedCol)
@@ -3717,6 +4171,7 @@ export default function ProcurementDashboard() {
     pricePO: "PO Price",
     priceContract: "Contract",
     priceQuote: "Quote",
+    priceRFQ: "RFQ",
     priceDigikey: "Digi-Key",
     priceMouser: "Mouser",
     priceEXIM: "EXIM",
@@ -3829,7 +4284,33 @@ export default function ProcurementDashboard() {
 
   // Generate realistic analytics data based on actual item data
   const generateAnalyticsData = (item: any) => {
-    // Use item ID for deterministic randomness
+    // ── Real pricing repo v2 history (lazy-loaded when popup opens) ──
+    // Build per-source { vendor, price, quantity }[] from analyticsMpnHistory.
+    const basis = pricingSettings.priceBasis
+    const historyToSeries = (source: PricingSourceType) => {
+      if (!analyticsMpnHistory) return []
+      return analyticsMpnHistory
+        .filter((r) => r.source === source)
+        .map((r) => {
+          const price = getAdminPrice(r, basis)
+          if (price === null || price <= 0) return null
+          return {
+            vendor: r.supplier_name || 'Unknown',
+            price: Math.round(price * 100) / 100,
+            quantity: typeof r.quantity === 'number' ? r.quantity : 0,
+            date: r.pricing_datetime,
+          }
+        })
+        .filter((d): d is { vendor: string; price: number; quantity: number; date: string } => d !== null)
+        .sort((a, b) => a.date.localeCompare(b.date))
+    }
+
+    const realPoData = historyToSeries('PO')
+    const realContractData = historyToSeries('CONTRACT')
+    const realQuoteData = historyToSeries('QUOTE')
+    const realRfqData = historyToSeries('RFQ')
+
+    // Use item ID for deterministic randomness (for remaining mock-only series)
     const seed = item.id || 1
     let randomSeed = seed * 9999
 
@@ -3944,7 +4425,16 @@ export default function ProcurementDashboard() {
       },
     ]
 
-    return { poData, contractData, eximData, quoteData, onlineData }
+    // Always use real pricing-repo history. No mock fallback for PO/Contract/Quote/RFQ —
+    // empty array → chart card shows "No history for this MPN" empty state.
+    return {
+      poData: realPoData,
+      contractData: realContractData,
+      eximData,
+      quoteData: realQuoteData,
+      rfqData: realRfqData,
+      onlineData,
+    }
   }
 
   // Helper function to render different chart types
@@ -4152,10 +4642,12 @@ export default function ProcurementDashboard() {
   }
 
   // Generate analytics data for the selected item
+  // Re-runs when MPN history is (re)loaded or price basis changes
   const analyticsData = useMemo(() => {
     if (!selectedItemForAnalytics) return null
     return generateAnalyticsData(selectedItemForAnalytics)
-  }, [selectedItemForAnalytics])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedItemForAnalytics, analyticsMpnHistory, pricingSettings.priceBasis])
 
   const renderCategoryInput = () => {
     const selectedTags = String(editFormData.category || '').split(',').filter((c: string) => c.trim())
@@ -4810,6 +5302,44 @@ export default function ProcurementDashboard() {
                 Auto Fill Prices
               </Button>
 
+              {/* Load Pricing (pricing repo v2) — split button with settings dropdown */}
+              <PricingLookupSettingsButton
+                variant="split"
+                settings={pricingSettings}
+                onChange={updatePricingSettings}
+                loading={pricingLookup.loading}
+                enabled={pricingEnabled}
+                onLoadPricing={() => {
+                  if (pricingEnabled) {
+                    pricingLookup.refetch()
+                  } else {
+                    setPricingEnabled(true)
+                  }
+                }}
+              />
+
+              {/* Price basis quick switcher — instantly re-fetches with new basis */}
+              {pricingEnabled && (
+                <Select
+                  value={pricingSettings.priceBasis}
+                  onValueChange={(v) =>
+                    updatePricingSettings({ ...pricingSettings, priceBasis: v as any })
+                  }
+                >
+                  <SelectTrigger className="h-9 w-[170px] text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="effective_rate" className="text-xs">Effective Rate</SelectItem>
+                    <SelectItem value="rate" className="text-xs">Base Rate</SelectItem>
+                    <SelectItem value="quoted_rate" className="text-xs">Quoted Rate</SelectItem>
+                    <SelectItem value="landed_rate" className="text-xs">Landed Rate (RFQ only)</SelectItem>
+                    <SelectItem value="total_item_cost" className="text-xs">Total Item Cost</SelectItem>
+                    <SelectItem value="landed_total" className="text-xs">Landed Total (RFQ only)</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+
               {/* Assign Actions */}
               <Button
                 variant="outline"
@@ -5404,32 +5934,45 @@ export default function ProcurementDashboard() {
                       }
 
                       if (columnKey === "vendor") {
-                        const vendors = Array.isArray(item.vendor) ? item.vendor : [item.vendor || ""]
-                        const displayVendor = vendors[0] || ""
-                        const hasMultiple = vendors.length > 1
-                        const isTextTruncated = displayVendor && displayVendor.length > 15
-                        const isMissing = !displayVendor || displayVendor === ""
+                        // Read from custom_vendors[] (loaded via GET /custom-vendors/ or bulk-batched later)
+                        // Fallback: legacy item.vendor string for items where custom_vendors hasn't been loaded yet.
+                        const customVendors: CustomVendor[] = Array.isArray(item.custom_vendors) ? item.custom_vendors : []
+                        const vendorNames: string[] = customVendors.length > 0
+                          ? customVendors.map((v: CustomVendor) => v.vendor_name)
+                          : (item.vendor ? [String(item.vendor)] : [])
+                        const isMissing = vendorNames.length === 0
 
                         return (
                           <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
-                            <div className="flex items-center gap-1 w-full">
-                              <span
-                                className={`text-xs truncate block flex-1 min-w-0 ${
-                                  isMissing ? "text-red-700" : "text-gray-900"
-                                }`}
-                                title={hasMultiple ? vendors.join(", ") : displayVendor || "No vendor"}
-                              >
-                                {displayVendor || "No vendor"}
-                              </span>
-                              {(hasMultiple || isTextTruncated) && !isMissing && (
-                                <span
-                                  className="text-blue-600 text-xs font-medium flex-shrink-0"
-                                  title={hasMultiple ? vendors.join(", ") : displayVendor}
-                                >
-                                  +{hasMultiple ? vendors.length - 1 : "..."}
-                                </span>
-                              )}
-                            </div>
+                            {isMissing ? (
+                              <span className="text-gray-400 text-xs">-</span>
+                            ) : vendorNames.length === 1 ? (
+                              <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[140px]">
+                                {vendorNames[0]}
+                              </Badge>
+                            ) : (
+                              <UiTooltip>
+                                <UiTooltipTrigger>
+                                  <span className="flex items-center gap-1 cursor-pointer overflow-hidden" style={{ maxWidth: '100%' }}>
+                                    <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[110px]">
+                                      {vendorNames[0]}
+                                    </Badge>
+                                    <span className="text-blue-600 font-medium text-xs hover:text-blue-800 whitespace-nowrap flex-shrink-0">
+                                      +{vendorNames.length - 1}
+                                    </span>
+                                  </span>
+                                </UiTooltipTrigger>
+                                <UiTooltipContent side="bottom" align="start">
+                                  <div className="space-y-1">
+                                    {vendorNames.map((name: string, index: number) => (
+                                      <div key={index} className="text-xs">
+                                        {index + 1}. {name}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </UiTooltipContent>
+                              </UiTooltip>
+                            )}
                           </td>
                         )
                       }
@@ -5777,57 +6320,86 @@ export default function ProcurementDashboard() {
                         )
                       }
 
-                      if (columnKey === "pricePO" || columnKey === "priceContract" || columnKey === "priceQuote" || columnKey === "priceEXIM") {
-                        const priceValue = (item as any)[columnKey] as number | undefined
-                        const hasPrice = priceValue !== undefined && priceValue > 0
+                      if (columnKey === "pricePO" || columnKey === "priceContract" || columnKey === "priceQuote" || columnKey === "priceRFQ") {
+                        // Real pricing repo v2 lookup — keyed by item's MPN
+                        const colToSource: Record<string, PricingSourceType> = {
+                          pricePO: "PO",
+                          priceContract: "CONTRACT",
+                          priceQuote: "QUOTE",
+                          priceRFQ: "RFQ",
+                        }
+                        const sourceType = colToSource[columnKey]
+                        const mpn = pricingLookup.itemIdToMpn.get(item.id) ?? null
+                        const perSource = mpn ? pricingLookup.byMpn.get(mpn) : null
+                        const record = perSource ? perSource[sourceType] ?? null : null
+                        const adminPrice = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
 
-                        // Calculate cheapest price (pricing is already converted to item currency)
-                        // Use quantity_price if available, otherwise fall back to unit_price
-                        // NEW: Only use pricing if status is 'available'
-                        const digikeyPricing = (item as any).digikey_pricing
-                        const digikeyBasePrice = digikeyPricing?.status === 'available'
-                          ? (digikeyPricing?.quantity_price ?? digikeyPricing?.unit_price)
-                          : undefined
-                        const digikeyPrice = digikeyBasePrice ?
-                          (typeof digikeyBasePrice === 'number' ? digikeyBasePrice : parseFloat(digikeyBasePrice)) :
-                          undefined
-
-                        // Mouser pricing is already converted to item currency by processItemPricing()
-                        // NEW: Only use pricing if status is 'available'
-                        const mouserPricing = (item as any).mouser_pricing
-                        const mouserBasePrice = mouserPricing?.status === 'available'
-                          ? (mouserPricing?.quantity_price ?? mouserPricing?.unit_price)
-                          : undefined
-                        const mouserPrice = mouserBasePrice ?
-                          (typeof mouserBasePrice === 'number' ? mouserBasePrice : parseFloat(mouserBasePrice)) :
-                          undefined
-
-                        // Include all price sources for cheapest calculation
-                        const allPrices = [
-                          (item as any).pricePO,
-                          (item as any).priceContract,
-                          (item as any).priceQuote,
-                          (item as any).priceEXIM,
-                          digikeyPrice,
-                          mouserPrice,
-                        ].filter((p): p is number => p !== undefined && !isNaN(p) && p > 0)
-
-                        const cheapestPrice = allPrices.length > 0 ? Math.min(...allPrices) : null
-                        const isCheapest = hasPrice && cheapestPrice !== null && priceValue === cheapestPrice
-
-                        // Use item's currency symbol
-                        const itemCurrencySymbol = (item as any).currency?.symbol || '₹'
+                        // Cell content
+                        let cellInner: React.ReactNode
+                        if (!pricingEnabled) {
+                          cellInner = (
+                            <span
+                              className="text-xs text-gray-400 italic"
+                              title="Click the gear icon and press 'Load Pricing' to fetch real prices"
+                            >
+                              —
+                            </span>
+                          )
+                        } else if (!mpn) {
+                          cellInner = <span className="text-xs text-gray-400 italic">No MPN</span>
+                        } else if (pricingLookup.loading && !record) {
+                          cellInner = <span className="text-xs text-gray-400">…</span>
+                        } else if (!record || adminPrice === null) {
+                          cellInner = (
+                            <span
+                              className="text-xs text-gray-400"
+                              title={`No ${sourceType} pricing found for MPN ${mpn} in the selected range`}
+                            >
+                              —
+                            </span>
+                          )
+                        } else {
+                          const sym = record.admin_currency_symbol || record.admin_currency_code || ''
+                          const expired = isExpiredContract(record)
+                          cellInner = (
+                            <button
+                              type="button"
+                              className={`text-xs font-medium underline-offset-2 hover:underline focus:outline-none ${
+                                expired ? "text-red-600" : "text-gray-900"
+                              }`}
+                              title={`${record.supplier_name || ""} • ${
+                                record.pricing_datetime?.slice(0, 10) || ""
+                              } — click to open in Factwise`}
+                              onClick={() => setPendingNavRecord(record)}
+                            >
+                              {sym}
+                              {adminPrice.toLocaleString(undefined, {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 4,
+                              })}
+                              {expired && (
+                                <span className="ml-1 text-[9px] uppercase">exp</span>
+                              )}
+                            </button>
+                          )
+                        }
 
                         return (
                           <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
+                            {cellInner}
+                          </td>
+                        )
+                      }
+
+                      if (columnKey === "priceEXIM") {
+                        // EXIM stays on the existing item-field path (not in pricing repo v2)
+                        const priceValue = (item as any).priceEXIM as number | undefined
+                        const hasPrice = priceValue !== undefined && priceValue > 0
+                        const itemCurrencySymbol = (item as any).currency?.symbol || '₹'
+                        return (
+                          <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
-                              className={`text-xs font-medium ${
-                                !hasPrice
-                                  ? "text-gray-400"
-                                  : isCheapest
-                                    ? "text-green-700 bg-green-50 px-2 py-1 rounded"
-                                    : "text-gray-900"
-                              }`}
+                              className={`text-xs font-medium ${hasPrice ? "text-gray-900" : "text-gray-400"}`}
                               title={hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(5)}` : "N/A"}
                             >
                               {hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(5)}` : "-"}
@@ -6217,43 +6789,85 @@ export default function ProcurementDashboard() {
               </Button>
             </div>
 
-            {/* Module Cards */}
+            {/* Module Cards — real pricing repo v2 data, matched by MPN */}
             {analyticsData && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* PO, Contract, EXIM, Quote modules commented out — hardcoded data */}
-                {/* <div className="bg-white p-4 rounded-lg border">
-                  <h4 className="text-sm font-medium text-gray-800 mb-2">PO</h4>
-                  <div className="h-72">
-                    {renderChart(analyticsData.poData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
+              <>
+                {analyticsHistoryLoading && (
+                  <div className="text-xs text-gray-500 mb-3">Loading pricing history…</div>
+                )}
+                {!analyticsHistoryLoading &&
+                  analyticsMpnHistory !== null &&
+                  analyticsMpnHistory.length === 0 && (
+                    <div className="text-xs text-amber-600 mb-3">
+                      No pricing-repo history found for this MPN. Showing mock data where available.
+                    </div>
+                  )}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* PO */}
+                  <div className="bg-white p-4 rounded-lg border">
+                    <h4 className="text-sm font-medium text-gray-800 mb-2">PO</h4>
+                    <div className="h-72">
+                      {analyticsData.poData.length > 0 ? (
+                        renderChart(analyticsData.poData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-xs text-gray-400">
+                          No PO history for this MPN
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-                <div className="bg-white p-4 rounded-lg border">
-                  <h4 className="text-sm font-medium text-gray-800 mb-2">Contract</h4>
-                  <div className="h-72">
-                    {renderChart(analyticsData.contractData, 'composed', 'price', 'quantity', '#f472b6', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
-                  </div>
-                </div>
-                <div className="bg-white p-4 rounded-lg border">
-                  <h4 className="text-sm font-medium text-gray-800 mb-2">EXIM</h4>
-                  <div className="h-72">
-                    {renderChart(analyticsData.eximData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
-                  </div>
-                </div>
-                <div className="bg-white p-4 rounded-lg border">
-                  <h4 className="text-sm font-medium text-gray-800 mb-2">Quote</h4>
-                  <div className="h-72">
-                    {renderChart(analyticsData.quoteData, 'composed', 'price', 'quantity', '#8b5cf6', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
-                  </div>
-                </div> */}
 
-                {/* Online Pricing (full width) */}
-                <div className="bg-white p-4 rounded-lg border lg:col-span-2">
-                  <h4 className="text-sm font-medium text-gray-800 mb-2">Online Pricing</h4>
-                  <div className="h-72">
-                    {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#f97316', '#93c5fd', 'vendor', 'Distributors', 'Price', 'Quantity')}
+                  {/* Contract */}
+                  <div className="bg-white p-4 rounded-lg border">
+                    <h4 className="text-sm font-medium text-gray-800 mb-2">Contract</h4>
+                    <div className="h-72">
+                      {analyticsData.contractData.length > 0 ? (
+                        renderChart(analyticsData.contractData, 'composed', 'price', 'quantity', '#f472b6', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-xs text-gray-400">
+                          No Contract history for this MPN
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Quote */}
+                  <div className="bg-white p-4 rounded-lg border">
+                    <h4 className="text-sm font-medium text-gray-800 mb-2">Quote</h4>
+                    <div className="h-72">
+                      {analyticsData.quoteData.length > 0 ? (
+                        renderChart(analyticsData.quoteData, 'composed', 'price', 'quantity', '#8b5cf6', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-xs text-gray-400">
+                          No Quote history for this MPN
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* RFQ */}
+                  <div className="bg-white p-4 rounded-lg border">
+                    <h4 className="text-sm font-medium text-gray-800 mb-2">RFQ</h4>
+                    <div className="h-72">
+                      {analyticsData.rfqData && analyticsData.rfqData.length > 0 ? (
+                        renderChart(analyticsData.rfqData, 'composed', 'price', 'quantity', '#0ea5e9', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-xs text-gray-400">
+                          No RFQ history for this MPN
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Online Pricing (full width) */}
+                  <div className="bg-white p-4 rounded-lg border lg:col-span-2">
+                    <h4 className="text-sm font-medium text-gray-800 mb-2">Online Pricing</h4>
+                    <div className="h-72">
+                      {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#f97316', '#93c5fd', 'vendor', 'Distributors', 'Price', 'Quantity')}
+                    </div>
                   </div>
                 </div>
-              </div>
+              </>
             )}
 
             <div className="flex justify-end mt-6">
@@ -6268,6 +6882,57 @@ export default function ProcurementDashboard() {
           </div>
         </div>
       )}
+
+      {/* Confirm: open source PO/Contract/Quote/RFQ in Factwise */}
+      <Dialog open={!!pendingNavRecord} onOpenChange={(o) => { if (!o) setPendingNavRecord(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Open in Factwise?</DialogTitle>
+            <DialogDescription>
+              {pendingNavRecord && (() => {
+                const url = buildFactwiseUrl(pendingNavRecord)
+                const sourceLabel = ({
+                  PO: 'Purchase Order',
+                  CONTRACT: 'Contract',
+                  QUOTE: 'Quote',
+                  RFQ: 'RFQ',
+                  DIGIKEY: 'Digi-Key listing',
+                  MOUSER: 'Mouser listing',
+                } as Record<string, string>)[pendingNavRecord.source] || pendingNavRecord.source
+                const docId =
+                  pendingNavRecord.po_id ||
+                  pendingNavRecord.quote_id ||
+                  pendingNavRecord.agreement_id ||
+                  pendingNavRecord.rfq_event_id ||
+                  pendingNavRecord.source_parent_id ||
+                  ''
+                return (
+                  <>
+                    <div className="mt-2 space-y-1.5 text-sm text-gray-700">
+                      <div>Open <span className="font-semibold">{sourceLabel} {docId}</span> from <span className="font-semibold">{pendingNavRecord.supplier_name || pendingNavRecord.customer_name || 'unknown vendor'}</span> in Factwise?</div>
+                      {!url && (
+                        <div className="text-xs text-amber-600">No deep-link available for this record.</div>
+                      )}
+                    </div>
+                  </>
+                )
+              })()}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setPendingNavRecord(null)}>Cancel</Button>
+            <Button
+              disabled={!pendingNavRecord || !buildFactwiseUrl(pendingNavRecord)}
+              onClick={() => {
+                if (pendingNavRecord) navigateInFactwise(pendingNavRecord)
+                setPendingNavRecord(null)
+              }}
+            >
+              Open
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Manual Edit Dialog */}
       <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
@@ -6287,52 +6952,108 @@ export default function ProcurementDashboard() {
             {renderCategoryInput()}
           </div>
 
-          {/* Two Column Layout for Other Fields */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="vendor" className="text-gray-900 font-medium">Vendor</Label>
-              <div className="relative">
-                <Input
-                  placeholder={editFormData.vendor || "Type to search vendors..."}
-                  value={vendorSearchTerm}
-                  onChange={(e) => setVendorSearchTerm(e.target.value)}
-                  onBlur={() => setTimeout(() => setVendorSearchTerm(""), 200)}
-                  className="border-gray-400 bg-white pr-10"
-                />
-                <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+          {/* Vendors section — full-width, custom vendors from backend */}
+          <div className="space-y-1.5">
+            <Label className="text-gray-900 font-medium">
+              {editFormData.isBulk ? 'Common Vendors' : 'Vendors'}
+            </Label>
 
-                {vendorSearchTerm.length > 0 && (
-                  <div className="absolute z-50 w-full mt-1 border-2 border-gray-300 rounded-md bg-white max-h-[180px] overflow-y-auto shadow-lg">
-                    {vendorOptions.filter(v => v.toLowerCase().includes(vendorSearchTerm.toLowerCase())).length === 0 ? (
-                      <div className="p-2 text-sm text-gray-500 text-center">
-                        No vendors match "{vendorSearchTerm}"
-                      </div>
-                    ) : (
-                      <div className="py-1">
-                        {vendorOptions
-                          .filter(v => v.toLowerCase().includes(vendorSearchTerm.toLowerCase()))
-                          .map((vendor) => (
-                            <button
-                              key={vendor}
-                              type="button"
-                              onClick={() => {
-                                setEditFormData({ ...editFormData, vendor })
-                                setVendorSearchTerm("")
-                              }}
-                              className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 focus:bg-blue-100 focus:outline-none"
-                            >
-                              {vendor}
-                            </button>
-                          ))}
-                      </div>
-                    )}
+            {editFormData.isBulk && (
+              <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                Showing only vendors common to all <span className="font-semibold">{editFormData.itemCount}</span> selected items. Adding or removing affects every selected item.
+              </div>
+            )}
+
+            {/* Attached vendor pills */}
+            <div className="flex flex-wrap items-center gap-2 min-h-[36px] p-2 bg-white border border-gray-300 rounded-md">
+              {editAttachedVendors.length === 0 ? (
+                <span className="text-gray-500 text-sm">
+                  {editFormData.isBulk ? 'No common vendors across selected items' : 'No vendors attached'}
+                </span>
+              ) : (
+                editAttachedVendors.map((v) => (
+                  <Badge
+                    key={v.enterprise_vendor_master_id}
+                    variant="outline"
+                    className="bg-blue-50 border-blue-200 text-blue-900 hover:bg-blue-100 pl-2 pr-1 py-0.5 text-xs flex items-center gap-1"
+                  >
+                    <span className="max-w-[180px] truncate" title={`${v.vendor_name} · ${v.vendor_code}`}>
+                      {v.vendor_name}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={editVendorMutating}
+                      onClick={() => handleRemoveCustomVendor(v.enterprise_vendor_master_id)}
+                      className="ml-0.5 rounded-full hover:bg-blue-200 p-0.5 disabled:opacity-40"
+                      title="Remove vendor"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
+                ))
+              )}
+            </div>
+
+            {/* Search input */}
+            <div className="relative">
+              <Input
+                placeholder="Search vendors by name or code..."
+                value={editVendorSearchInput}
+                onChange={(e) => setEditVendorSearchInput(e.target.value)}
+                disabled={editVendorMutating}
+                className="border-gray-400 bg-white pr-10"
+              />
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            </div>
+
+            {/* Inline results — click any row to auto-add immediately */}
+            {editVendorSearchInput.trim().length > 0 && (
+              <div className="border border-gray-300 rounded-md bg-white shadow-sm max-h-[240px] overflow-y-auto">
+                {editVendorSearching ? (
+                  <div className="p-3 text-sm text-gray-500 text-center">Searching...</div>
+                ) : editVendorSearchResults.length === 0 ? (
+                  <div className="p-3 text-sm text-gray-500 text-center">
+                    No vendors match "{editVendorSearchInput}"
+                  </div>
+                ) : (
+                  <div className="py-1">
+                    {editVendorSearchResults.map((v) => {
+                      const statusColor =
+                        v.status === 'ACTIVE'
+                          ? 'bg-green-100 text-green-800 border-green-200'
+                          : v.status === 'INVITED'
+                            ? 'bg-yellow-100 text-yellow-800 border-yellow-200'
+                            : v.status === 'INVITATION_REJECTED'
+                              ? 'bg-red-100 text-red-800 border-red-200'
+                              : 'bg-gray-100 text-gray-700 border-gray-200'
+                      return (
+                        <button
+                          key={v.enterprise_vendor_master_id}
+                          type="button"
+                          disabled={editVendorMutating}
+                          onClick={() => handleAddSingleVendor(v.enterprise_vendor_master_id)}
+                          className="w-full text-left flex items-center gap-2 px-3 py-2 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed border-b border-gray-100 last:border-b-0"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-gray-900 truncate">{v.vendor_name}</div>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="text-[11px] text-gray-500 font-mono">{v.vendor_code}</span>
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${statusColor}`}>
+                                {v.status}
+                              </span>
+                            </div>
+                          </div>
+                        </button>
+                      )
+                    })}
                   </div>
                 )}
               </div>
-              {editFormData.vendor && (
-                <p className="text-xs text-gray-600">Selected: {editFormData.vendor}</p>
-              )}
-            </div>
+            )}
+          </div>
+
+          {/* Two Column Layout for Other Fields */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label className="text-gray-900 font-medium">Assigned To</Label>
 

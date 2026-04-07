@@ -1184,3 +1184,133 @@ export async function bulkAssignUsersWithRoles(
     }
   );
 }
+
+// ============================================================================
+// Custom Vendors — attach enterprise vendors to individual project items
+// ============================================================================
+
+export interface CustomVendorSellerEntity {
+  entity_id: string;
+  entity_name: string;
+  entity_description?: string | null;
+  is_virtual?: boolean;
+}
+
+export interface CustomVendor {
+  enterprise_vendor_master_id: string;
+  vendor_code: string;
+  vendor_name: string;
+  status: string;
+  tags: string[] | null;
+  seller_enterprise_id: string | null;
+  seller_entity_id: string | null;
+  seller_entity: CustomVendorSellerEntity | null;
+  // Only present on list-for-item responses
+  project_item_custom_vendor_id?: string;
+}
+
+export interface VendorSearchResponse {
+  success: boolean;
+  vendors: CustomVendor[];
+  total: number;
+  limit: number;
+  offset: number;
+  search: string;
+}
+
+export interface ItemCustomVendorsResponse {
+  success: boolean;
+  project_item_id: string;
+  custom_vendors: CustomVendor[];
+  total: number;
+}
+
+export interface AddCustomVendorsResponse {
+  success: boolean;
+  project_item_id: string;
+  added_count: number;
+  skipped_existing_count: number;
+  custom_vendors: CustomVendor[];
+}
+
+export interface DeleteCustomVendorResponse {
+  success: boolean;
+  project_item_id: string;
+  enterprise_vendor_master_id: string;
+  deleted_count: number;
+}
+
+/**
+ * Server-side vendor search for the "add vendor" picker.
+ * Caller should debounce by ~300ms.
+ */
+export async function searchVendors(
+  projectId: string,
+  options?: {
+    search?: string;
+    limit?: number;
+    offset?: number;
+    excludeForItemId?: string;
+  }
+): Promise<VendorSearchResponse> {
+  const params = new URLSearchParams();
+  if (options?.search) params.append('search', options.search);
+  if (options?.limit !== undefined) params.append('limit', String(options.limit));
+  if (options?.offset !== undefined) params.append('offset', String(options.offset));
+  if (options?.excludeForItemId) params.append('exclude_for_item_id', options.excludeForItemId);
+  const qs = params.toString();
+  return apiRequest<VendorSearchResponse>(
+    `/organization/project/${projectId}/strategy/vendor-search/${qs ? '?' + qs : ''}`,
+    { skipSuccessCheck: true }
+  );
+}
+
+/**
+ * List custom vendors currently attached to a specific project item.
+ */
+export async function getItemCustomVendors(
+  projectId: string,
+  projectItemId: string
+): Promise<ItemCustomVendorsResponse> {
+  return apiRequest<ItemCustomVendorsResponse>(
+    `/organization/project/${projectId}/item/${projectItemId}/custom-vendors/`,
+    { skipSuccessCheck: true }
+  );
+}
+
+/**
+ * Attach one or more enterprise vendors to a project item.
+ * Idempotent — duplicates are silently skipped.
+ */
+export async function addItemCustomVendors(
+  projectId: string,
+  projectItemId: string,
+  enterpriseVendorMasterIds: string[]
+): Promise<AddCustomVendorsResponse> {
+  return apiRequest<AddCustomVendorsResponse>(
+    `/organization/project/${projectId}/item/${projectItemId}/custom-vendors/add/`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ enterprise_vendor_master_ids: enterpriseVendorMasterIds }),
+      skipSuccessCheck: true,
+    }
+  );
+}
+
+/**
+ * Soft-delete a single custom vendor attachment from a project item.
+ * Idempotent — re-deleting returns deleted_count: 0.
+ */
+export async function removeItemCustomVendor(
+  projectId: string,
+  projectItemId: string,
+  enterpriseVendorMasterId: string
+): Promise<DeleteCustomVendorResponse> {
+  return apiRequest<DeleteCustomVendorResponse>(
+    `/organization/project/${projectId}/item/${projectItemId}/custom-vendors/${enterpriseVendorMasterId}/`,
+    {
+      method: 'DELETE',
+      skipSuccessCheck: true,
+    }
+  );
+}
