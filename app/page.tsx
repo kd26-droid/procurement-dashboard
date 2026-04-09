@@ -2094,30 +2094,106 @@ export default function ProcurementDashboard() {
     }
 
     // Helper to get distributor price details
-    const getDistributorPrice = (pricing: any, currencySymbol: string = ''): { unitPrice: string; quantityPrice: string; stock: string; status: string } => {
-      if (!pricing) return { unitPrice: '', quantityPrice: '', stock: '', status: 'N/A' }
-
-      if (pricing.status === 'not_configured') {
-        return { unitPrice: '', quantityPrice: '', stock: '', status: 'Not Configured' }
+    // Build a comprehensive distributor row for the CSV.
+    // Returns the preferred variant's part number, packaging, MOQ, unit price, and reeling fee,
+    // PLUS a compact "All Variants" string listing every other option the buyer could pick.
+    const getDistributorPrice = (
+      pricing: any,
+      distributorLabel: 'Digi-Key' | 'Mouser',
+      currencySymbol: string = ''
+    ): {
+      status: string
+      partNumber: string
+      packaging: string
+      moq: string
+      unitPrice: string
+      reelingFee: string
+      stock: string
+      allVariants: string
+    } => {
+      const empty = {
+        status: 'N/A',
+        partNumber: '',
+        packaging: '',
+        moq: '',
+        unitPrice: '',
+        reelingFee: '',
+        stock: '',
+        allVariants: '',
       }
-      if (pricing.status === 'not_found') {
-        return { unitPrice: '', quantityPrice: '', stock: '', status: 'Not Listed' }
-      }
-      if (pricing.status === 'fetching' || pricing.status === 'pending') {
-        return { unitPrice: '', quantityPrice: '', stock: '', status: 'Fetching...' }
-      }
+      if (!pricing) return empty
+      if (pricing.status === 'not_configured') return { ...empty, status: 'Not Configured' }
+      if (pricing.status === 'not_found') return { ...empty, status: 'Not Listed' }
+      if (pricing.status === 'fetching' || pricing.status === 'pending') return { ...empty, status: 'Fetching...' }
       if (pricing.status !== 'available') {
-        return { unitPrice: '', quantityPrice: '', stock: '', status: pricing.status_message || pricing.status || 'N/A' }
+        return { ...empty, status: pricing.status_message || pricing.status || 'N/A' }
       }
 
-      // Use converted currency if available, otherwise use the pricing's original currency
-      const priceCurrencySymbol = pricing.currency ? getCurrencySymbolForExport(pricing.currency) : currencySymbol
+      const sym = pricing.currency ? getCurrencySymbolForExport(pricing.currency) : currencySymbol
+      const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
+
+      // Pick the preferred variant (or synthesize one from legacy top-level fields)
+      const preferredIdx =
+        typeof pricing.preferred_variant_index === 'number' ? pricing.preferred_variant_index : 0
+      const preferred =
+        variants.length > 0
+          ? variants[preferredIdx] || variants[0]
+          : {
+              packaging: pricing.packaging || 'Standard',
+              digikey_part_number: distributorLabel === 'Digi-Key' ? pricing.digikey_part_number : undefined,
+              mouser_part_number: distributorLabel === 'Mouser' ? pricing.mouser_part_number : undefined,
+              moq: pricing.moq,
+              reeling_fee: '0',
+              price_breaks: Array.isArray(pricing.price_breaks) ? pricing.price_breaks : [],
+            }
+
+      const partNumber =
+        preferred?.digikey_part_number ||
+        preferred?.mouser_part_number ||
+        pricing.digikey_part_number ||
+        pricing.mouser_part_number ||
+        ''
+
+      // Cell price = first price break's unit price (lowest-qty tier)
+      let cellUnitPrice: number | null = null
+      if (Array.isArray(preferred?.price_breaks) && preferred.price_breaks.length > 0) {
+        const pb = preferred.price_breaks[0]
+        const raw = pb?.unit_price
+        cellUnitPrice = typeof raw === 'number' ? raw : parseFloat(String(raw))
+      } else if (pricing.unit_price !== null && pricing.unit_price !== undefined) {
+        cellUnitPrice =
+          typeof pricing.unit_price === 'number' ? pricing.unit_price : parseFloat(String(pricing.unit_price))
+      }
+
+      const reelingFeeNum = preferred?.reeling_fee ? parseFloat(String(preferred.reeling_fee)) || 0 : 0
+      const reelingFeeStr = reelingFeeNum > 0 ? `${sym}${reelingFeeNum.toFixed(2)}` : ''
+
+      // Compact list of every variant for people who want to see their options at a glance.
+      // Format: "Cut Tape (CT): $0.540 (MOQ 1) | Tape & Reel (TR): $0.254 (MOQ 2500) | Digi-Reel®: $0.540 (MOQ 1) +$7.00 fee"
+      const variantSummary =
+        variants.length > 0
+          ? variants
+              .map((v: any) => {
+                const pack = v?.packaging || 'Standard'
+                const mq = v?.moq != null ? v.moq : ''
+                const breaks = Array.isArray(v?.price_breaks) ? v.price_breaks : []
+                const firstPrice = breaks.length > 0 ? parseFloat(String(breaks[0]?.unit_price)) || 0 : 0
+                const fee = v?.reeling_fee ? parseFloat(String(v.reeling_fee)) || 0 : 0
+                const feeTag = fee > 0 ? ` +${sym}${fee.toFixed(2)} fee` : ''
+                return `${pack}: ${sym}${firstPrice.toFixed(3)} (MOQ ${mq})${feeTag}`
+              })
+              .join(' | ')
+          : ''
 
       return {
-        unitPrice: formatPrice(pricing.unit_price, priceCurrencySymbol),
-        quantityPrice: formatPrice(pricing.quantity_price, priceCurrencySymbol),
+        status: 'Available',
+        partNumber: String(partNumber || ''),
+        packaging: preferred?.packaging || 'Standard',
+        moq: preferred?.moq != null ? String(preferred.moq) : '',
+        unitPrice: cellUnitPrice != null && !isNaN(cellUnitPrice) ? `${sym}${cellUnitPrice.toFixed(5)}` : '',
+        reelingFee: reelingFeeStr,
         stock: pricing.stock !== null && pricing.stock !== undefined ? String(pricing.stock) : '',
-        status: 'Available'
+        allVariants: variantSummary,
       }
     }
 
@@ -2170,10 +2246,27 @@ export default function ProcurementDashboard() {
       'Source (Cheapest)',
     )
 
-    // Only add Digikey columns if API keys are configured
-    // Always include Digikey and Mouser columns
-    headers.push('Digi-Key Unit Price', 'Digi-Key Qty Price', 'Digi-Key Stock', 'Digi-Key Status')
-    headers.push('Mouser Unit Price', 'Mouser Qty Price', 'Mouser Stock', 'Mouser Status')
+    // Digikey + Mouser — rich export: part number, packaging, MOQ, unit price, reeling fee, stock, status, and all variant options
+    headers.push(
+      'Digi-Key Part Number',
+      'Digi-Key Packaging',
+      'Digi-Key MOQ',
+      'Digi-Key Unit Price',
+      'Digi-Key Reeling Fee',
+      'Digi-Key Stock',
+      'Digi-Key Status',
+      'Digi-Key All Variants',
+    )
+    headers.push(
+      'Mouser Part Number',
+      'Mouser Packaging',
+      'Mouser MOQ',
+      'Mouser Unit Price',
+      'Mouser Reeling Fee',
+      'Mouser Stock',
+      'Mouser Status',
+      'Mouser All Variants',
+    )
 
     // Add dynamic spec columns
     specColumns.forEach(specName => {
@@ -2190,8 +2283,8 @@ export default function ProcurementDashboard() {
 
     filteredAndSortedItems.forEach((item: any) => {
       const itemCurrencySymbol = item.currency?.symbol || getCurrencySymbolForExport(item.currency?.code || '')
-      const digikeyDetails = getDistributorPrice(item.digikey_pricing, itemCurrencySymbol)
-      const mouserDetails = getDistributorPrice(item.mouser_pricing, itemCurrencySymbol)
+      const digikeyDetails = getDistributorPrice(item.digikey_pricing, 'Digi-Key', itemCurrencySymbol)
+      const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', itemCurrencySymbol)
 
       // Parse tags for this item
       const itemTags = item.category && item.category !== 'Uncategorized'
@@ -2261,18 +2354,27 @@ export default function ProcurementDashboard() {
         escapeCSV(item.source),
       )
 
-      // Always add Digikey and Mouser values
+      // Always add rich Digikey values
       row.push(
+        escapeCSV(digikeyDetails.partNumber),
+        escapeCSV(digikeyDetails.packaging),
+        digikeyDetails.moq,
         digikeyDetails.unitPrice,
-        digikeyDetails.quantityPrice,
+        digikeyDetails.reelingFee,
         digikeyDetails.stock,
         escapeCSV(digikeyDetails.status),
+        escapeCSV(digikeyDetails.allVariants),
       )
+      // Always add rich Mouser values
       row.push(
+        escapeCSV(mouserDetails.partNumber),
+        escapeCSV(mouserDetails.packaging),
+        mouserDetails.moq,
         mouserDetails.unitPrice,
-        mouserDetails.quantityPrice,
+        mouserDetails.reelingFee,
         mouserDetails.stock,
         escapeCSV(mouserDetails.status),
+        escapeCSV(mouserDetails.allVariants),
       )
 
       // Add dynamic spec values
