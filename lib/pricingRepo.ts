@@ -392,8 +392,14 @@ export async function fetchCheapestByItem(
  * Fetch full pricing history for one MPN (used by the chart popover).
  * Uses the existing /v2/list/ endpoint with search=mpn — no date filter.
  */
-export async function fetchMpnHistory(mpn: string): Promise<PricingRecord[]> {
-  const trimmed = (mpn ?? '').trim();
+/**
+ * Fetch full pricing history for an item.
+ * Searches by the given term (MPN, item_code, or erp_code — whatever the caller has).
+ * The /v2/list/ search is icontains across mpn, all_mpns, item_code, item_name.
+ * We return all matching records without strict MPN filtering so item_code searches work.
+ */
+export async function fetchMpnHistory(searchTerm: string): Promise<PricingRecord[]> {
+  const trimmed = (searchTerm ?? '').trim();
   if (!trimmed) return [];
 
   const url = `/pricing_repository/v2/list/?search=${encodeURIComponent(trimmed)}&page_size=500`;
@@ -404,9 +410,7 @@ export async function fetchMpnHistory(mpn: string): Promise<PricingRecord[]> {
   }>(url);
 
   // List endpoint may envelope under several keys depending on backend version.
-  const records = res.results ?? res.items ?? res.data ?? [];
-  // Defensive: filter out records whose mpn doesn't actually match (search is icontains).
-  return records.filter((r) => r.mpn?.trim().toLowerCase() === trimmed.toLowerCase());
+  return res.results ?? res.items ?? res.data ?? [];
 }
 
 // ----------------------------------------------------------------------------
@@ -462,20 +466,29 @@ export function buildFactwiseUrl(record: PricingRecord): string | null {
 }
 
 /**
- * Open the source document in a new browser tab.
+ * Navigate to a source document in Factwise.
  *
- * Always opens in a new tab — never uses postMessage. The Factwise host is
- * derived from the api_url query param (swapping backend port 8000 for
- * frontend port 3001 on the same hostname). Falls back to localhost:3001.
+ * Matches the pricing dashboard's pattern exactly:
+ *  - In iframe → postMessage({ type: 'NAVIGATE', url }) to parent (Factwise handles routing)
+ *  - Not in iframe → open in new tab via api_url → localhost:3001 fallback
  */
 export function navigateInFactwise(record: PricingRecord): boolean {
   const url = buildFactwiseUrl(record);
   if (!url) return false;
   if (typeof window === 'undefined') return false;
 
-  // Derive Factwise frontend host from api_url, fall back to localhost:3001
+  const isInIframe = window.parent !== window;
+
+  if (isInIframe) {
+    // In iframe — send to parent Factwise app, which handles routing
+    window.parent.postMessage({ type: 'NAVIGATE', url }, '*');
+    return true;
+  }
+
+  // Not in iframe — open in new tab (local dev / standalone)
   const urlParams = new URLSearchParams(window.location.search);
   const apiUrl = urlParams.get('api_url');
+
   let factwiseBase = 'http://localhost:3001';
   if (apiUrl) {
     try {
@@ -489,7 +502,6 @@ export function navigateInFactwise(record: PricingRecord): boolean {
   const fullUrl = `${factwiseBase}${url}`;
   const newWindow = window.open(fullUrl, '_blank', 'noopener,noreferrer');
   if (!newWindow) {
-    // Popup blocked — anchor fallback
     const a = document.createElement('a');
     a.href = fullUrl;
     a.target = '_blank';

@@ -1924,23 +1924,35 @@ export default function ProcurementDashboard() {
   // Gated by pricingEnabled — only fires after the user clicks "Load Pricing"
   const pricingLookup = usePricingLookup(lineItems, pricingSettings, pricingEnabled)
 
-  // Load full pricing-repo history for the currently-selected analytics item
+  // Load full pricing-repo history for the currently-selected analytics item.
+  // Search by MPN first, fall back to item_code if no MPN, then erp_item_code.
   useEffect(() => {
     if (!showAnalyticsPopup || !selectedItemForAnalytics) {
       setAnalyticsMpnHistory(null)
       return
     }
-    const mpn = pricingLookup.itemIdToMpn.get(selectedItemForAnalytics.id) ?? null
-    if (!mpn) {
+    const item = selectedItemForAnalytics
+    const mpn = pricingLookup.itemIdToMpn.get(item.id) ?? null
+    // Waterfall: MPN → item_code → erp_item_code
+    const searchTerm = mpn || item.itemId || item.erp_item_code || null
+    if (!searchTerm) {
       setAnalyticsMpnHistory([])
       return
     }
     let cancelled = false
     setAnalyticsHistoryLoading(true)
-    fetchMpnHistory(mpn)
+    fetchMpnHistory(searchTerm)
       .then((rows) => {
         if (cancelled) return
-        setAnalyticsMpnHistory(rows)
+        // If searched by item_code/erp, the results may include other items with similar names.
+        // Filter to only rows matching this item's enterprise_item_id when available.
+        let filtered = rows
+        if (!mpn && item.enterprise_item_id) {
+          filtered = rows.filter((r: any) => r.enterprise_item_id === item.enterprise_item_id)
+          // If strict filter yields nothing, fall back to all results
+          if (filtered.length === 0) filtered = rows
+        }
+        setAnalyticsMpnHistory(filtered)
         setAnalyticsHistoryLoading(false)
       })
       .catch(() => {
