@@ -31,7 +31,12 @@ export type PriceBasis =
   | 'quoted_rate'
   | 'landed_rate'
   | 'total_item_cost'
-  | 'landed_total';
+  | 'landed_total'
+  | 'rate_in_admin_currency'
+  | 'effective_rate_in_admin_currency'
+  | 'total_item_cost_in_admin_currency'
+  | 'landed_rate_in_admin_currency'
+  | 'landed_total_in_admin_currency';
 
 export interface PricingRecord {
   pricing_entry_id: string;
@@ -113,6 +118,35 @@ export interface CheapestByMpnRequest {
   date_from?: string; // ISO 8601 (YYYY-MM-DD)
   date_to?: string;
   price_basis?: PriceBasis;
+}
+
+// --- cheapest-by-item (enterprise_item_id based — used by strategy dashboard) ---
+
+export interface CheapestByItemEntry {
+  enterprise_item_id?: string | null;
+  erp_item_code?: string | null;
+  item_code?: string | null;
+  mpn?: string | null;
+}
+
+export interface CheapestByItemRequest {
+  items: CheapestByItemEntry[];
+  source_types?: PricingSourceType[];
+  date_from?: string;
+  date_to?: string;
+  price_basis?: PriceBasis;
+}
+
+/** One item's results — same shape as CheapestByMpnPerSource, keyed by source. */
+export type CheapestByItemPerSource = Partial<Record<PricingSourceType, PricingRecord | null>>;
+
+export interface CheapestByItemResponse {
+  price_basis: PriceBasis;
+  date_from: string | null;
+  date_to: string | null;
+  source_types: PricingSourceType[];
+  /** Every enterprise_item_id sent is a key. null means zero hits for that item. */
+  results: Record<string, CheapestByItemPerSource | null>;
 }
 
 // ----------------------------------------------------------------------------
@@ -285,6 +319,76 @@ export async function fetchCheapestByMpn(
 }
 
 /**
+ * Fetch the cheapest pricing record per (enterprise_item_id, source_type).
+ * Use this for the Strategy Dashboard — it handles same-MPN-different-item,
+ * currency edge cases, and distributor MPN-based fallback.
+ * Batches item lists > 500 into multiple requests.
+ */
+export async function fetchCheapestByItem(
+  req: CheapestByItemRequest,
+): Promise<CheapestByItemResponse> {
+  // Dedup by the first non-null identifier (same waterfall as backend)
+  const deduped = new Map<string, CheapestByItemEntry>();
+  for (const item of req.items) {
+    const key =
+      (item.enterprise_item_id ?? '').trim() ||
+      (item.erp_item_code ?? '').trim() ||
+      (item.item_code ?? '').trim();
+    if (!key) continue;
+    if (deduped.has(key)) continue;
+    deduped.set(key, {
+      enterprise_item_id: item.enterprise_item_id || undefined,
+      erp_item_code: item.erp_item_code || undefined,
+      item_code: item.item_code || undefined,
+      mpn: item.mpn || undefined,
+    });
+  }
+  const entries = Array.from(deduped.values());
+
+  if (entries.length === 0) {
+    return {
+      price_basis: req.price_basis ?? 'effective_rate',
+      date_from: req.date_from ?? null,
+      date_to: req.date_to ?? null,
+      source_types: req.source_types ?? ['PO', 'CONTRACT', 'QUOTE', 'RFQ'],
+      results: {},
+    };
+  }
+
+  const batches: CheapestByItemEntry[][] = [];
+  for (let i = 0; i < entries.length; i += MAX_BATCH) {
+    batches.push(entries.slice(i, i + MAX_BATCH));
+  }
+
+  const responses = await Promise.all(
+    batches.map((batch) =>
+      pricingRepoFetch<CheapestByItemResponse>('/pricing_repository/v2/cheapest-by-item/', {
+        method: 'POST',
+        body: JSON.stringify({
+          items: batch,
+          source_types: req.source_types,
+          date_from: req.date_from,
+          date_to: req.date_to,
+          price_basis: req.price_basis,
+        }),
+      }),
+    ),
+  );
+
+  const merged: CheapestByItemResponse = {
+    price_basis: responses[0]?.price_basis ?? req.price_basis ?? 'effective_rate',
+    date_from: responses[0]?.date_from ?? req.date_from ?? null,
+    date_to: responses[0]?.date_to ?? req.date_to ?? null,
+    source_types: responses[0]?.source_types ?? [],
+    results: {},
+  };
+  for (const r of responses) {
+    Object.assign(merged.results, r.results);
+  }
+  return merged;
+}
+
+/**
  * Fetch full pricing history for one MPN (used by the chart popover).
  * Uses the existing /v2/list/ endpoint with search=mpn — no date filter.
  */
@@ -401,9 +505,10 @@ export function navigateInFactwise(record: PricingRecord): boolean {
 // Helpers — pull the displayed admin-currency value off a record
 // ----------------------------------------------------------------------------
 
-/** Picks the admin-currency-normalized value of the chosen price basis. */
+/** Picks the price value for the chosen basis. Handles both native and admin-currency bases. */
 export function getAdminPrice(record: PricingRecord, basis: PriceBasis): number | null {
   switch (basis) {
+    // Native bases → return the admin-currency equivalent for display
     case 'rate':
       return record.rate_in_admin_currency;
     case 'effective_rate':
@@ -415,6 +520,17 @@ export function getAdminPrice(record: PricingRecord, basis: PriceBasis): number 
     case 'total_item_cost':
       return record.total_item_cost_in_admin_currency;
     case 'landed_total':
+      return record.landed_total_in_admin_currency;
+    // Admin-currency bases → read directly
+    case 'rate_in_admin_currency':
+      return record.rate_in_admin_currency;
+    case 'effective_rate_in_admin_currency':
+      return record.effective_rate_in_admin_currency;
+    case 'total_item_cost_in_admin_currency':
+      return record.total_item_cost_in_admin_currency;
+    case 'landed_rate_in_admin_currency':
+      return record.landed_rate_in_admin_currency;
+    case 'landed_total_in_admin_currency':
       return record.landed_total_in_admin_currency;
     default:
       return null;

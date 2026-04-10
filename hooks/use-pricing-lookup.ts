@@ -10,9 +10,11 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  fetchCheapestByItem,
   fetchCheapestByMpn,
   isExpiredContract,
   isZeroRateOrDraftQuote,
+  type CheapestByItemPerSource,
   type CheapestByMpnPerSource,
   type PriceBasis,
   type PricingRecord,
@@ -34,7 +36,7 @@ export interface PricingLookupSettings {
 
 export const DEFAULT_PRICING_SETTINGS: PricingLookupSettings = {
   daysBack: 180,
-  priceBasis: 'effective_rate',
+  priceBasis: 'rate_in_admin_currency',
   sourceTypes: ['PO', 'CONTRACT', 'QUOTE', 'RFQ'],
   excludeExpiredContracts: true,
   excludeZeroRateAndDraftQuotes: true,
@@ -168,10 +170,12 @@ function applyClientFilters(
 // ----------------------------------------------------------------------------
 
 export interface PricingLookupState {
-  /** Map: mpn → per-source cheapest record (after client-side filters). */
-  byMpn: Map<string, CheapestByMpnPerSource | null>;
-  /** Map: lineItem.id → mpn (so cells can look up by row id). */
+  /** Map: enterprise_item_id → per-source cheapest record (after client-side filters). */
+  byItemId: Map<string, CheapestByItemPerSource | null>;
+  /** Map: lineItem.id → mpn (so cells / charts can still find the MPN for history). */
   itemIdToMpn: Map<string | number, string | null>;
+  /** Legacy: Map: mpn → per-source (for chart history lookups). Populated alongside byItemId. */
+  byMpn: Map<string, CheapestByMpnPerSource | null>;
   loading: boolean;
   error: string | null;
   /** Force a refetch (bypasses cache). */
@@ -184,10 +188,12 @@ export function usePricingLookup(
   enabled: boolean = true,
 ): PricingLookupState {
   const [state, setState] = useState<{
+    byItemId: Map<string, CheapestByItemPerSource | null>;
     byMpn: Map<string, CheapestByMpnPerSource | null>;
     loading: boolean;
     error: string | null;
   }>({
+    byItemId: new Map(),
     byMpn: new Map(),
     loading: false,
     error: null,
@@ -195,7 +201,7 @@ export function usePricingLookup(
   const [refetchToken, setRefetchToken] = useState(0);
   const inFlight = useRef<AbortController | null>(null);
 
-  // Build itemId → mpn map (for the cells)
+  // Build itemId → mpn map (for chart history + legacy consumers)
   const itemIdToMpn = useMemo(() => {
     const m = new Map<string | number, string | null>();
     for (const it of items) {
@@ -204,29 +210,58 @@ export function usePricingLookup(
     return m;
   }, [items]);
 
-  // Unique non-null MPNs
-  const mpns = useMemo(() => {
-    const set = new Set<string>();
-    for (const v of itemIdToMpn.values()) {
-      if (v) set.add(v);
+  // Build list of identifiers for the cheapest-by-item request.
+  // Key = enterprise_item_id || erp_item_code || item_code (waterfall, matches backend).
+  const itemEntries = useMemo(() => {
+    const seen = new Set<string>();
+    const entries: Array<{
+      enterprise_item_id: string | null;
+      erp_item_code: string | null;
+      item_code: string | null;
+      mpn: string | null;
+      lookupKey: string; // the key we'll use to find results in the response
+    }> = [];
+    for (const it of items) {
+      const eid = it.enterprise_item_id || null;
+      const erp = it.erp_item_code || null;
+      const icode = it.itemId || it.item_code || null; // itemId is item_code mapped in transformApiItem
+      const key = eid || erp || icode;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      entries.push({
+        enterprise_item_id: eid,
+        erp_item_code: erp,
+        item_code: icode,
+        mpn: extractMpn(it),
+        lookupKey: key,
+      });
     }
-    return Array.from(set);
-  }, [itemIdToMpn]);
+    return entries;
+  }, [items]);
+
+  // Stable string key for dependency tracking
+  const itemEntriesKey = useMemo(
+    () => itemEntries.map(e => e.lookupKey).sort().join('|'),
+    [itemEntries],
+  );
 
   useEffect(() => {
-    if (!enabled || mpns.length === 0) {
-      setState({ byMpn: new Map(), loading: false, error: null });
+    if (!enabled || itemEntries.length === 0) {
+      setState({ byItemId: new Map(), byMpn: new Map(), loading: false, error: null });
       return;
     }
 
-    const cacheKey = buildCacheKey(mpns, settings);
+    const cacheKey = buildCacheKey(
+      itemEntries.map(e => e.lookupKey),
+      settings,
+    );
     const cached = cache.get(cacheKey);
     if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS && refetchToken === 0) {
-      const filtered = new Map<string, CheapestByMpnPerSource | null>();
-      for (const [mpn, perSource] of Object.entries(cached.results)) {
-        filtered.set(mpn, applyClientFilters(perSource, settings));
+      const filteredById = new Map<string, CheapestByItemPerSource | null>();
+      for (const [id, perSource] of Object.entries(cached.results)) {
+        filteredById.set(id, applyClientFilters(perSource, settings));
       }
-      setState({ byMpn: filtered, loading: false, error: null });
+      setState({ byItemId: filteredById, byMpn: new Map(), loading: false, error: null });
       return;
     }
 
@@ -239,8 +274,13 @@ export function usePricingLookup(
     const dateFrom = settings.daysBack !== null ? isoDaysAgo(settings.daysBack) : undefined;
     const dateTo = settings.daysBack !== null ? todayIso() : undefined;
 
-    fetchCheapestByMpn({
-      mpns,
+    fetchCheapestByItem({
+      items: itemEntries.map(e => ({
+        enterprise_item_id: e.enterprise_item_id || undefined,
+        erp_item_code: e.erp_item_code || undefined,
+        item_code: e.item_code || undefined,
+        mpn: e.mpn || undefined,
+      })),
       source_types: settings.sourceTypes,
       date_from: dateFrom,
       date_to: dateTo,
@@ -249,24 +289,23 @@ export function usePricingLookup(
       .then((resp) => {
         if (controller.signal.aborted) return;
         cache.set(cacheKey, { results: resp.results, fetchedAt: Date.now() });
-        const filtered = new Map<string, CheapestByMpnPerSource | null>();
-        for (const [mpn, perSource] of Object.entries(resp.results)) {
-          filtered.set(mpn, applyClientFilters(perSource, settings));
+        const filteredById = new Map<string, CheapestByItemPerSource | null>();
+        for (const [id, perSource] of Object.entries(resp.results)) {
+          filteredById.set(id, applyClientFilters(perSource, settings));
         }
-        setState({ byMpn: filtered, loading: false, error: null });
+        setState({ byItemId: filteredById, byMpn: new Map(), loading: false, error: null });
       })
       .catch((err: any) => {
         if (controller.signal.aborted) return;
         console.error('[usePricingLookup] fetch failed:', err);
-        setState({ byMpn: new Map(), loading: false, error: err?.message || 'Pricing lookup failed' });
+        setState({ byItemId: new Map(), byMpn: new Map(), loading: false, error: err?.message || 'Pricing lookup failed' });
       });
 
     return () => controller.abort();
-    // mpns is derived from itemIdToMpn; settings is whole object; refetchToken forces reruns
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     enabled,
-    mpns.join('|'),
+    itemEntriesKey,
     settings.daysBack,
     settings.priceBasis,
     settings.sourceTypes.join(','),
@@ -276,6 +315,7 @@ export function usePricingLookup(
   ]);
 
   return {
+    byItemId: state.byItemId,
     byMpn: state.byMpn,
     itemIdToMpn,
     loading: state.loading,

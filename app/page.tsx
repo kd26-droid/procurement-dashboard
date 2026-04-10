@@ -1105,6 +1105,7 @@ export default function ProcurementDashboard() {
       event_quantity: item.event_quantity ?? null,
       bom_slab_quantity: item.bom_slab_quantity || 0,
       enterprise_item_id: item.enterprise_item_id || null,
+      erp_item_code: item.erp_item_code || null,
       // RFQ/Quote Assignee are PROJECT-level (same for all items) — populated from column render using state
       rfqAssigneeName: '',  // filled from rfqAssignees state in column render
       quoteAssigneeName: '',  // filled from quoteAssignees state in column render
@@ -4389,6 +4390,16 @@ export default function ProcurementDashboard() {
     // ── Real pricing repo v2 history (lazy-loaded when popup opens) ──
     // Build per-source { vendor, price, quantity }[] from analyticsMpnHistory.
     const basis = pricingSettings.priceBasis
+
+    // Derive the admin currency symbol from the first available history record
+    const adminCurrSym = (() => {
+      if (!analyticsMpnHistory || analyticsMpnHistory.length === 0) return '₹'
+      for (const r of analyticsMpnHistory) {
+        if (r.admin_currency_symbol) return r.admin_currency_symbol
+      }
+      return '₹'
+    })()
+
     const historyToSeries = (source: PricingSourceType) => {
       if (!analyticsMpnHistory) return []
       return analyticsMpnHistory
@@ -4536,6 +4547,7 @@ export default function ProcurementDashboard() {
       quoteData: realQuoteData,
       rfqData: realRfqData,
       onlineData,
+      adminCurrSym,
     }
   }
 
@@ -4551,16 +4563,17 @@ export default function ProcurementDashboard() {
     xAxisLabel: string,
     yLeftLabel: string,
     yRightLabel: string,
+    currSym: string = '₹',
   ) => {
     const commonTooltip = (value: any, name: string) => [
-      name === dataKey1 ? `$${Number(value).toFixed(2)}` : `${value} pcs`,
+      name === dataKey1 ? `${currSym}${Number(value).toFixed(2)}` : `${value} pcs`,
       name === dataKey1 ? 'Price' : 'Quantity'
     ]
 
     const xLabel = xAxisLabel
     const isCurrencyLeft = /price|rate/i.test(yLeftLabel) || /price|rate/i.test(dataKey1)
     const isCurrencyRight = /price|rate/i.test(yRightLabel) || /price|rate/i.test(dataKey2)
-    const fmtCurrency = (n: number) => `$${Number(n).toFixed(0)}`
+    const fmtCurrency = (n: number) => `${currSym}${Number(n).toFixed(0)}`
     const leftTickFormatter = (v: any) => (isCurrencyLeft ? fmtCurrency(v) : v)
     const rightTickFormatter = (v: any) => (isCurrencyRight ? fmtCurrency(v) : v)
     const hasSecondSeries = Boolean(dataKey2) && data.some((d) => d[dataKey2 as keyof typeof d] !== undefined)
@@ -4588,7 +4601,7 @@ export default function ProcurementDashboard() {
     const fmtLabel = (isCurrency: boolean) => (v: any) => {
       const n = Number(v)
       if (isNaN(n)) return ''
-      return isCurrency ? `$${n.toFixed(0)}` : `${n}`
+      return isCurrency ? `${currSym}${n.toFixed(0)}` : `${n}`
     }
     const labelStyle1 = { fontSize: 9, fill: color1, fontWeight: 600 }
     const labelStyle2 = { fontSize: 9, fill: color2, fontWeight: 600 }
@@ -4599,7 +4612,7 @@ export default function ProcurementDashboard() {
       const n = Number(value)
       if (isNaN(n)) return null
       if (index !== undefined) barTops[index] = y
-      const text = isCurrency ? `$${n.toFixed(0)}` : `${n}`
+      const text = isCurrency ? `${currSym}${n.toFixed(0)}` : `${n}`
       const cx = x + (width || 0) / 2
       const ty = y - 8
       return (
@@ -4618,7 +4631,7 @@ export default function ProcurementDashboard() {
       const { x, y, value, index } = props
       const n = Number(value)
       if (isNaN(n)) return null
-      const text = isCurrency ? `$${n.toFixed(0)}` : `${n}`
+      const text = isCurrency ? `${currSym}${n.toFixed(0)}` : `${n}`
       const barTopY = barTops[index ?? -1]
       // If dot is inside/below a bar, place label above the bar; otherwise above the dot
       const rawY = (barTopY !== undefined && y >= barTopY) ? barTopY - 18 : y - 18
@@ -4698,7 +4711,7 @@ export default function ProcurementDashboard() {
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis {...xAxisProps} tickLine={false} axisLine={false} height={50} />
             <YAxis {...yLeftProps}>
-              <RechartsLabel value="Price ($)" angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              <RechartsLabel value={`Price (${currSym})`} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
             <YAxis {...yRightProps}>
               <RechartsLabel value="Quantity (pcs)" angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
@@ -6432,7 +6445,11 @@ export default function ProcurementDashboard() {
                         }
                         const sourceType = colToSource[columnKey]
                         const mpn = pricingLookup.itemIdToMpn.get(item.id) ?? null
-                        const perSource = mpn ? pricingLookup.byMpn.get(mpn) : null
+                        // Waterfall lookup key: enterprise_item_id || erp_item_code || item_code
+                        const lookupKey = item.enterprise_item_id || item.erp_item_code || item.itemId || null
+                        const perSource = lookupKey
+                          ? pricingLookup.byItemId.get(lookupKey) ?? null
+                          : null
                         const record = perSource ? perSource[sourceType] ?? null : null
                         const adminPrice = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
 
@@ -6447,15 +6464,15 @@ export default function ProcurementDashboard() {
                               —
                             </span>
                           )
-                        } else if (!mpn) {
-                          cellInner = <span className="text-xs text-gray-400 italic">No MPN</span>
+                        } else if (!lookupKey) {
+                          cellInner = <span className="text-xs text-gray-400 italic">No ID</span>
                         } else if (pricingLookup.loading && !record) {
                           cellInner = <span className="text-xs text-gray-400">…</span>
                         } else if (!record || adminPrice === null) {
                           cellInner = (
                             <span
                               className="text-xs text-gray-400"
-                              title={`No ${sourceType} pricing found for MPN ${mpn} in the selected range`}
+                              title={`No ${sourceType} pricing found for ${mpn ? 'MPN ' + mpn : 'this item'} in the selected range`}
                             >
                               —
                             </span>
@@ -6910,7 +6927,7 @@ export default function ProcurementDashboard() {
                     <h4 className="text-sm font-medium text-gray-800 mb-2">PO</h4>
                     <div className="h-72">
                       {analyticsData.poData.length > 0 ? (
-                        renderChart(analyticsData.poData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')
+                        renderChart(analyticsData.poData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Vendor', `Price (${analyticsData.adminCurrSym})`, 'Quantity', analyticsData.adminCurrSym)
                       ) : (
                         <div className="h-full flex items-center justify-center text-xs text-gray-400">
                           No PO history for this MPN
@@ -6924,7 +6941,7 @@ export default function ProcurementDashboard() {
                     <h4 className="text-sm font-medium text-gray-800 mb-2">Contract</h4>
                     <div className="h-72">
                       {analyticsData.contractData.length > 0 ? (
-                        renderChart(analyticsData.contractData, 'composed', 'price', 'quantity', '#f472b6', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')
+                        renderChart(analyticsData.contractData, 'composed', 'price', 'quantity', '#f472b6', '#93c5fd', 'vendor', 'Vendor', `Price (${analyticsData.adminCurrSym})`, 'Quantity', analyticsData.adminCurrSym)
                       ) : (
                         <div className="h-full flex items-center justify-center text-xs text-gray-400">
                           No Contract history for this MPN
@@ -6938,7 +6955,7 @@ export default function ProcurementDashboard() {
                     <h4 className="text-sm font-medium text-gray-800 mb-2">Quote</h4>
                     <div className="h-72">
                       {analyticsData.quoteData.length > 0 ? (
-                        renderChart(analyticsData.quoteData, 'composed', 'price', 'quantity', '#8b5cf6', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')
+                        renderChart(analyticsData.quoteData, 'composed', 'price', 'quantity', '#8b5cf6', '#93c5fd', 'vendor', 'Vendor', `Price (${analyticsData.adminCurrSym})`, 'Quantity', analyticsData.adminCurrSym)
                       ) : (
                         <div className="h-full flex items-center justify-center text-xs text-gray-400">
                           No Quote history for this MPN
@@ -6952,7 +6969,7 @@ export default function ProcurementDashboard() {
                     <h4 className="text-sm font-medium text-gray-800 mb-2">RFQ</h4>
                     <div className="h-72">
                       {analyticsData.rfqData && analyticsData.rfqData.length > 0 ? (
-                        renderChart(analyticsData.rfqData, 'composed', 'price', 'quantity', '#0ea5e9', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')
+                        renderChart(analyticsData.rfqData, 'composed', 'price', 'quantity', '#0ea5e9', '#93c5fd', 'vendor', 'Vendor', `Price (${analyticsData.adminCurrSym})`, 'Quantity', analyticsData.adminCurrSym)
                       ) : (
                         <div className="h-full flex items-center justify-center text-xs text-gray-400">
                           No RFQ history for this MPN
@@ -6965,7 +6982,7 @@ export default function ProcurementDashboard() {
                   <div className="bg-white p-4 rounded-lg border lg:col-span-2">
                     <h4 className="text-sm font-medium text-gray-800 mb-2">Online Pricing</h4>
                     <div className="h-72">
-                      {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#f97316', '#93c5fd', 'vendor', 'Distributors', 'Price', 'Quantity')}
+                      {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#f97316', '#93c5fd', 'vendor', 'Distributors', `Price (${analyticsData.adminCurrSym})`, 'Quantity', analyticsData.adminCurrSym)}
                     </div>
                   </div>
                 </div>
