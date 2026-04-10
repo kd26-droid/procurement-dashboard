@@ -24,6 +24,7 @@ import {
   type PricingLookupSettings,
 } from "@/hooks/use-pricing-lookup"
 import { PricingLookupSettingsButton } from "@/components/pricing-lookup-settings"
+import { PricingCharts } from "@/components/pricing-charts"
 import {
   fetchMpnHistory,
   getAdminPrice,
@@ -710,6 +711,7 @@ export default function ProcurementDashboard() {
   const [selectedItemForAnalytics, setSelectedItemForAnalytics] = useState<any>(null)
   // Full pricing-repo history for the currently-open analytics popup (lazy-loaded)
   const [analyticsMpnHistory, setAnalyticsMpnHistory] = useState<PricingRecord[] | null>(null)
+  const [analyticsUseAdminCurrency, setAnalyticsUseAdminCurrency] = useState(true)
   const [analyticsHistoryLoading, setAnalyticsHistoryLoading] = useState(false)
   // Confirmation dialog: cell click → confirm before navigating to source doc
   const [pendingNavRecord, setPendingNavRecord] = useState<PricingRecord | null>(null)
@@ -6908,85 +6910,22 @@ export default function ProcurementDashboard() {
               </Button>
             </div>
 
-            {/* Module Cards — real pricing repo v2 data, matched by MPN */}
-            {analyticsData && (
-              <>
-                {analyticsHistoryLoading && (
-                  <div className="text-xs text-gray-500 mb-3">Loading pricing history…</div>
-                )}
-                {!analyticsHistoryLoading &&
-                  analyticsMpnHistory !== null &&
-                  analyticsMpnHistory.length === 0 && (
-                    <div className="text-xs text-amber-600 mb-3">
-                      No pricing-repo history found for this MPN. Showing mock data where available.
-                    </div>
-                  )}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* PO */}
-                  <div className="bg-white p-4 rounded-lg border">
-                    <h4 className="text-sm font-medium text-gray-800 mb-2">PO</h4>
-                    <div className="h-72">
-                      {analyticsData.poData.length > 0 ? (
-                        renderChart(analyticsData.poData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Vendor', `Price (${analyticsData.adminCurrSym})`, 'Quantity', analyticsData.adminCurrSym)
-                      ) : (
-                        <div className="h-full flex items-center justify-center text-xs text-gray-400">
-                          No PO history for this MPN
-                        </div>
-                      )}
-                    </div>
-                  </div>
+            {/* Pricing history charts — per-source with currency toggle, rate type, date range, cheapest highlight */}
+            <PricingCharts
+              records={analyticsMpnHistory}
+              loading={analyticsHistoryLoading}
+              useAdminCurrency={analyticsUseAdminCurrency}
+              onToggleAdminCurrency={setAnalyticsUseAdminCurrency}
+            />
 
-                  {/* Contract */}
-                  <div className="bg-white p-4 rounded-lg border">
-                    <h4 className="text-sm font-medium text-gray-800 mb-2">Contract</h4>
-                    <div className="h-72">
-                      {analyticsData.contractData.length > 0 ? (
-                        renderChart(analyticsData.contractData, 'composed', 'price', 'quantity', '#f472b6', '#93c5fd', 'vendor', 'Vendor', `Price (${analyticsData.adminCurrSym})`, 'Quantity', analyticsData.adminCurrSym)
-                      ) : (
-                        <div className="h-full flex items-center justify-center text-xs text-gray-400">
-                          No Contract history for this MPN
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Quote */}
-                  <div className="bg-white p-4 rounded-lg border">
-                    <h4 className="text-sm font-medium text-gray-800 mb-2">Quote</h4>
-                    <div className="h-72">
-                      {analyticsData.quoteData.length > 0 ? (
-                        renderChart(analyticsData.quoteData, 'composed', 'price', 'quantity', '#8b5cf6', '#93c5fd', 'vendor', 'Vendor', `Price (${analyticsData.adminCurrSym})`, 'Quantity', analyticsData.adminCurrSym)
-                      ) : (
-                        <div className="h-full flex items-center justify-center text-xs text-gray-400">
-                          No Quote history for this MPN
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* RFQ */}
-                  <div className="bg-white p-4 rounded-lg border">
-                    <h4 className="text-sm font-medium text-gray-800 mb-2">RFQ</h4>
-                    <div className="h-72">
-                      {analyticsData.rfqData && analyticsData.rfqData.length > 0 ? (
-                        renderChart(analyticsData.rfqData, 'composed', 'price', 'quantity', '#0ea5e9', '#93c5fd', 'vendor', 'Vendor', `Price (${analyticsData.adminCurrSym})`, 'Quantity', analyticsData.adminCurrSym)
-                      ) : (
-                        <div className="h-full flex items-center justify-center text-xs text-gray-400">
-                          No RFQ history for this MPN
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Online Pricing (full width) */}
-                  <div className="bg-white p-4 rounded-lg border lg:col-span-2">
-                    <h4 className="text-sm font-medium text-gray-800 mb-2">Online Pricing</h4>
-                    <div className="h-72">
-                      {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#f97316', '#93c5fd', 'vendor', 'Distributors', `Price (${analyticsData.adminCurrSym})`, 'Quantity', analyticsData.adminCurrSym)}
-                    </div>
-                  </div>
+            {/* Online Pricing (Digikey/Mouser — separate, not from pricing repo) */}
+            {analyticsData && analyticsData.onlineData?.length > 0 && (
+              <div className="bg-white p-4 rounded-lg border mt-6">
+                <h4 className="text-sm font-medium text-gray-800 mb-2">Online Pricing</h4>
+                <div className="h-72">
+                  {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#f97316', '#93c5fd', 'vendor', 'Distributors', `Price (${analyticsData.adminCurrSym})`, 'Quantity', analyticsData.adminCurrSym)}
                 </div>
-              </>
+              </div>
             )}
 
             <div className="flex justify-end mt-6">
