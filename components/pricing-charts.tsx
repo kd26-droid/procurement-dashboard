@@ -313,8 +313,13 @@ export function SourceChart({ entries, sourceType, useAdminCurrency, color }: So
           <p className="text-sm text-gray-400">No entries in this date range</p>
         </div>
       ) : (() => {
+        // For large datasets scroll horizontally with fixed bar width (60px each)
+        // For small datasets fill the container
+        const MIN_BAR_WIDTH = 60
         const needsScroll = chartData.length > 8
-        const chartWidth = needsScroll ? chartData.length * 80 : '100%'
+        const chartWidth = needsScroll ? Math.max(chartData.length * MIN_BAR_WIDTH, 600) : '100%'
+        // Only show every Nth label so they don't collide when there are many entries
+        const labelInterval = chartData.length <= 8 ? 0 : chartData.length <= 20 ? 1 : Math.ceil(chartData.length / 10)
         return (
           <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden" style={{ minHeight: '250px' }}>
             <div style={{ width: typeof chartWidth === 'number' ? `${chartWidth}px` : chartWidth, height: '100%', minHeight: '250px' }}>
@@ -328,7 +333,7 @@ export function SourceChart({ entries, sourceType, useAdminCurrency, color }: So
                     tickLine={false}
                     axisLine={{ stroke: '#d1d5db' }}
                     dy={6}
-                    interval={0}
+                    interval={labelInterval}
                   />
                   <YAxis
                     yAxisId="left"

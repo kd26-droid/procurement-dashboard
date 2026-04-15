@@ -488,9 +488,17 @@ export function navigateInFactwise(record: PricingRecord): boolean {
   // Not in iframe — open in new tab (local dev / standalone)
   const urlParams = new URLSearchParams(window.location.search);
   const apiUrl = urlParams.get('api_url');
+  const apiEnv = urlParams.get('api_env');
 
   let factwiseBase = 'http://localhost:3001';
-  if (apiUrl) {
+
+  // Use api_env to determine Factwise base URL
+  if (apiEnv === 'prod') {
+    factwiseBase = 'https://apps.factwise.io';
+  } else if (apiEnv === 'dev') {
+    factwiseBase = 'https://factwise-newdbtest.netlify.app';
+  } else if (apiUrl) {
+    // Fallback: derive from api_url (local dev)
     try {
       const parsed = new URL(apiUrl);
       factwiseBase = `${parsed.protocol}//${parsed.hostname}:3001`;

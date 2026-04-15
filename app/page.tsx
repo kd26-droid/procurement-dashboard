@@ -6930,15 +6930,7 @@ export default function ProcurementDashboard() {
               onToggleAdminCurrency={setAnalyticsUseAdminCurrency}
             />
 
-            {/* Online Pricing (Digikey/Mouser — separate, not from pricing repo) */}
-            {analyticsData && analyticsData.onlineData?.length > 0 && (
-              <div className="bg-white p-4 rounded-lg border mt-6">
-                <h4 className="text-sm font-medium text-gray-800 mb-2">Online Pricing</h4>
-                <div className="h-72">
-                  {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#f97316', '#93c5fd', 'vendor', 'Distributors', `Price (${analyticsData.adminCurrSym})`, 'Quantity', analyticsData.adminCurrSym)}
-                </div>
-              </div>
-            )}
+            {/* Online Pricing (Digikey/Mouser) — hidden for now */}
 
             <div className="flex justify-end mt-6">
               <Button
