@@ -1933,6 +1933,78 @@ export default function ProcurementDashboard() {
   // Gated by pricingEnabled — only fires after the user clicks "Load Pricing"
   const pricingLookup = usePricingLookup(lineItems, pricingSettings, pricingEnabled)
 
+  // Cheapest source per item — used to green-highlight the cheapest price cell across all 6 sources.
+  // Currency rule: only compare DigiKey/Mouser against admin-currency prices if they share the same
+  // currency code. If pricing not loaded, compare only DigiKey vs Mouser.
+  const cheapestSourceByItemKey = useMemo(() => {
+    const map = new Map<string, string>() // lookupKey → 'PO'|'CONTRACT'|'QUOTE'|'RFQ'|'DIGIKEY'|'MOUSER'
+
+    // Helper: get qty-slab price from a distributor pricing object
+    const getDistributorSlabPrice = (pricing: any, itemQty: number): number | null => {
+      if (pricing?.status !== 'available') return null
+      const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
+      const preferred = variants.length > 0
+        ? variants[pricing.preferred_variant_index ?? 0] || variants[0]
+        : null
+      if (preferred && Array.isArray(preferred.price_breaks) && preferred.price_breaks.length > 0) {
+        const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
+        let matched = sorted[0]
+        for (const pb of sorted) {
+          if ((pb.quantity ?? 0) <= itemQty) matched = pb
+          else break
+        }
+        const p = typeof matched.unit_price === 'number' ? matched.unit_price : parseFloat(matched.unit_price)
+        return p > 0 ? p : null
+      }
+      const p = pricing.quantity_price ?? pricing.unit_price
+      return p && p > 0 ? p : null
+    }
+
+    for (const item of lineItems) {
+      const lookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || null
+      if (!lookupKey) continue
+      const itemQty = parseFloat(String(item.quantity)) || 1
+
+      const candidates: Array<{ source: string; price: number }> = []
+      let adminCurrencyCode: string | null = null
+
+      // PO / CONTRACT / QUOTE / RFQ — only when pricing is loaded
+      if (pricingEnabled) {
+        const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
+        for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
+          const record = perSource?.[src] ?? null
+          const price = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
+          if (price && price > 0) {
+            if (!adminCurrencyCode) adminCurrencyCode = record!.admin_currency_code || null
+            candidates.push({ source: src, price })
+          }
+        }
+      }
+
+      // DigiKey — include only if currency matches admin currency (or admin currency unknown)
+      const dkPrice = getDistributorSlabPrice((item as any).digikey_pricing, itemQty)
+      if (dkPrice !== null) {
+        const dkCurrency = (item as any).digikey_pricing?.currency || null
+        const sameOrUnknown = !adminCurrencyCode || !dkCurrency || dkCurrency === adminCurrencyCode
+        if (sameOrUnknown) candidates.push({ source: 'DIGIKEY', price: dkPrice })
+      }
+
+      // Mouser — backend confirmed INR values; include if admin currency is INR or unknown
+      const msPrice = getDistributorSlabPrice((item as any).mouser_pricing, itemQty)
+      if (msPrice !== null) {
+        const msCurrency = (item as any).mouser_pricing?.currency || null
+        const sameOrUnknown = !adminCurrencyCode || !msCurrency || msCurrency === adminCurrencyCode
+        if (sameOrUnknown) candidates.push({ source: 'MOUSER', price: msPrice })
+      }
+
+      if (candidates.length === 0) continue
+      const minPrice = Math.min(...candidates.map(c => c.price))
+      const cheapest = candidates.find(c => Math.abs(c.price - minPrice) < 0.000001)
+      if (cheapest) map.set(lookupKey, cheapest.source)
+    }
+    return map
+  }, [lineItems, pricingLookup.byItemId, pricingEnabled, pricingSettings.priceBasis])
+
   // Load full pricing-repo history for the currently-selected analytics item.
   // Search by MPN first, fall back to item_code if no MPN, then erp_item_code.
   useEffect(() => {
@@ -6198,22 +6270,9 @@ export default function ProcurementDashboard() {
                         // Prices are always in item currency after conversion — use item symbol directly
                         const currencySymbol = (item as any).currency?.symbol || getCurrencySymbol((item as any).currency?.code || '') || '₹'
 
-                        // Calculate if this is the cheapest price
-                        const digikeyPrice = displayPrice ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
-                        const mouserPricing = (item as any).mouser_pricing
-                        const mouserPrice = mouserPricing?.status === 'available'
-                          ? (mouserPricing?.quantity_price ?? mouserPricing?.unit_price)
-                          : null
-                        const allPricesForCheapest = [
-                          (item as any).pricePO,
-                          (item as any).priceContract,
-                          (item as any).priceQuote,
-                          digikeyPrice,
-                          mouserPrice ? (typeof mouserPrice === 'number' ? mouserPrice : parseFloat(mouserPrice)) : null,
-                          (item as any).priceEXIM,
-                        ].filter((p): p is number => p !== null && p !== undefined && !isNaN(p) && p > 0)
-                        const cheapestPrice = allPricesForCheapest.length > 0 ? Math.min(...allPricesForCheapest) : null
-                        const isDigikeyCheapest = digikeyPrice !== null && cheapestPrice !== null && Math.abs(digikeyPrice - cheapestPrice) < 0.001
+                        // Cheapest highlight — use shared map (currency-aware, pricing-load-aware)
+                        const _dkLookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
+                        const isDigikeyCheapest = cheapestSourceByItemKey.get(_dkLookupKey) === 'DIGIKEY'
 
                         // Render based on status
                         const renderPricingContent = () => {
@@ -6359,22 +6418,9 @@ export default function ProcurementDashboard() {
                         // Mouser prices — always show ₹
                         const currencySymbol = '₹'
 
-                        // Calculate if this is the cheapest price
-                        const mouserPrice = displayPrice ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
-                        const digikeyPricing = (item as any).digikey_pricing
-                        const digikeyPrice = digikeyPricing?.status === 'available'
-                          ? (digikeyPricing?.quantity_price ?? digikeyPricing?.unit_price)
-                          : null
-                        // Note: EXIM excluded since column is hidden
-                        const allPricesForCheapest = [
-                          (item as any).pricePO,
-                          (item as any).priceContract,
-                          (item as any).priceQuote,
-                          digikeyPrice ? (typeof digikeyPrice === 'number' ? digikeyPrice : parseFloat(digikeyPrice)) : null,
-                          mouserPrice,
-                        ].filter((p): p is number => p !== null && p !== undefined && !isNaN(p) && p > 0)
-                        const cheapestPrice = allPricesForCheapest.length > 0 ? Math.min(...allPricesForCheapest) : null
-                        const isMouserCheapest = mouserPrice !== null && cheapestPrice !== null && Math.abs(mouserPrice - cheapestPrice) < 0.001
+                        // Cheapest highlight — use shared map (currency-aware, pricing-load-aware)
+                        const _msLookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
+                        const isMouserCheapest = cheapestSourceByItemKey.get(_msLookupKey) === 'MOUSER'
 
                         // Render based on status
                         const renderMouserContent = () => {
@@ -6538,11 +6584,12 @@ export default function ProcurementDashboard() {
                         } else {
                           const sym = record.admin_currency_symbol || record.admin_currency_code || ''
                           const expired = isExpiredContract(record)
+                          const isCheapest = cheapestSourceByItemKey.get(item.enterprise_item_id || item.erp_item_code || (item as any).itemId || '') === sourceType
                           cellInner = (
                             <button
                               type="button"
                               className={`text-xs font-medium underline-offset-2 hover:underline focus:outline-none ${
-                                expired ? "text-red-600" : "text-gray-900"
+                                expired ? "text-red-600" : isCheapest ? "text-green-700" : "text-gray-900"
                               }`}
                               title={`${record.supplier_name || ""} • ${
                                 record.pricing_datetime?.slice(0, 10) || ""
@@ -6561,8 +6608,9 @@ export default function ProcurementDashboard() {
                           )
                         }
 
+                        const isCheapestCell = cheapestSourceByItemKey.get(item.enterprise_item_id || item.erp_item_code || (item as any).itemId || '') === sourceType
                         return (
-                          <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
+                          <td key={columnKey} className={`p-2 text-right ${isCheapestCell ? 'bg-green-50' : ''}`} style={stickyStyle}>
                             {cellInner}
                           </td>
                         )
