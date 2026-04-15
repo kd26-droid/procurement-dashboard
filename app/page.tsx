@@ -6356,8 +6356,8 @@ export default function ProcurementDashboard() {
                         const displayNextTier = pricing?.next_tier_info
                         const wasConverted = pricing?.wasConverted || false
                         const originalPrice = pricing?.original_quantity_price ?? pricing?.original_unit_price
-                        // Prices are always in item currency after conversion — use item symbol directly
-                        const currencySymbol = (item as any).currency?.symbol || getCurrencySymbol((item as any).currency?.code || '') || '₹'
+                        // Mouser prices are always shown in item currency — hardcode symbol to avoid USD fallback
+                        const currencySymbol = (item as any).currency?.symbol || '₹'
 
                         // Calculate if this is the cheapest price
                         const mouserPrice = displayPrice ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
