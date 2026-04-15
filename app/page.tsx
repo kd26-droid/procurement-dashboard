@@ -2398,7 +2398,7 @@ export default function ProcurementDashboard() {
         const adminPrice = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
         const sym = record?.admin_currency_symbol || record?.admin_currency_code || ''
         row.push(
-          adminPrice !== null ? `${sym}${adminPrice.toFixed(4)}` : '',
+          adminPrice !== null ? `${sym}${adminPrice.toFixed(5)}` : '',
           escapeCSV(record?.supplier_name || record?.customer_name || ''),
           escapeCSV(record?.pricing_datetime ? record.pricing_datetime.slice(0, 10) : ''),
         )
@@ -6551,8 +6551,8 @@ export default function ProcurementDashboard() {
                             >
                               {sym}
                               {adminPrice.toLocaleString(undefined, {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 4,
+                                minimumFractionDigits: 5,
+                                maximumFractionDigits: 5,
                               })}
                               {expired && (
                                 <span className="ml-1 text-[9px] uppercase">exp</span>

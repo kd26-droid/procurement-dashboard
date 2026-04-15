@@ -57,7 +57,7 @@ function getPrice(record: any, rateType: RateType, useAdmin: boolean): number | 
 function fmtRate(val: any, symbol: string): string {
   if (val == null || val === '') return '\u2014'
   const num = typeof val === 'number' ? val : parseFloat(val)
-  return isNaN(num) ? '\u2014' : `${symbol}${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 5 })}`
+  return isNaN(num) ? '\u2014' : `${symbol}${num.toLocaleString(undefined, { minimumFractionDigits: 5, maximumFractionDigits: 5 })}`
 }
 
 function fmtDate(dt: string | null | undefined): string {
