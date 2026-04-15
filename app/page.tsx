@@ -2313,7 +2313,7 @@ export default function ProcurementDashboard() {
     filteredAndSortedItems.forEach((item: any) => {
       const itemCurrencySymbol = item.currency?.symbol || (item.currency?.code ? getCurrencySymbolForExport(item.currency.code) : '') || '₹'
       const digikeyDetails = getDistributorPrice(item.digikey_pricing, 'Digi-Key', itemCurrencySymbol)
-      const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', itemCurrencySymbol)
+      const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', '₹')
 
       // Parse tags for this item
       const itemTags = item.category && item.category !== 'Uncategorized'
@@ -6356,8 +6356,8 @@ export default function ProcurementDashboard() {
                         const displayNextTier = pricing?.next_tier_info
                         const wasConverted = pricing?.wasConverted || false
                         const originalPrice = pricing?.original_quantity_price ?? pricing?.original_unit_price
-                        // Mouser prices are always shown in item currency — hardcode symbol to avoid USD fallback
-                        const currencySymbol = (item as any).currency?.symbol || '₹'
+                        // Mouser prices — always show ₹
+                        const currencySymbol = '₹'
 
                         // Calculate if this is the cheapest price
                         const mouserPrice = displayPrice ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
@@ -6465,7 +6465,7 @@ export default function ProcurementDashboard() {
                                     </div>
                                   </UiTooltipTrigger>
                                   <UiTooltipContent side="left" className="bg-white border border-gray-300 shadow-xl p-0">
-                                    {renderDistributorTooltip(pricing, 'Mouser', parseFloat(String((item as any).quantity)) || 1, (item as any).currency?.symbol || '₹')}
+                                    {renderDistributorTooltip(pricing, 'Mouser', parseFloat(String((item as any).quantity)) || 1, '₹')}
                                   </UiTooltipContent>
                                 </UiTooltip>
                               )
