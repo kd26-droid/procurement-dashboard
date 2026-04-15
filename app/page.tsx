@@ -6994,10 +6994,11 @@ export default function ProcurementDashboard() {
                   pendingNavRecord.rfq_event_id ||
                   pendingNavRecord.source_parent_id ||
                   ''
+                const vendor = pendingNavRecord.supplier_name || pendingNavRecord.customer_name || ''
                 return (
                   <>
                     <div className="mt-2 space-y-1.5 text-sm text-gray-700">
-                      <div>Open <span className="font-semibold">{sourceLabel} {docId}</span> from <span className="font-semibold">{pendingNavRecord.supplier_name || pendingNavRecord.customer_name || 'unknown vendor'}</span> in Factwise?</div>
+                      <div>Open <span className="font-semibold">{sourceLabel}</span>{vendor ? <> from <span className="font-semibold">{vendor}</span></> : ''} in Factwise?</div>
                       {!url && (
                         <div className="text-xs text-amber-600">No deep-link available for this record.</div>
                       )}
