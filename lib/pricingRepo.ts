@@ -477,22 +477,13 @@ export function navigateInFactwise(record: PricingRecord): boolean {
   if (!url) return false;
   if (typeof window === 'undefined') return false;
 
-  const isInIframe = window.parent !== window;
-
-  if (isInIframe) {
-    // In iframe — send to parent Factwise app, which handles routing
-    window.parent.postMessage({ type: 'NAVIGATE', url }, '*');
-    return true;
-  }
-
-  // Not in iframe — open in new tab (local dev / standalone)
+  // Resolve Factwise base URL from URL params (works in iframe and standalone)
   const urlParams = new URLSearchParams(window.location.search);
   const apiUrl = urlParams.get('api_url');
   const apiEnv = urlParams.get('api_env');
 
   let factwiseBase = 'http://localhost:3001';
 
-  // Use api_env to determine Factwise base URL
   if (apiEnv === 'prod') {
     factwiseBase = 'https://apps.factwise.io';
   } else if (apiEnv === 'dev') {
