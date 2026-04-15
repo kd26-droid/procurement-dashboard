@@ -1933,13 +1933,26 @@ export default function ProcurementDashboard() {
   // Gated by pricingEnabled — only fires after the user clicks "Load Pricing"
   const pricingLookup = usePricingLookup(lineItems, pricingSettings, pricingEnabled)
 
-  // Cheapest source per item — used to green-highlight the cheapest price cell across all 6 sources.
-  // Currency rule: only compare DigiKey/Mouser against admin-currency prices if they share the same
-  // currency code. If pricing not loaded, compare only DigiKey vs Mouser.
+  // Cheapest source per item — green-highlights the cheapest price cell across all 6 sources.
+  // All prices are normalized to admin currency using exchangeRates before comparison.
+  // If a price can't be converted (no exchange rate), it's excluded rather than comparing wrong.
   const cheapestSourceByItemKey = useMemo(() => {
     const map = new Map<string, string>() // lookupKey → 'PO'|'CONTRACT'|'QUOTE'|'RFQ'|'DIGIKEY'|'MOUSER'
 
-    // Helper: get qty-slab price from a distributor pricing object
+    // Convert a price from fromCurrency to adminCurrency using exchangeRates.
+    // Returns null if conversion is impossible (no rate available).
+    const toAdminCurrency = (price: number, fromCurrency: string | null, adminCurrency: string | null): number | null => {
+      if (!fromCurrency || !adminCurrency || fromCurrency === adminCurrency) return price
+      const directKey = `${fromCurrency}_TO_${adminCurrency}`
+      const directRate = exchangeRates[directKey]
+      if (directRate) return price * directRate
+      const inverseKey = `${adminCurrency}_TO_${fromCurrency}`
+      const inverseRate = exchangeRates[inverseKey]
+      if (inverseRate) return price / inverseRate
+      return null // No exchange rate — can't compare safely
+    }
+
+    // Get qty-slab price from a distributor pricing object
     const getDistributorSlabPrice = (pricing: any, itemQty: number): number | null => {
       if (pricing?.status !== 'available') return null
       const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
@@ -1968,7 +1981,7 @@ export default function ProcurementDashboard() {
       const candidates: Array<{ source: string; price: number }> = []
       let adminCurrencyCode: string | null = null
 
-      // PO / CONTRACT / QUOTE / RFQ — only when pricing is loaded
+      // PO / CONTRACT / QUOTE / RFQ — already in admin currency, only when pricing loaded
       if (pricingEnabled) {
         const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
         for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
@@ -1981,20 +1994,25 @@ export default function ProcurementDashboard() {
         }
       }
 
-      // DigiKey — include only if currency matches admin currency (or admin currency unknown)
-      const dkPrice = getDistributorSlabPrice((item as any).digikey_pricing, itemQty)
-      if (dkPrice !== null) {
+      // DigiKey — normalize to admin currency via exchange rates
+      const dkRaw = getDistributorSlabPrice((item as any).digikey_pricing, itemQty)
+      if (dkRaw !== null) {
         const dkCurrency = (item as any).digikey_pricing?.currency || null
-        const sameOrUnknown = !adminCurrencyCode || !dkCurrency || dkCurrency === adminCurrencyCode
-        if (sameOrUnknown) candidates.push({ source: 'DIGIKEY', price: dkPrice })
+        const dkNormalized = toAdminCurrency(dkRaw, dkCurrency, adminCurrencyCode)
+        // If no admin currency yet (pricing not loaded), compare DigiKey raw vs Mouser raw
+        if (dkNormalized !== null || !adminCurrencyCode) {
+          candidates.push({ source: 'DIGIKEY', price: dkNormalized ?? dkRaw })
+        }
       }
 
-      // Mouser — backend confirmed INR values; include if admin currency is INR or unknown
-      const msPrice = getDistributorSlabPrice((item as any).mouser_pricing, itemQty)
-      if (msPrice !== null) {
+      // Mouser — normalize to admin currency via exchange rates
+      const msRaw = getDistributorSlabPrice((item as any).mouser_pricing, itemQty)
+      if (msRaw !== null) {
         const msCurrency = (item as any).mouser_pricing?.currency || null
-        const sameOrUnknown = !adminCurrencyCode || !msCurrency || msCurrency === adminCurrencyCode
-        if (sameOrUnknown) candidates.push({ source: 'MOUSER', price: msPrice })
+        const msNormalized = toAdminCurrency(msRaw, msCurrency, adminCurrencyCode)
+        if (msNormalized !== null || !adminCurrencyCode) {
+          candidates.push({ source: 'MOUSER', price: msNormalized ?? msRaw })
+        }
       }
 
       if (candidates.length === 0) continue
@@ -2003,7 +2021,7 @@ export default function ProcurementDashboard() {
       if (cheapest) map.set(lookupKey, cheapest.source)
     }
     return map
-  }, [lineItems, pricingLookup.byItemId, pricingEnabled, pricingSettings.priceBasis])
+  }, [lineItems, pricingLookup.byItemId, pricingEnabled, pricingSettings.priceBasis, exchangeRates])
 
   // Load full pricing-repo history for the currently-selected analytics item.
   // Search by MPN first, fall back to item_code if no MPN, then erp_item_code.
