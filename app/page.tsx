@@ -2259,6 +2259,11 @@ export default function ProcurementDashboard() {
       'Unit Price',
       'Total Price',
       'Source (Cheapest)',
+      // Real pricing-repo v2 prices loaded after "Load Pricing"
+      'PO Price', 'PO Vendor', 'PO Date',
+      'Contract Price', 'Contract Vendor', 'Contract Date',
+      'Quote Price', 'Quote Vendor', 'Quote Date',
+      'RFQ Price', 'RFQ Vendor', 'RFQ Date',
     )
 
     // Digikey + Mouser — rich export: part number, packaging, MOQ, unit price, reeling fee, stock, status, and all variant options
@@ -2368,6 +2373,27 @@ export default function ProcurementDashboard() {
         formatPrice(item.totalPrice, itemCurrencySymbol),
         escapeCSV(item.source),
       )
+
+      // Real pricing-repo v2 prices (PO / Contract / Quote / RFQ)
+      const lookupKey = item.enterprise_item_id || item.erp_item_code || item.itemId || null
+      const perSource = lookupKey ? (pricingLookup.byItemId.get(lookupKey) ?? null) : null
+      const colToSource: Record<string, PricingSourceType> = {
+        pricePO: 'PO',
+        priceContract: 'CONTRACT',
+        priceQuote: 'QUOTE',
+        priceRFQ: 'RFQ',
+      }
+      for (const colKey of ['pricePO', 'priceContract', 'priceQuote', 'priceRFQ']) {
+        const sourceType = colToSource[colKey] as PricingSourceType
+        const record = perSource ? (perSource as any)[sourceType] ?? null : null
+        const adminPrice = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
+        const sym = record?.admin_currency_symbol || record?.admin_currency_code || ''
+        row.push(
+          adminPrice !== null ? `${sym}${adminPrice.toFixed(4)}` : '',
+          escapeCSV(record?.supplier_name || record?.customer_name || ''),
+          escapeCSV(record?.pricing_datetime ? record.pricing_datetime.slice(0, 10) : ''),
+        )
+      }
 
       // Always add rich Digikey values
       row.push(
