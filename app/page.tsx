@@ -101,7 +101,7 @@ function getDistributorCurrencySymbol(code: string | null | undefined): string {
  * Shows every variant with its full price-break table, MOQ, reeling fee, and part number.
  * Falls back gracefully to legacy fields if `variants` is missing.
  */
-function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQty: number = 1, itemCurrencySymbol: string = '') {
+function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQty: number = 1, itemCurrencySymbol: string = '₹') {
   const sym = itemCurrencySymbol || getDistributorCurrencySymbol(pricing?.currency);
 
   // Build the list of variants to render. If no variants, synthesize a single
@@ -2311,7 +2311,7 @@ export default function ProcurementDashboard() {
     const rows: string[][] = []
 
     filteredAndSortedItems.forEach((item: any) => {
-      const itemCurrencySymbol = item.currency?.symbol || getCurrencySymbolForExport(item.currency?.code || '')
+      const itemCurrencySymbol = item.currency?.symbol || getCurrencySymbolForExport(item.currency?.code || '') || '₹'
       const digikeyDetails = getDistributorPrice(item.digikey_pricing, 'Digi-Key', itemCurrencySymbol)
       const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', itemCurrencySymbol)
 
@@ -6196,7 +6196,7 @@ export default function ProcurementDashboard() {
                         const pricingStatus = pricing?.status
                         const displayPrice = pricing?.quantity_price ?? pricing?.unit_price
                         // Prices are always in item currency after conversion — use item symbol directly
-                        const currencySymbol = (item as any).currency?.symbol || getCurrencySymbol((item as any).currency?.code || 'INR')
+                        const currencySymbol = (item as any).currency?.symbol || getCurrencySymbol((item as any).currency?.code || '') || '₹'
 
                         // Calculate if this is the cheapest price
                         const digikeyPrice = displayPrice ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
@@ -6304,7 +6304,7 @@ export default function ProcurementDashboard() {
                                     </div>
                                   </UiTooltipTrigger>
                                   <UiTooltipContent side="left" className="bg-white border border-gray-300 shadow-xl p-0">
-                                    {renderDistributorTooltip(pricing, 'Digi-Key', parseFloat(String((item as any).quantity)) || 1, (item as any).currency?.symbol || '')}
+                                    {renderDistributorTooltip(pricing, 'Digi-Key', parseFloat(String((item as any).quantity)) || 1, (item as any).currency?.symbol || '₹')}
                                   </UiTooltipContent>
                                 </UiTooltip>
                               )
@@ -6357,7 +6357,7 @@ export default function ProcurementDashboard() {
                         const wasConverted = pricing?.wasConverted || false
                         const originalPrice = pricing?.original_quantity_price ?? pricing?.original_unit_price
                         // Prices are always in item currency after conversion — use item symbol directly
-                        const currencySymbol = (item as any).currency?.symbol || getCurrencySymbol((item as any).currency?.code || 'INR')
+                        const currencySymbol = (item as any).currency?.symbol || getCurrencySymbol((item as any).currency?.code || '') || '₹'
 
                         // Calculate if this is the cheapest price
                         const mouserPrice = displayPrice ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
@@ -6465,7 +6465,7 @@ export default function ProcurementDashboard() {
                                     </div>
                                   </UiTooltipTrigger>
                                   <UiTooltipContent side="left" className="bg-white border border-gray-300 shadow-xl p-0">
-                                    {renderDistributorTooltip(pricing, 'Mouser', parseFloat(String((item as any).quantity)) || 1, (item as any).currency?.symbol || '')}
+                                    {renderDistributorTooltip(pricing, 'Mouser', parseFloat(String((item as any).quantity)) || 1, (item as any).currency?.symbol || '₹')}
                                   </UiTooltipContent>
                                 </UiTooltip>
                               )
