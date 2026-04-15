@@ -6235,11 +6235,17 @@ export default function ProcurementDashboard() {
                                 : 0
                               const preferred = hasVariants ? (variants[preferredIdx] || variants[0]) : null
 
-                              // Cell price: first price-break from preferred variant, else legacy unit_price
+                              // Cell price: pick price break matching item qty, else legacy unit_price
+                              const itemQtyDK = parseFloat(String((item as any).quantity)) || 1
                               let cellPrice: number | null = null
                               if (preferred && Array.isArray(preferred.price_breaks) && preferred.price_breaks.length > 0) {
-                                const pb = preferred.price_breaks[0]
-                                cellPrice = typeof pb.unit_price === 'number' ? pb.unit_price : parseFloat(pb.unit_price)
+                                const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? a.min_quantity ?? 0) - (b.quantity ?? b.min_quantity ?? 0))
+                                let matched = sorted[0]
+                                for (const pb of sorted) {
+                                  if ((pb.quantity ?? pb.min_quantity ?? 0) <= itemQtyDK) matched = pb
+                                  else break
+                                }
+                                cellPrice = typeof matched.unit_price === 'number' ? matched.unit_price : parseFloat(matched.unit_price)
                               } else if (displayPrice !== null && displayPrice !== undefined) {
                                 cellPrice = typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)
                               }
@@ -6392,11 +6398,17 @@ export default function ProcurementDashboard() {
                                 : 0
                               const preferred = hasVariants ? (variants[preferredIdx] || variants[0]) : null
 
-                              // Cell price: first price-break from preferred variant, else legacy unit_price
+                              // Cell price: pick price break matching item qty, else legacy unit_price
+                              const itemQtyMouser = parseFloat(String((item as any).quantity)) || 1
                               let cellPrice: number | null = null
                               if (preferred && Array.isArray(preferred.price_breaks) && preferred.price_breaks.length > 0) {
-                                const pb = preferred.price_breaks[0]
-                                cellPrice = typeof pb.unit_price === 'number' ? pb.unit_price : parseFloat(pb.unit_price)
+                                const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? a.min_quantity ?? 0) - (b.quantity ?? b.min_quantity ?? 0))
+                                let matched = sorted[0]
+                                for (const pb of sorted) {
+                                  if ((pb.quantity ?? pb.min_quantity ?? 0) <= itemQtyMouser) matched = pb
+                                  else break
+                                }
+                                cellPrice = typeof matched.unit_price === 'number' ? matched.unit_price : parseFloat(matched.unit_price)
                               } else if (displayPrice !== null && displayPrice !== undefined) {
                                 cellPrice = typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)
                               }
