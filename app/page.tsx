@@ -101,7 +101,7 @@ function getDistributorCurrencySymbol(code: string | null | undefined): string {
  * Shows every variant with its full price-break table, MOQ, reeling fee, and part number.
  * Falls back gracefully to legacy fields if `variants` is missing.
  */
-function renderDistributorTooltip(pricing: any, distributorLabel: string) {
+function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQty: number = 1) {
   const sym = getDistributorCurrencySymbol(pricing?.currency);
 
   // Build the list of variants to render. If no variants, synthesize a single
@@ -231,9 +231,17 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string) {
                     <div className="text-right">Unit</div>
                     <div className="text-right">Total</div>
                   </div>
-                  {breaks.map((pb: any, bIdx: number) => {
+                  {(() => {
+                    const sortedBreaks = [...breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
+                    let activeIdx = 0
+                    for (let i = 0; i < sortedBreaks.length; i++) {
+                      if ((sortedBreaks[i].quantity ?? 0) <= itemQty) activeIdx = i
+                      else break
+                    }
+                    return breaks.map((pb: any, bIdx: number) => {
                     const qty = Math.round(parseFloat(String(pb?.quantity)) || 0);
                     const unitPrice = parseFloat(String(pb?.unit_price)) || 0;
+                    const isActive = sortedBreaks[activeIdx] === pb
                     // Always recompute total if fee applies; otherwise use backend total if provided
                     let totalPrice: number;
                     if (hasFee) {
@@ -246,7 +254,7 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string) {
                     return (
                       <div
                         key={bIdx}
-                        className="grid grid-cols-3 gap-x-3 py-0.5 text-gray-900 tabular-nums"
+                        className={`grid grid-cols-3 gap-x-3 py-0.5 tabular-nums ${isActive ? 'bg-green-50 text-green-800 font-semibold rounded px-1 -mx-1' : 'text-gray-900'}`}
                       >
                         <div>{qty.toLocaleString()}</div>
                         <div className="text-right">
@@ -262,7 +270,8 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string) {
                         </div>
                       </div>
                     );
-                  })}
+                  })
+                })()}
                 </div>
               ) : (
                 <div className="text-[11px] text-gray-400 italic">
@@ -6296,7 +6305,7 @@ export default function ProcurementDashboard() {
                                     </div>
                                   </UiTooltipTrigger>
                                   <UiTooltipContent side="left" className="bg-white border border-gray-300 shadow-xl p-0">
-                                    {renderDistributorTooltip(pricing, 'Digi-Key')}
+                                    {renderDistributorTooltip(pricing, 'Digi-Key', parseFloat(String((item as any).quantity)) || 1)}
                                   </UiTooltipContent>
                                 </UiTooltip>
                               )
@@ -6459,7 +6468,7 @@ export default function ProcurementDashboard() {
                                     </div>
                                   </UiTooltipTrigger>
                                   <UiTooltipContent side="left" className="bg-white border border-gray-300 shadow-xl p-0">
-                                    {renderDistributorTooltip(pricing, 'Mouser')}
+                                    {renderDistributorTooltip(pricing, 'Mouser', parseFloat(String((item as any).quantity)) || 1)}
                                   </UiTooltipContent>
                                 </UiTooltip>
                               )
