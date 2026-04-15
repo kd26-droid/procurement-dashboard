@@ -2311,7 +2311,7 @@ export default function ProcurementDashboard() {
     const rows: string[][] = []
 
     filteredAndSortedItems.forEach((item: any) => {
-      const itemCurrencySymbol = item.currency?.symbol || getCurrencySymbolForExport(item.currency?.code || '') || '₹'
+      const itemCurrencySymbol = item.currency?.symbol || (item.currency?.code ? getCurrencySymbolForExport(item.currency.code) : '') || '₹'
       const digikeyDetails = getDistributorPrice(item.digikey_pricing, 'Digi-Key', itemCurrencySymbol)
       const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', itemCurrencySymbol)
 
