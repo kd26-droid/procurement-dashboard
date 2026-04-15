@@ -57,7 +57,7 @@ function getPrice(record: any, rateType: RateType, useAdmin: boolean): number | 
 function fmtRate(val: any, symbol: string): string {
   if (val == null || val === '') return '\u2014'
   const num = typeof val === 'number' ? val : parseFloat(val)
-  return isNaN(num) ? '\u2014' : `${symbol}${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
+  return isNaN(num) ? '\u2014' : `${symbol}${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 5 })}`
 }
 
 function fmtDate(dt: string | null | undefined): string {
@@ -147,7 +147,7 @@ function ChartTooltip({
             <hr className="border-gray-100" />
             <div className="flex justify-between gap-3 text-[11px] text-gray-400">
               <span>Native ({e.currency_code})</span>
-              <span>{nativeCs}{typeof e.rate === 'number' ? e.rate.toFixed(2) : e.rate}</span>
+              <span>{nativeCs}{typeof e.rate === 'number' ? e.rate.toFixed(5) : e.rate}</span>
             </div>
             <div className="flex justify-between gap-3 text-[11px] text-gray-400">
               <span>FX Rate</span>
@@ -465,7 +465,13 @@ export function PricingCharts({ records, loading, useAdminCurrency, onToggleAdmi
       </div>
 
       {loading && (
-        <div className="text-xs text-gray-500 mb-3">Loading pricing history...</div>
+        <div className="flex items-center gap-2 mb-3">
+          <svg className="animate-spin h-4 w-4 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+          </svg>
+          <span className="text-xs text-blue-600">Loading pricing history...</span>
+        </div>
       )}
 
       {/* Per-source chart cards */}

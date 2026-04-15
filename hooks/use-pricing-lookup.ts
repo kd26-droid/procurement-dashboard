@@ -40,8 +40,8 @@ export interface PricingLookupSettings {
 }
 
 export const DEFAULT_PRICING_SETTINGS: PricingLookupSettings = {
-  daysBack: 180,
-  priceBasis: 'rate_in_admin_currency',
+  daysBack: null,
+  priceBasis: 'rate',
   sourceTypes: ['PO', 'CONTRACT', 'QUOTE', 'RFQ'],
   excludeExpiredContracts: true,
   excludeZeroRateAndDraftQuotes: true,
