@@ -101,8 +101,8 @@ function getDistributorCurrencySymbol(code: string | null | undefined): string {
  * Shows every variant with its full price-break table, MOQ, reeling fee, and part number.
  * Falls back gracefully to legacy fields if `variants` is missing.
  */
-function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQty: number = 1) {
-  const sym = getDistributorCurrencySymbol(pricing?.currency);
+function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQty: number = 1, itemCurrencySymbol: string = '') {
+  const sym = itemCurrencySymbol || getDistributorCurrencySymbol(pricing?.currency);
 
   // Build the list of variants to render. If no variants, synthesize a single
   // "variant" from legacy fields so old cached rows still render properly.
@@ -2153,7 +2153,7 @@ export default function ProcurementDashboard() {
         return { ...empty, status: pricing.status_message || pricing.status || 'N/A' }
       }
 
-      const sym = pricing.currency ? getCurrencySymbolForExport(pricing.currency) : currencySymbol
+      const sym = currencySymbol || (pricing.currency ? getCurrencySymbolForExport(pricing.currency) : '')
       const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
 
       // Pick the preferred variant (or synthesize one from legacy top-level fields)
@@ -6195,9 +6195,8 @@ export default function ProcurementDashboard() {
                         // Handle new status-based pricing structure
                         const pricingStatus = pricing?.status
                         const displayPrice = pricing?.quantity_price ?? pricing?.unit_price
-                        // Use item's currency (after conversion) or fall back to item.currency
-                        const itemCurrencyCode = (item as any).currency?.code || (item as any).currency?.symbol || 'USD'
-                        const currencySymbol = pricing?.currency ? getCurrencySymbol(pricing.currency) : getCurrencySymbol(itemCurrencyCode)
+                        // Prices are always in item currency after conversion — use item symbol directly
+                        const currencySymbol = (item as any).currency?.symbol || getCurrencySymbol((item as any).currency?.code || 'INR')
 
                         // Calculate if this is the cheapest price
                         const digikeyPrice = displayPrice ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
@@ -6305,7 +6304,7 @@ export default function ProcurementDashboard() {
                                     </div>
                                   </UiTooltipTrigger>
                                   <UiTooltipContent side="left" className="bg-white border border-gray-300 shadow-xl p-0">
-                                    {renderDistributorTooltip(pricing, 'Digi-Key', parseFloat(String((item as any).quantity)) || 1)}
+                                    {renderDistributorTooltip(pricing, 'Digi-Key', parseFloat(String((item as any).quantity)) || 1, (item as any).currency?.symbol || '')}
                                   </UiTooltipContent>
                                 </UiTooltip>
                               )
@@ -6353,14 +6352,12 @@ export default function ProcurementDashboard() {
                         // Handle new status-based pricing structure
                         const pricingStatus = pricing?.status
                         const displayPrice = pricing?.quantity_price ?? pricing?.unit_price
-                        // Use item's currency (after conversion) or fall back to item.currency
-                        const itemCurrencyCode = (item as any).currency?.code || (item as any).currency?.symbol || 'USD'
-                        const displayCurrency = pricing?.currency || itemCurrencyCode
                         const displaySavings = pricing?.savings_info
                         const displayNextTier = pricing?.next_tier_info
                         const wasConverted = pricing?.wasConverted || false
                         const originalPrice = pricing?.original_quantity_price ?? pricing?.original_unit_price
-                        const currencySymbol = getCurrencySymbol(displayCurrency)
+                        // Prices are always in item currency after conversion — use item symbol directly
+                        const currencySymbol = (item as any).currency?.symbol || getCurrencySymbol((item as any).currency?.code || 'INR')
 
                         // Calculate if this is the cheapest price
                         const mouserPrice = displayPrice ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
@@ -6468,7 +6465,7 @@ export default function ProcurementDashboard() {
                                     </div>
                                   </UiTooltipTrigger>
                                   <UiTooltipContent side="left" className="bg-white border border-gray-300 shadow-xl p-0">
-                                    {renderDistributorTooltip(pricing, 'Mouser', parseFloat(String((item as any).quantity)) || 1)}
+                                    {renderDistributorTooltip(pricing, 'Mouser', parseFloat(String((item as any).quantity)) || 1, (item as any).currency?.symbol || '')}
                                   </UiTooltipContent>
                                 </UiTooltip>
                               )
