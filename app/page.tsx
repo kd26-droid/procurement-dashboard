@@ -2202,7 +2202,8 @@ export default function ProcurementDashboard() {
     const getDistributorPrice = (
       pricing: any,
       distributorLabel: 'Digi-Key' | 'Mouser',
-      currencySymbol: string = ''
+      currencySymbol: string = '',
+      itemQty: number = 1
     ): {
       status: string
       partNumber: string
@@ -2256,15 +2257,22 @@ export default function ProcurementDashboard() {
         pricing.mouser_part_number ||
         ''
 
-      // Cell price = first price break's unit price (lowest-qty tier)
+      // Cell price = qty-slab price (highest tier where break.quantity <= itemQty)
       let cellUnitPrice: number | null = null
       if (Array.isArray(preferred?.price_breaks) && preferred.price_breaks.length > 0) {
-        const pb = preferred.price_breaks[0]
-        const raw = pb?.unit_price
+        const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? a.min_quantity ?? 0) - (b.quantity ?? b.min_quantity ?? 0))
+        let matched = sorted[0]
+        for (const pb of sorted) {
+          if ((pb.quantity ?? pb.min_quantity ?? 0) <= itemQty) matched = pb
+          else break
+        }
+        const raw = matched?.unit_price
         cellUnitPrice = typeof raw === 'number' ? raw : parseFloat(String(raw))
-      } else if (pricing.unit_price !== null && pricing.unit_price !== undefined) {
-        cellUnitPrice =
-          typeof pricing.unit_price === 'number' ? pricing.unit_price : parseFloat(String(pricing.unit_price))
+      } else {
+        const fallback = pricing.quantity_price ?? pricing.unit_price
+        if (fallback !== null && fallback !== undefined) {
+          cellUnitPrice = typeof fallback === 'number' ? fallback : parseFloat(String(fallback))
+        }
       }
 
       const reelingFeeNum = preferred?.reeling_fee ? parseFloat(String(preferred.reeling_fee)) || 0 : 0
@@ -2390,8 +2398,9 @@ export default function ProcurementDashboard() {
 
     filteredAndSortedItems.forEach((item: any) => {
       const itemCurrencySymbol = item.currency?.symbol || (item.currency?.code ? getCurrencySymbolForExport(item.currency.code) : '') || '₹'
-      const digikeyDetails = getDistributorPrice(item.digikey_pricing, 'Digi-Key', itemCurrencySymbol)
-      const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', '₹')
+      const _exportItemQty = parseFloat(String(item.quantity)) || 1
+      const digikeyDetails = getDistributorPrice(item.digikey_pricing, 'Digi-Key', itemCurrencySymbol, _exportItemQty)
+      const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', '₹', _exportItemQty)
 
       // Parse tags for this item
       const itemTags = item.category && item.category !== 'Uncategorized'
