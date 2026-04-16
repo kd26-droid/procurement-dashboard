@@ -1934,25 +1934,11 @@ export default function ProcurementDashboard() {
   const pricingLookup = usePricingLookup(lineItems, pricingSettings, pricingEnabled)
 
   // Cheapest source per item — green-highlights the cheapest price cell across all 6 sources.
-  // All prices are normalized to admin currency using exchangeRates before comparison.
-  // If a price can't be converted (no exchange rate), it's excluded rather than comparing wrong.
+  // Compares displayed values directly. No currency conversion — each source shows its own
+  // displayed price (admin currency for PO/Contract/Quote/RFQ, ₹ for DigiKey/Mouser).
   const cheapestSourceByItemKey = useMemo(() => {
     const map = new Map<string, string>() // lookupKey → 'PO'|'CONTRACT'|'QUOTE'|'RFQ'|'DIGIKEY'|'MOUSER'
 
-    // Convert a price from fromCurrency to adminCurrency using exchangeRates.
-    // Returns null if conversion is impossible (no rate available).
-    const toAdminCurrency = (price: number, fromCurrency: string | null, adminCurrency: string | null): number | null => {
-      if (!fromCurrency || !adminCurrency || fromCurrency === adminCurrency) return price
-      const directKey = `${fromCurrency}_TO_${adminCurrency}`
-      const directRate = exchangeRates[directKey]
-      if (directRate) return price * directRate
-      const inverseKey = `${adminCurrency}_TO_${fromCurrency}`
-      const inverseRate = exchangeRates[inverseKey]
-      if (inverseRate) return price / inverseRate
-      return null // No exchange rate — can't compare safely
-    }
-
-    // Get qty-slab price from a distributor pricing object
     const getDistributorSlabPrice = (pricing: any, itemQty: number): number | null => {
       if (pricing?.status !== 'available') return null
       const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
@@ -1977,42 +1963,44 @@ export default function ProcurementDashboard() {
       const lookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || null
       if (!lookupKey) continue
       const itemQty = parseFloat(String(item.quantity)) || 1
-
       const candidates: Array<{ source: string; price: number }> = []
-      let adminCurrencyCode: string | null = null
 
-      // PO / CONTRACT / QUOTE / RFQ — already in admin currency, only when pricing loaded
+      // PO / CONTRACT / QUOTE / RFQ — use displayed admin price, only when pricing loaded
       if (pricingEnabled) {
         const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
         for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
           const record = perSource?.[src] ?? null
           const price = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
-          if (price && price > 0) {
-            if (!adminCurrencyCode) adminCurrencyCode = record!.admin_currency_code || null
-            candidates.push({ source: src, price })
+          if (price && price > 0) candidates.push({ source: src, price })
+        }
+      }
+
+      // DigiKey — USD, same as admin currency when admin is USD; if admin is INR it's already
+      // converted to INR by convertDistributorPricing, so use displayed price directly
+      const dkPrice = getDistributorSlabPrice((item as any).digikey_pricing, itemQty)
+      if (dkPrice !== null) candidates.push({ source: 'DIGIKEY', price: dkPrice })
+
+      // Mouser — always INR (hardcoded ₹). Convert to admin currency if admin currency != INR.
+      const msPrice = getDistributorSlabPrice((item as any).mouser_pricing, itemQty)
+      if (msPrice !== null) {
+        // Get admin currency from any loaded record
+        const adminCurrency = (() => {
+          if (!pricingEnabled) return null
+          const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
+          for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
+            const code = perSource?.[src]?.admin_currency_code
+            if (code) return code
           }
+          return null
+        })()
+        let msPriceNormalized = msPrice
+        if (adminCurrency && adminCurrency !== 'INR') {
+          // Convert INR → admin currency
+          const rate = exchangeRates[`INR_TO_${adminCurrency}`] || (exchangeRates[`${adminCurrency}_TO_INR`] ? 1 / exchangeRates[`${adminCurrency}_TO_INR`] : null)
+          if (rate) msPriceNormalized = msPrice * rate
+          else msPriceNormalized = msPrice // can't convert, include raw (best effort)
         }
-      }
-
-      // DigiKey — normalize to admin currency via exchange rates
-      const dkRaw = getDistributorSlabPrice((item as any).digikey_pricing, itemQty)
-      if (dkRaw !== null) {
-        const dkCurrency = (item as any).digikey_pricing?.currency || null
-        const dkNormalized = toAdminCurrency(dkRaw, dkCurrency, adminCurrencyCode)
-        // If no admin currency yet (pricing not loaded), compare DigiKey raw vs Mouser raw
-        if (dkNormalized !== null || !adminCurrencyCode) {
-          candidates.push({ source: 'DIGIKEY', price: dkNormalized ?? dkRaw })
-        }
-      }
-
-      // Mouser — normalize to admin currency via exchange rates
-      const msRaw = getDistributorSlabPrice((item as any).mouser_pricing, itemQty)
-      if (msRaw !== null) {
-        const msCurrency = (item as any).mouser_pricing?.currency || null
-        const msNormalized = toAdminCurrency(msRaw, msCurrency, adminCurrencyCode)
-        if (msNormalized !== null || !adminCurrencyCode) {
-          candidates.push({ source: 'MOUSER', price: msNormalized ?? msRaw })
-        }
+        candidates.push({ source: 'MOUSER', price: msPriceNormalized })
       }
 
       if (candidates.length === 0) continue
