@@ -13,9 +13,27 @@ import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel, LabelList } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
-import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion } from '@/lib/api'
+import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, searchVendors, getItemCustomVendors, addItemCustomVendors, removeItemCustomVendor, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion, type CustomVendor } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
 import { useToast } from "@/hooks/use-toast"
+import {
+  usePricingLookup,
+  loadPricingSettings,
+  savePricingSettings,
+  DEFAULT_PRICING_SETTINGS,
+  type PricingLookupSettings,
+} from "@/hooks/use-pricing-lookup"
+import { PricingLookupSettingsButton } from "@/components/pricing-lookup-settings"
+import { PricingCharts } from "@/components/pricing-charts"
+import {
+  fetchMpnHistory,
+  getAdminPrice,
+  isExpiredContract,
+  navigateInFactwise,
+  buildFactwiseUrl,
+  type PricingRecord,
+  type PricingSourceType,
+} from "@/lib/pricingRepo"
 import {
   Settings,
   Users,
@@ -64,6 +82,208 @@ function formatCachedDate(isoString: string | null | undefined): string {
   } else {
     return date.toLocaleDateString(); // e.g., "11/24/2025"
   }
+}
+
+/**
+ * Currency symbol lookup for distributor prices
+ */
+function getDistributorCurrencySymbol(code: string | null | undefined): string {
+  const symbols: Record<string, string> = {
+    INR: '₹', USD: '$', EUR: '€', GBP: '£', JPY: '¥', CNY: '¥',
+    AUD: 'A$', CAD: 'C$', SGD: 'S$',
+  };
+  if (!code) return '$';
+  return symbols[code] || code + ' ';
+}
+
+/**
+ * Build the tooltip JSX for a distributor pricing column.
+ * Shows every variant with its full price-break table, MOQ, reeling fee, and part number.
+ * Falls back gracefully to legacy fields if `variants` is missing.
+ */
+function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQty: number = 1, itemCurrencySymbol: string = '₹') {
+  const sym = itemCurrencySymbol || getDistributorCurrencySymbol(pricing?.currency);
+
+  // Build the list of variants to render. If no variants, synthesize a single
+  // "variant" from legacy fields so old cached rows still render properly.
+  const rawVariants: any[] = Array.isArray(pricing?.variants) ? pricing.variants : [];
+  const hasRealVariants = rawVariants.length > 0;
+  const legacyPartNum =
+    distributorLabel === 'Digi-Key'
+      ? pricing?.digikey_part_number
+      : pricing?.mouser_part_number;
+  const variantsToRender = hasRealVariants
+    ? rawVariants
+    : [
+        {
+          packaging: pricing?.packaging || 'Standard',
+          digikey_part_number: distributorLabel === 'Digi-Key' ? legacyPartNum : undefined,
+          mouser_part_number: distributorLabel === 'Mouser' ? legacyPartNum : undefined,
+          moq: pricing?.moq ?? null,
+          reeling_fee: '0',
+          price_breaks: Array.isArray(pricing?.price_breaks) ? pricing.price_breaks : [],
+          marketplace: false,
+        },
+      ];
+
+  const preferredIdx =
+    hasRealVariants && typeof pricing?.preferred_variant_index === 'number'
+      ? pricing.preferred_variant_index
+      : 0;
+
+  const stock = pricing?.stock;
+  const stockText =
+    stock !== null && stock !== undefined && stock > 0
+      ? `${stock.toLocaleString()} in stock`
+      : 'Out of stock';
+
+  return (
+    <div className="bg-white max-w-[440px] p-3">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-gray-200 pb-2 mb-2">
+        <div className="font-semibold text-sm text-gray-900">{distributorLabel} Pricing</div>
+        <div className="text-xs text-gray-500 font-medium">{stockText}</div>
+      </div>
+
+      {pricing?.cached_at && (
+        <div className="text-[11px] text-gray-400 italic mb-2">
+          Last updated: {formatCachedDate(pricing.cached_at)}
+        </div>
+      )}
+
+      {/* Variants */}
+      <div className="space-y-2">
+        {variantsToRender.map((variant: any, idx: number) => {
+          const isPreferred = hasRealVariants && idx === preferredIdx;
+          const partNum =
+            variant?.digikey_part_number || variant?.mouser_part_number || '';
+          const fee =
+            variant?.reeling_fee !== undefined && variant?.reeling_fee !== null
+              ? parseFloat(String(variant.reeling_fee)) || 0
+              : 0;
+          const hasFee = fee > 0;
+          const moq = variant?.moq ?? null;
+          const breaks: any[] = Array.isArray(variant?.price_breaks)
+            ? variant.price_breaks
+            : [];
+          const isMarketplace = variant?.marketplace === true;
+
+          return (
+            <div
+              key={idx}
+              className={`rounded-md border p-2.5 ${
+                isPreferred
+                  ? 'border-blue-300 bg-blue-50/50'
+                  : 'border-gray-200 bg-gray-50/40'
+              } ${isMarketplace ? 'opacity-75' : ''}`}
+            >
+              {/* Variant header */}
+              <div className="flex items-start justify-between gap-2 mb-1.5">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    {isPreferred && (
+                      <span className="text-[10px] font-semibold text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded">
+                        PREFERRED
+                      </span>
+                    )}
+                    <div className="font-semibold text-xs text-gray-900 truncate">
+                      {variant?.packaging || 'Standard'}
+                    </div>
+                  </div>
+                  {partNum && (
+                    <div className="text-[11px] text-gray-500 font-mono mt-0.5 truncate">
+                      {partNum}
+                    </div>
+                  )}
+                </div>
+                {moq !== null && moq !== undefined && (
+                  <span
+                    className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border font-semibold ${
+                      moq > 1
+                        ? 'text-amber-700 bg-amber-50 border-amber-200'
+                        : 'text-gray-600 bg-white border-gray-200'
+                    }`}
+                  >
+                    MOQ {moq.toLocaleString()}
+                  </span>
+                )}
+              </div>
+
+              {/* Marketplace badge */}
+              {isMarketplace && (
+                <div className="text-[10px] text-gray-700 bg-gray-100 border border-gray-300 rounded px-1.5 py-0.5 mb-1.5 inline-block font-medium">
+                  Marketplace (3rd party)
+                </div>
+              )}
+
+              {/* Reeling fee warning */}
+              {hasFee && (
+                <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-1.5">
+                  <span className="font-semibold">+ {sym}{fee.toFixed(2)}</span> reeling fee (one-time, non-refundable)
+                </div>
+              )}
+
+              {/* Price breaks */}
+              {breaks.length > 0 ? (
+                <div className="text-[11px]">
+                  <div className="grid grid-cols-3 gap-x-3 text-gray-500 font-semibold uppercase tracking-wide pb-1 border-b border-gray-200">
+                    <div>Qty</div>
+                    <div className="text-right">Unit</div>
+                    <div className="text-right">Total</div>
+                  </div>
+                  {(() => {
+                    const sortedBreaks = [...breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
+                    let activeIdx = 0
+                    for (let i = 0; i < sortedBreaks.length; i++) {
+                      if ((sortedBreaks[i].quantity ?? 0) <= itemQty) activeIdx = i
+                      else break
+                    }
+                    return breaks.map((pb: any, bIdx: number) => {
+                    const qty = Math.round(parseFloat(String(pb?.quantity)) || 0);
+                    const unitPrice = parseFloat(String(pb?.unit_price)) || 0;
+                    const isActive = sortedBreaks[activeIdx] === pb
+                    // Always recompute total if fee applies; otherwise use backend total if provided
+                    let totalPrice: number;
+                    if (hasFee) {
+                      totalPrice = qty * unitPrice + fee;
+                    } else if (pb?.total_price !== null && pb?.total_price !== undefined) {
+                      totalPrice = parseFloat(String(pb.total_price)) || qty * unitPrice;
+                    } else {
+                      totalPrice = qty * unitPrice;
+                    }
+                    return (
+                      <div
+                        key={bIdx}
+                        className={`grid grid-cols-3 gap-x-3 py-0.5 tabular-nums ${isActive ? 'bg-green-50 text-green-800 font-semibold rounded px-1 -mx-1' : 'text-gray-900'}`}
+                      >
+                        <div>{qty.toLocaleString()}</div>
+                        <div className="text-right">
+                          {sym}
+                          {unitPrice.toFixed(3)}
+                        </div>
+                        <div className="text-right">
+                          {sym}
+                          {totalPrice.toLocaleString(undefined, {
+                            maximumFractionDigits: 2,
+                            minimumFractionDigits: 2,
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })
+                })()}
+                </div>
+              ) : (
+                <div className="text-[11px] text-gray-400 italic">
+                  No price breaks available
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -355,6 +575,15 @@ export default function ProcurementDashboard() {
   // Ref to prevent double loading in React Strict Mode
   const loadingStartedRef = useRef(false)
   const [vendorSearchTerm, setVendorSearchTerm] = useState("")
+  // Edit-popup custom vendor state
+  const [editVendorSearchInput, setEditVendorSearchInput] = useState("")
+  const [editVendorSearchResults, setEditVendorSearchResults] = useState<CustomVendor[]>([])
+  const [editVendorSearching, setEditVendorSearching] = useState(false)
+  const [editVendorSelectedIds, setEditVendorSelectedIds] = useState<string[]>([])
+  const [editAttachedVendors, setEditAttachedVendors] = useState<CustomVendor[]>([])  // common-intersection in bulk mode
+  const [editVendorMutating, setEditVendorMutating] = useState(false)
+  // True once the user has added or removed any custom vendor in this edit session — enables the Save button
+  const [editVendorDirty, setEditVendorDirty] = useState(false)
   const [userSearchTerm, setUserSearchTerm] = useState("")
   const [selectedItems, setSelectedItems] = useState<number[]>([])
   const [editingItem, setEditingItem] = useState<any | null>(null)
@@ -408,6 +637,10 @@ export default function ProcurementDashboard() {
     "vendor",
     "unitPrice",
     "source",
+    "pricePO",
+    "priceContract",
+    "priceQuote",
+    "priceRFQ",
     "priceDigikey",
     "priceMouser",
   ])
@@ -422,6 +655,18 @@ export default function ProcurementDashboard() {
   const [customIdColumns, setCustomIdColumns] = useState<string[]>([])
   // Dynamic internal notes column name (from Item Directory template)
   const [internalNotesLabel, setInternalNotesLabel] = useState<string>('Internal Notes')
+
+  // Pricing repo lookup settings — persisted to localStorage
+  const [pricingSettings, setPricingSettings] = useState<PricingLookupSettings>(DEFAULT_PRICING_SETTINGS)
+  // Gate: pricing repo fetch only runs after the user explicitly clicks "Load Pricing"
+  const [pricingEnabled, setPricingEnabled] = useState<boolean>(false)
+  useEffect(() => {
+    setPricingSettings(loadPricingSettings())
+  }, [])
+  const updatePricingSettings = (next: PricingLookupSettings) => {
+    setPricingSettings(next)
+    savePricingSettings(next)
+  }
 
   // Distributor enabled flags (based on API keys configured in admin)
   const [digikeyEnabled, setDigikeyEnabled] = useState(false)
@@ -473,6 +718,12 @@ export default function ProcurementDashboard() {
   const [actionResultsLoading, setActionResultsLoading] = useState(false)
   const [showAnalyticsPopup, setShowAnalyticsPopup] = useState(false)
   const [selectedItemForAnalytics, setSelectedItemForAnalytics] = useState<any>(null)
+  // Full pricing-repo history for the currently-open analytics popup (lazy-loaded)
+  const [analyticsMpnHistory, setAnalyticsMpnHistory] = useState<PricingRecord[] | null>(null)
+  const [analyticsUseAdminCurrency, setAnalyticsUseAdminCurrency] = useState(true)
+  const [analyticsHistoryLoading, setAnalyticsHistoryLoading] = useState(false)
+  // Confirmation dialog: cell click → confirm before navigating to source doc
+  const [pendingNavRecord, setPendingNavRecord] = useState<PricingRecord | null>(null)
   const [showEditDialog, setShowEditDialog] = useState(false)
   const [editFormData, setEditFormData] = useState<any>({})
 
@@ -865,6 +1116,7 @@ export default function ProcurementDashboard() {
       event_quantity: item.event_quantity ?? null,
       bom_slab_quantity: item.bom_slab_quantity || 0,
       enterprise_item_id: item.enterprise_item_id || null,
+      erp_item_code: item.erp_item_code || null,
       // RFQ/Quote Assignee are PROJECT-level (same for all items) — populated from column render using state
       rfqAssigneeName: '',  // filled from rfqAssignees state in column render
       quoteAssigneeName: '',  // filled from quoteAssignees state in column render
@@ -879,6 +1131,7 @@ export default function ProcurementDashboard() {
         return u.name || u.user_id || u
       }).join('; '),
       vendor: '',
+      custom_vendors: [] as CustomVendor[],  // populated when edit popup opens or bulk-loaded later
       action: item.action || '',
       dueDate: '',
       source: '',
@@ -1038,8 +1291,70 @@ export default function ProcurementDashboard() {
       setIsLoadingAllItems(false)
       setLoadingError(null)
       triggerPricingJobs(projectId)
+      // Custom vendor hydration kicks off via useEffect([allItemsLoaded])
     }
   }
+
+  // Background hydrator: fetch custom_vendors for every loaded line item in small parallel waves.
+  // Background hydrator: fetch custom_vendors for every loaded line item in small parallel waves.
+  // Runs once after items finish loading — and only runs once per session per project.
+  // Note: this is a temporary workaround until the backend batches custom_vendors into the items endpoint.
+  const customVendorHydrationDoneRef = useRef(false)
+  useEffect(() => {
+    if (!allItemsLoaded) return
+    if (customVendorHydrationDoneRef.current) return
+    if (lineItems.length === 0) return
+
+    const projectId = getProjectId()
+    if (!projectId) return
+
+    customVendorHydrationDoneRef.current = true
+    let cancelled = false
+
+    const run = async () => {
+      // Snapshot IDs directly from the setter to avoid stale closure on lineItems
+      const snapshot: Array<{ id: number; project_item_id: string }> = []
+      lineItems.forEach((li: any) => {
+        if (li.project_item_id) snapshot.push({ id: li.id, project_item_id: li.project_item_id })
+      })
+      if (snapshot.length === 0) return
+      console.log(`[Custom Vendors] Hydrating ${snapshot.length} items in background...`)
+
+      const CONCURRENCY = 8
+      let i = 0
+      while (i < snapshot.length) {
+        if (cancelled) return
+        const wave = snapshot.slice(i, i + CONCURRENCY)
+        i += CONCURRENCY
+        const results = await Promise.all(
+          wave.map(({ id, project_item_id }) =>
+            getItemCustomVendors(projectId, project_item_id)
+              .then(res => ({ id, vendors: res.custom_vendors || [] }))
+              .catch(err => {
+                console.warn('[Custom Vendors] Failed for', project_item_id, err)
+                return null
+              })
+          )
+        )
+        if (cancelled) return
+        const byId = new Map<number, CustomVendor[]>()
+        for (const r of results) {
+          if (r) byId.set(r.id, r.vendors)
+        }
+        if (byId.size > 0) {
+          setLineItems((prev: any[]) =>
+            prev.map(li => (byId.has(li.id) ? { ...li, custom_vendors: byId.get(li.id)! } : li))
+          )
+        }
+      }
+      console.log('[Custom Vendors] Hydration complete')
+    }
+
+    run()
+    return () => { cancelled = true }
+    // We intentionally only trigger on allItemsLoaded flipping true.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allItemsLoaded])
 
   // Retry only the failed chunks
   const retryFailedChunks = async () => {
@@ -1614,6 +1929,135 @@ export default function ProcurementDashboard() {
     }
   }
 
+  // ── Pricing repo v2 cheapest-by-MPN lookup ──
+  // Gated by pricingEnabled — only fires after the user clicks "Load Pricing"
+  const pricingLookup = usePricingLookup(lineItems, pricingSettings, pricingEnabled)
+
+  // Cheapest source per item — green-highlights the cheapest price cell across all 6 sources.
+  // Compares displayed values directly. No currency conversion — each source shows its own
+  // displayed price (admin currency for PO/Contract/Quote/RFQ, ₹ for DigiKey/Mouser).
+  const cheapestSourceByItemKey = useMemo(() => {
+    const map = new Map<string, string>() // lookupKey → 'PO'|'CONTRACT'|'QUOTE'|'RFQ'|'DIGIKEY'|'MOUSER'
+
+    const getDistributorSlabPrice = (pricing: any, itemQty: number): number | null => {
+      if (pricing?.status !== 'available') return null
+      const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
+      const preferred = variants.length > 0
+        ? variants[pricing.preferred_variant_index ?? 0] || variants[0]
+        : null
+      if (preferred && Array.isArray(preferred.price_breaks) && preferred.price_breaks.length > 0) {
+        const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
+        let matched = sorted[0]
+        for (const pb of sorted) {
+          if ((pb.quantity ?? 0) <= itemQty) matched = pb
+          else break
+        }
+        const p = typeof matched.unit_price === 'number' ? matched.unit_price : parseFloat(matched.unit_price)
+        return p > 0 ? p : null
+      }
+      const p = pricing.quantity_price ?? pricing.unit_price
+      return p && p > 0 ? p : null
+    }
+
+    for (const item of lineItems) {
+      const lookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || null
+      if (!lookupKey) continue
+      const itemQty = parseFloat(String(item.quantity)) || 1
+      const candidates: Array<{ source: string; price: number }> = []
+
+      // PO / CONTRACT / QUOTE / RFQ — use displayed admin price, only when pricing loaded
+      if (pricingEnabled) {
+        const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
+        for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
+          const record = perSource?.[src] ?? null
+          const price = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
+          if (price && price > 0) candidates.push({ source: src, price })
+        }
+      }
+
+      // DigiKey — USD, same as admin currency when admin is USD; if admin is INR it's already
+      // converted to INR by convertDistributorPricing, so use displayed price directly
+      const dkPrice = getDistributorSlabPrice((item as any).digikey_pricing, itemQty)
+      if (dkPrice !== null) candidates.push({ source: 'DIGIKEY', price: dkPrice })
+
+      // Mouser — always INR (hardcoded ₹). Convert to admin currency if admin currency != INR.
+      const msPrice = getDistributorSlabPrice((item as any).mouser_pricing, itemQty)
+      if (msPrice !== null) {
+        // Get admin currency from any loaded record
+        const adminCurrency = (() => {
+          if (!pricingEnabled) return null
+          const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
+          for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
+            const code = perSource?.[src]?.admin_currency_code
+            if (code) return code
+          }
+          return null
+        })()
+        let msPriceNormalized = msPrice
+        if (adminCurrency && adminCurrency !== 'INR') {
+          // Convert INR → admin currency
+          const rate = exchangeRates[`INR_TO_${adminCurrency}`] || (exchangeRates[`${adminCurrency}_TO_INR`] ? 1 / exchangeRates[`${adminCurrency}_TO_INR`] : null)
+          if (rate) msPriceNormalized = msPrice * rate
+          else msPriceNormalized = msPrice // can't convert, include raw (best effort)
+        }
+        candidates.push({ source: 'MOUSER', price: msPriceNormalized })
+      }
+
+      if (candidates.length === 0) continue
+      const minPrice = Math.min(...candidates.map(c => c.price))
+      const cheapest = candidates.find(c => Math.abs(c.price - minPrice) < 0.000001)
+      if (cheapest) map.set(lookupKey, cheapest.source)
+    }
+    return map
+  }, [lineItems, pricingLookup.byItemId, pricingEnabled, pricingSettings.priceBasis, exchangeRates])
+
+  // Load full pricing-repo history for the currently-selected analytics item.
+  // Search by MPN first, fall back to item_code if no MPN, then erp_item_code.
+  useEffect(() => {
+    if (!showAnalyticsPopup || !selectedItemForAnalytics) {
+      setAnalyticsMpnHistory(null)
+      return
+    }
+    const item = selectedItemForAnalytics
+    const mpn = pricingLookup.itemIdToMpn.get(item.id) ?? null
+    // Waterfall: MPN → item_code → erp_item_code
+    const searchTerm = mpn || item.itemId || item.erp_item_code || null
+    if (!searchTerm) {
+      setAnalyticsMpnHistory([])
+      return
+    }
+    let cancelled = false
+    setAnalyticsHistoryLoading(true)
+    const dateFrom = pricingSettings.daysBack !== null
+      ? new Date(Date.now() - pricingSettings.daysBack * 864e5).toISOString().slice(0, 10)
+      : undefined
+    const dateTo = pricingSettings.daysBack !== null
+      ? new Date().toISOString().slice(0, 10)
+      : undefined
+    fetchMpnHistory(searchTerm, { dateFrom, dateTo })
+      .then((rows) => {
+        if (cancelled) return
+        // If searched by item_code/erp, the results may include other items with similar names.
+        // Filter to only rows matching this item's enterprise_item_id when available.
+        let filtered = rows
+        if (!mpn && item.enterprise_item_id) {
+          filtered = rows.filter((r: any) => r.enterprise_item_id === item.enterprise_item_id)
+          // If strict filter yields nothing, fall back to all results
+          if (filtered.length === 0) filtered = rows
+        }
+        setAnalyticsMpnHistory(filtered)
+        setAnalyticsHistoryLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setAnalyticsMpnHistory([])
+        setAnalyticsHistoryLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [showAnalyticsPopup, selectedItemForAnalytics, pricingLookup.itemIdToMpn, pricingSettings.daysBack])
+
   const filteredAndSortedItems = useMemo(() => {
     let filtered = lineItems.filter((item: any) => {
       const term = searchTerm.toLowerCase()
@@ -1758,30 +2202,114 @@ export default function ProcurementDashboard() {
     }
 
     // Helper to get distributor price details
-    const getDistributorPrice = (pricing: any, currencySymbol: string = ''): { unitPrice: string; quantityPrice: string; stock: string; status: string } => {
-      if (!pricing) return { unitPrice: '', quantityPrice: '', stock: '', status: 'N/A' }
-
-      if (pricing.status === 'not_configured') {
-        return { unitPrice: '', quantityPrice: '', stock: '', status: 'Not Configured' }
+    // Build a comprehensive distributor row for the CSV.
+    // Returns the preferred variant's part number, packaging, MOQ, unit price, and reeling fee,
+    // PLUS a compact "All Variants" string listing every other option the buyer could pick.
+    const getDistributorPrice = (
+      pricing: any,
+      distributorLabel: 'Digi-Key' | 'Mouser',
+      currencySymbol: string = '',
+      itemQty: number = 1
+    ): {
+      status: string
+      partNumber: string
+      packaging: string
+      moq: string
+      unitPrice: string
+      reelingFee: string
+      stock: string
+      allVariants: string
+    } => {
+      const empty = {
+        status: 'N/A',
+        partNumber: '',
+        packaging: '',
+        moq: '',
+        unitPrice: '',
+        reelingFee: '',
+        stock: '',
+        allVariants: '',
       }
-      if (pricing.status === 'not_found') {
-        return { unitPrice: '', quantityPrice: '', stock: '', status: 'Not Listed' }
-      }
-      if (pricing.status === 'fetching' || pricing.status === 'pending') {
-        return { unitPrice: '', quantityPrice: '', stock: '', status: 'Fetching...' }
-      }
+      if (!pricing) return empty
+      if (pricing.status === 'not_configured') return { ...empty, status: 'Not Configured' }
+      if (pricing.status === 'not_found') return { ...empty, status: 'Not Listed' }
+      if (pricing.status === 'fetching' || pricing.status === 'pending') return { ...empty, status: 'Fetching...' }
       if (pricing.status !== 'available') {
-        return { unitPrice: '', quantityPrice: '', stock: '', status: pricing.status_message || pricing.status || 'N/A' }
+        return { ...empty, status: pricing.status_message || pricing.status || 'N/A' }
       }
 
-      // Use converted currency if available, otherwise use the pricing's original currency
-      const priceCurrencySymbol = pricing.currency ? getCurrencySymbolForExport(pricing.currency) : currencySymbol
+      const sym = currencySymbol || (pricing.currency ? getCurrencySymbolForExport(pricing.currency) : '')
+      const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
+
+      // Pick the preferred variant (or synthesize one from legacy top-level fields)
+      const preferredIdx =
+        typeof pricing.preferred_variant_index === 'number' ? pricing.preferred_variant_index : 0
+      const preferred =
+        variants.length > 0
+          ? variants[preferredIdx] || variants[0]
+          : {
+              packaging: pricing.packaging || 'Standard',
+              digikey_part_number: distributorLabel === 'Digi-Key' ? pricing.digikey_part_number : undefined,
+              mouser_part_number: distributorLabel === 'Mouser' ? pricing.mouser_part_number : undefined,
+              moq: pricing.moq,
+              reeling_fee: '0',
+              price_breaks: Array.isArray(pricing.price_breaks) ? pricing.price_breaks : [],
+            }
+
+      const partNumber =
+        preferred?.digikey_part_number ||
+        preferred?.mouser_part_number ||
+        pricing.digikey_part_number ||
+        pricing.mouser_part_number ||
+        ''
+
+      // Cell price = qty-slab price (highest tier where break.quantity <= itemQty)
+      let cellUnitPrice: number | null = null
+      if (Array.isArray(preferred?.price_breaks) && preferred.price_breaks.length > 0) {
+        const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? a.min_quantity ?? 0) - (b.quantity ?? b.min_quantity ?? 0))
+        let matched = sorted[0]
+        for (const pb of sorted) {
+          if ((pb.quantity ?? pb.min_quantity ?? 0) <= itemQty) matched = pb
+          else break
+        }
+        const raw = matched?.unit_price
+        cellUnitPrice = typeof raw === 'number' ? raw : parseFloat(String(raw))
+      } else {
+        const fallback = pricing.quantity_price ?? pricing.unit_price
+        if (fallback !== null && fallback !== undefined) {
+          cellUnitPrice = typeof fallback === 'number' ? fallback : parseFloat(String(fallback))
+        }
+      }
+
+      const reelingFeeNum = preferred?.reeling_fee ? parseFloat(String(preferred.reeling_fee)) || 0 : 0
+      const reelingFeeStr = reelingFeeNum > 0 ? `${sym}${reelingFeeNum.toFixed(2)}` : ''
+
+      // Compact list of every variant for people who want to see their options at a glance.
+      // Format: "Cut Tape (CT): $0.540 (MOQ 1) | Tape & Reel (TR): $0.254 (MOQ 2500) | Digi-Reel®: $0.540 (MOQ 1) +$7.00 fee"
+      const variantSummary =
+        variants.length > 0
+          ? variants
+              .map((v: any) => {
+                const pack = v?.packaging || 'Standard'
+                const mq = v?.moq != null ? v.moq : ''
+                const breaks = Array.isArray(v?.price_breaks) ? v.price_breaks : []
+                const firstPrice = breaks.length > 0 ? parseFloat(String(breaks[0]?.unit_price)) || 0 : 0
+                const fee = v?.reeling_fee ? parseFloat(String(v.reeling_fee)) || 0 : 0
+                const feeTag = fee > 0 ? ` +${sym}${fee.toFixed(2)} fee` : ''
+                return `${pack}: ${sym}${firstPrice.toFixed(3)} (MOQ ${mq})${feeTag}`
+              })
+              .join(' | ')
+          : ''
 
       return {
-        unitPrice: formatPrice(pricing.unit_price, priceCurrencySymbol),
-        quantityPrice: formatPrice(pricing.quantity_price, priceCurrencySymbol),
+        status: 'Available',
+        partNumber: String(partNumber || ''),
+        packaging: preferred?.packaging || 'Standard',
+        moq: preferred?.moq != null ? String(preferred.moq) : '',
+        unitPrice: cellUnitPrice != null && !isNaN(cellUnitPrice) ? `${sym}${cellUnitPrice.toFixed(5)}` : '',
+        reelingFee: reelingFeeStr,
         stock: pricing.stock !== null && pricing.stock !== undefined ? String(pricing.stock) : '',
-        status: 'Available'
+        allVariants: variantSummary,
       }
     }
 
@@ -1832,12 +2360,34 @@ export default function ProcurementDashboard() {
       'Unit Price',
       'Total Price',
       'Source (Cheapest)',
+      // Real pricing-repo v2 prices loaded after "Load Pricing"
+      'PO Price', 'PO Vendor', 'PO Date',
+      'Contract Price', 'Contract Vendor', 'Contract Date',
+      'Quote Price', 'Quote Vendor', 'Quote Date',
+      'RFQ Price', 'RFQ Vendor', 'RFQ Date',
     )
 
-    // Only add Digikey columns if API keys are configured
-    // Always include Digikey and Mouser columns
-    headers.push('Digi-Key Unit Price', 'Digi-Key Qty Price', 'Digi-Key Stock', 'Digi-Key Status')
-    headers.push('Mouser Unit Price', 'Mouser Qty Price', 'Mouser Stock', 'Mouser Status')
+    // Digikey + Mouser — rich export: part number, packaging, MOQ, unit price, reeling fee, stock, status, and all variant options
+    headers.push(
+      'Digi-Key Part Number',
+      'Digi-Key Packaging',
+      'Digi-Key MOQ',
+      'Digi-Key Unit Price',
+      'Digi-Key Reeling Fee',
+      'Digi-Key Stock',
+      'Digi-Key Status',
+      'Digi-Key All Variants',
+    )
+    headers.push(
+      'Mouser Part Number',
+      'Mouser Packaging',
+      'Mouser MOQ',
+      'Mouser Unit Price',
+      'Mouser Reeling Fee',
+      'Mouser Stock',
+      'Mouser Status',
+      'Mouser All Variants',
+    )
 
     // Add dynamic spec columns
     specColumns.forEach(specName => {
@@ -1853,9 +2403,10 @@ export default function ProcurementDashboard() {
     const rows: string[][] = []
 
     filteredAndSortedItems.forEach((item: any) => {
-      const itemCurrencySymbol = item.currency?.symbol || getCurrencySymbolForExport(item.currency?.code || '')
-      const digikeyDetails = getDistributorPrice(item.digikey_pricing, itemCurrencySymbol)
-      const mouserDetails = getDistributorPrice(item.mouser_pricing, itemCurrencySymbol)
+      const itemCurrencySymbol = item.currency?.symbol || (item.currency?.code ? getCurrencySymbolForExport(item.currency.code) : '') || '₹'
+      const _exportItemQty = parseFloat(String(item.quantity)) || 1
+      const digikeyDetails = getDistributorPrice(item.digikey_pricing, 'Digi-Key', itemCurrencySymbol, _exportItemQty)
+      const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', '₹', _exportItemQty)
 
       // Parse tags for this item
       const itemTags = item.category && item.category !== 'Uncategorized'
@@ -1914,25 +2465,59 @@ export default function ProcurementDashboard() {
         escapeCSV(item.action),
         escapeCSV(item.assignedTo),
         escapeCSV(item.dueDate),
-        escapeCSV(item.vendor),
+        escapeCSV(
+          Array.isArray(item.custom_vendors) && item.custom_vendors.length > 0
+            ? item.custom_vendors.map((v: CustomVendor) => v.vendor_name).join('; ')
+            : (item.vendor || '')
+        ),
         escapeCSV(item.currency?.code || ''),
         formatPrice(item.unitPrice, itemCurrencySymbol),
         formatPrice(item.totalPrice, itemCurrencySymbol),
         escapeCSV(item.source),
       )
 
-      // Always add Digikey and Mouser values
+      // Real pricing-repo v2 prices (PO / Contract / Quote / RFQ)
+      const lookupKey = item.enterprise_item_id || item.erp_item_code || item.itemId || null
+      const perSource = lookupKey ? (pricingLookup.byItemId.get(lookupKey) ?? null) : null
+      const colToSource: Record<string, PricingSourceType> = {
+        pricePO: 'PO',
+        priceContract: 'CONTRACT',
+        priceQuote: 'QUOTE',
+        priceRFQ: 'RFQ',
+      }
+      for (const colKey of ['pricePO', 'priceContract', 'priceQuote', 'priceRFQ']) {
+        const sourceType = colToSource[colKey] as PricingSourceType
+        const record = perSource ? (perSource as any)[sourceType] ?? null : null
+        const adminPrice = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
+        const sym = record?.admin_currency_symbol || record?.admin_currency_code || ''
+        row.push(
+          adminPrice !== null ? `${sym}${adminPrice.toFixed(5)}` : '',
+          escapeCSV(record?.supplier_name || record?.customer_name || ''),
+          escapeCSV(record?.pricing_datetime ? record.pricing_datetime.slice(0, 10) : ''),
+        )
+      }
+
+      // Always add rich Digikey values
       row.push(
+        escapeCSV(digikeyDetails.partNumber),
+        escapeCSV(digikeyDetails.packaging),
+        digikeyDetails.moq,
         digikeyDetails.unitPrice,
-        digikeyDetails.quantityPrice,
+        digikeyDetails.reelingFee,
         digikeyDetails.stock,
         escapeCSV(digikeyDetails.status),
+        escapeCSV(digikeyDetails.allVariants),
       )
+      // Always add rich Mouser values
       row.push(
+        escapeCSV(mouserDetails.partNumber),
+        escapeCSV(mouserDetails.packaging),
+        mouserDetails.moq,
         mouserDetails.unitPrice,
-        mouserDetails.quantityPrice,
+        mouserDetails.reelingFee,
         mouserDetails.stock,
         escapeCSV(mouserDetails.status),
+        escapeCSV(mouserDetails.allVariants),
       )
 
       // Add dynamic spec values
@@ -2743,14 +3328,22 @@ export default function ProcurementDashboard() {
         }
       }
 
-      // If nothing changed, show message and return
+      // If nothing else changed, just close — custom vendor mutations have already been committed
       if (!hasChanges) {
-        toast({
-          title: "No Changes",
-          description: "No fields were modified",
-        })
+        if (editVendorDirty) {
+          toast({
+            title: "Saved",
+            description: "Vendor changes saved",
+          })
+        } else {
+          toast({
+            title: "No Changes",
+            description: "No fields were modified",
+          })
+        }
         setShowEditDialog(false)
         setEditFormData({})
+        setEditVendorDirty(false)
         return
       }
 
@@ -2915,56 +3508,53 @@ export default function ProcurementDashboard() {
       itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
     }
 
-    // Helper: choose mapping id for an item (one mapping per item; for now pick first configured)
-    const mappingIds: MappingId[] = ['Direct - Materials', 'Indirect - Materials', 'Direct - Capex', 'Indirect - Capex']
-    const pickMappingId = () => mappingIds[0]
-
-    const pickCheapest = (item: any, mapping: MappingId): { price: number; source: PriceSource } => {
-      const sources = currentSettings.prices.sourcesByMapping[mapping] || []
-      if (sources.length === 0) return { price: 0, source: 'Quote' }
-      let best: { price: number; source: PriceSource } | null = null
-      for (const s of sources) {
-        const p = mockPriceForSource(item, s)
-        if (!best || p < best.price) best = { price: p, source: s }
-      }
-      return best || { price: 0, source: 'Quote' }
-    }
-
-    // Items to exclude from auto-fill (2-3 items that should remain blank)
-    const excludedItemIds = [6, 9, 15] // These will remain without prices
-
     const updatedItems = lineItems.map((item: any) => {
-      if (!itemsToUpdate.some((u) => u.id === item.id)) return item
+      if (!itemsToUpdate.some((u: any) => u.id === item.id)) return item
 
-      // Skip certain items to keep them blank
-      if (excludedItemIds.includes(item.id)) return item
+      const itemQty = parseFloat(String(item.quantity)) || 1
+      const lookupKey = item.enterprise_item_id || item.erp_item_code || item.itemId || null
 
-      const mapping = pickMappingId()
+      // Real pricing-repo candidates (PO / CONTRACT / QUOTE / RFQ)
+      const candidates: Array<{ source: string; price: number; label: string }> = []
+      if (pricingEnabled && lookupKey) {
+        const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
+        for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
+          const record = perSource?.[src] ?? null
+          const price = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
+          if (price && price > 0) candidates.push({ source: src, price, label: src })
+        }
+      }
 
-      // Generate prices for all sources
-      const pricePO = Math.round(mockPriceForSource(item, 'PO') * 100) / 100
-      const priceContract = Math.round(mockPriceForSource(item, 'Contract') * 100) / 100
-      const priceQuote = Math.round(mockPriceForSource(item, 'Quote') * 100) / 100
-      const priceDigikey = Math.round(mockPriceForSource(item, 'Online - Digikey') * 100) / 100
-      const priceEXIM = Math.round(mockPriceForSource(item, 'EXIM') * 100) / 100
+      // Distributor candidates — inline slab price logic
+      const getSlabPrice = (pricing: any): number | null => {
+        if (pricing?.status !== 'available') return null
+        const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
+        const preferred = variants.length > 0 ? (variants[pricing.preferred_variant_index ?? 0] || variants[0]) : null
+        if (preferred && Array.isArray(preferred.price_breaks) && preferred.price_breaks.length > 0) {
+          const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
+          let matched = sorted[0]
+          for (const pb of sorted) { if ((pb.quantity ?? 0) <= itemQty) matched = pb; else break }
+          const p = typeof matched.unit_price === 'number' ? matched.unit_price : parseFloat(matched.unit_price)
+          return p > 0 ? p : null
+        }
+        const p = pricing.quantity_price ?? pricing.unit_price
+        return p && p > 0 ? p : null
+      }
+      const dkPrice = getSlabPrice((item as any).digikey_pricing)
+      if (dkPrice !== null) candidates.push({ source: 'DIGIKEY', price: dkPrice, label: 'Digi-Key' })
+      const msPrice = getSlabPrice((item as any).mouser_pricing)
+      if (msPrice !== null) candidates.push({ source: 'MOUSER', price: msPrice, label: 'Mouser' })
 
-      // Find cheapest for unitPrice, totalPrice, and source
-      const priceSources = [
-        { source: 'PO', price: pricePO },
-        { source: 'Contract', price: priceContract },
-        { source: 'Quote', price: priceQuote },
-        { source: 'Digi-Key', price: priceDigikey },
-        { source: 'EXIM', price: priceEXIM },
-      ].filter(p => p.price > 0)
-      const cheapest = priceSources.length > 0
-        ? priceSources.reduce((min, p) => p.price < min.price ? p : min)
-        : null
-      const unitPrice = cheapest ? cheapest.price : 0
-      const totalPrice = Math.round(unitPrice * item.quantity * 100) / 100
-      const cheapestSource = 'Project'
-      const vendor = item.vendor || ''
+      if (candidates.length === 0) {
+        // No real data — leave unit price as-is (keep existing item.rate from backend)
+        return { ...item, source: 'Project' }
+      }
 
-      return { ...item, pricePO, priceContract, priceQuote, priceDigikey, priceEXIM, unitPrice, totalPrice, source: cheapestSource, vendor }
+      const cheapest = candidates.reduce((min, c) => c.price < min.price ? c : min)
+      const unitPrice = cheapest.price
+      const totalPrice = unitPrice * itemQty
+
+      return { ...item, unitPrice, totalPrice, source: 'Project' }
     })
 
     setLineItems(updatedItems)
@@ -3142,11 +3732,71 @@ export default function ProcurementDashboard() {
   }
 
   // Manual Edit Handlers
-  const handleOpenEdit = () => {
+  const handleOpenEdit = async () => {
     if (selectedItems.length === 0) return
 
     // Get the selected line items
     const itemsToEdit = lineItems.filter((item: any) => selectedItems.includes(item.id))
+
+    // Reset custom-vendor popup state
+    setEditVendorSearchInput("")
+    setEditVendorSearchResults([])
+    setEditVendorSelectedIds([])
+    setEditAttachedVendors([])
+    setEditVendorSearching(false)
+    setEditVendorMutating(false)
+    setEditVendorDirty(false)
+
+    // Fetch attached vendors for each selected item in parallel, then:
+    // - single item: use that item's list as-is
+    // - bulk: intersect by enterprise_vendor_master_id
+    const projectIdForFetch = getProjectId()
+    if (projectIdForFetch) {
+      try {
+        const fetched = await Promise.all(
+          itemsToEdit.map((it: any) =>
+            getItemCustomVendors(projectIdForFetch, it.project_item_id)
+              .then(res => ({ itemId: it.id, project_item_id: it.project_item_id, vendors: res.custom_vendors || [] }))
+              .catch(() => ({ itemId: it.id, project_item_id: it.project_item_id, vendors: [] as CustomVendor[] }))
+          )
+        )
+
+        // Mirror results onto lineItems so the vendor column renders correctly
+        setLineItems((prev: any[]) =>
+          prev.map(li => {
+            const match = fetched.find(f => f.itemId === li.id)
+            return match ? { ...li, custom_vendors: match.vendors } : li
+          })
+        )
+
+        if (itemsToEdit.length === 1) {
+          setEditAttachedVendors(fetched[0]?.vendors || [])
+        } else {
+          // Intersection by vendor ID
+          const idCounts = new Map<string, { count: number; vendor: CustomVendor }>()
+          for (const row of fetched) {
+            const seen = new Set<string>()
+            for (const v of row.vendors) {
+              if (seen.has(v.enterprise_vendor_master_id)) continue
+              seen.add(v.enterprise_vendor_master_id)
+              const prev = idCounts.get(v.enterprise_vendor_master_id)
+              if (prev) {
+                idCounts.set(v.enterprise_vendor_master_id, { count: prev.count + 1, vendor: prev.vendor })
+              } else {
+                idCounts.set(v.enterprise_vendor_master_id, { count: 1, vendor: v })
+              }
+            }
+          }
+          const common: CustomVendor[] = []
+          idCounts.forEach(({ count, vendor }) => {
+            if (count === itemsToEdit.length) common.push(vendor)
+          })
+          setEditAttachedVendors(common)
+        }
+      } catch (err) {
+        console.warn('[Edit] Failed to load custom vendors for selected items:', err)
+      }
+    }
 
     // For bulk edit, use common values or empty strings
     if (selectedItems.length === 1) {
@@ -3234,6 +3884,235 @@ export default function ProcurementDashboard() {
     setShowEditDialog(true)
   }
 
+  // Debounced server-side vendor search (edit popup only)
+  useEffect(() => {
+    if (!showEditDialog) return
+    const query = editVendorSearchInput.trim()
+    // Reset results when cleared
+    if (query.length === 0) {
+      setEditVendorSearchResults([])
+      setEditVendorSearching(false)
+      return
+    }
+    const projectId = getProjectId()
+    if (!projectId) return
+
+    setEditVendorSearching(true)
+    const handle = setTimeout(async () => {
+      try {
+        // Single-item: exclude vendors already attached to that item via backend param
+        const excludeForItemId = !editFormData.isBulk && editFormData.project_item_id
+          ? String(editFormData.project_item_id)
+          : undefined
+        const res = await searchVendors(projectId, {
+          search: query,
+          limit: 30,
+          excludeForItemId,
+        })
+        // In bulk mode we additionally hide vendors already common across all items
+        const alreadyCommonIds = new Set(editAttachedVendors.map(v => v.enterprise_vendor_master_id))
+        const filtered = editFormData.isBulk
+          ? res.vendors.filter(v => !alreadyCommonIds.has(v.enterprise_vendor_master_id))
+          : res.vendors
+        setEditVendorSearchResults(filtered)
+      } catch (err) {
+        console.warn('[Vendor search] Failed:', err)
+        setEditVendorSearchResults([])
+      } finally {
+        setEditVendorSearching(false)
+      }
+    }, 300)
+
+    return () => clearTimeout(handle)
+  }, [editVendorSearchInput, showEditDialog, editFormData.isBulk, editFormData.project_item_id, editAttachedVendors])
+
+  // Auto-add on row click — POST a single vendor immediately to all targeted items
+  const handleAddSingleVendor = async (enterpriseVendorMasterId: string) => {
+    const projectId = getProjectId()
+    if (!projectId) return
+    const targetItems = lineItems.filter((item: any) => selectedItems.includes(item.id))
+    if (targetItems.length === 0) return
+
+    // Optimistic: remove from current results so it disappears from the list immediately
+    setEditVendorSearchResults(prev => prev.filter(v => v.enterprise_vendor_master_id !== enterpriseVendorMasterId))
+
+    setEditVendorMutating(true)
+    try {
+      const results = await Promise.all(
+        targetItems.map((it: any) =>
+          addItemCustomVendors(projectId, it.project_item_id, [enterpriseVendorMasterId])
+            .then(res => ({ itemId: it.id, project_item_id: it.project_item_id, vendors: res.custom_vendors || [] }))
+            .catch((err) => {
+              console.warn('[Add vendor] Failed for item', it.project_item_id, err)
+              return { itemId: it.id, project_item_id: it.project_item_id, vendors: null as CustomVendor[] | null }
+            })
+        )
+      )
+
+      // Mirror each item's updated custom_vendors back onto lineItems
+      setLineItems((prev: any[]) =>
+        prev.map(li => {
+          const match = results.find(r => r.itemId === li.id)
+          return match && match.vendors ? { ...li, custom_vendors: match.vendors } : li
+        })
+      )
+
+      // Refresh popup pills: single = that item's list; bulk = intersection
+      if (!editFormData.isBulk) {
+        const only = results[0]
+        setEditAttachedVendors(only?.vendors || [])
+      } else {
+        const idCounts = new Map<string, { count: number; vendor: CustomVendor }>()
+        for (const row of results) {
+          if (!row.vendors) continue
+          const seen = new Set<string>()
+          for (const v of row.vendors) {
+            if (seen.has(v.enterprise_vendor_master_id)) continue
+            seen.add(v.enterprise_vendor_master_id)
+            const prev = idCounts.get(v.enterprise_vendor_master_id)
+            if (prev) {
+              idCounts.set(v.enterprise_vendor_master_id, { count: prev.count + 1, vendor: prev.vendor })
+            } else {
+              idCounts.set(v.enterprise_vendor_master_id, { count: 1, vendor: v })
+            }
+          }
+        }
+        const common: CustomVendor[] = []
+        const totalTargets = targetItems.length
+        idCounts.forEach(({ count, vendor }) => {
+          if (count === totalTargets) common.push(vendor)
+        })
+        setEditAttachedVendors(common)
+      }
+
+      setEditVendorDirty(true)
+      toast({
+        title: "Vendor added",
+        description: editFormData.isBulk
+          ? `Added to ${targetItems.length} items`
+          : undefined,
+      })
+    } finally {
+      setEditVendorMutating(false)
+    }
+  }
+
+  // Add selected vendors (single item = POST once; bulk = POST for every selected item)
+  const handleAddCustomVendors = async () => {
+    if (editVendorSelectedIds.length === 0) return
+    const projectId = getProjectId()
+    if (!projectId) return
+    const idsToAdd = [...editVendorSelectedIds]
+    const targetItems = lineItems.filter((item: any) => selectedItems.includes(item.id))
+    if (targetItems.length === 0) return
+
+    setEditVendorMutating(true)
+    try {
+      const results = await Promise.all(
+        targetItems.map((it: any) =>
+          addItemCustomVendors(projectId, it.project_item_id, idsToAdd)
+            .then(res => ({ itemId: it.id, project_item_id: it.project_item_id, vendors: res.custom_vendors || [] }))
+            .catch((err) => {
+              console.warn('[Add vendor] Failed for item', it.project_item_id, err)
+              return { itemId: it.id, project_item_id: it.project_item_id, vendors: null as CustomVendor[] | null }
+            })
+        )
+      )
+
+      // Update each item's custom_vendors in lineItems
+      setLineItems((prev: any[]) =>
+        prev.map(li => {
+          const match = results.find(r => r.itemId === li.id)
+          return match && match.vendors ? { ...li, custom_vendors: match.vendors } : li
+        })
+      )
+
+      // Recompute the popup's visible vendor list (single: the one item's list; bulk: intersection)
+      if (!editFormData.isBulk) {
+        const only = results[0]
+        setEditAttachedVendors(only?.vendors || [])
+      } else {
+        const idCounts = new Map<string, { count: number; vendor: CustomVendor }>()
+        for (const row of results) {
+          if (!row.vendors) continue
+          const seen = new Set<string>()
+          for (const v of row.vendors) {
+            if (seen.has(v.enterprise_vendor_master_id)) continue
+            seen.add(v.enterprise_vendor_master_id)
+            const prev = idCounts.get(v.enterprise_vendor_master_id)
+            if (prev) {
+              idCounts.set(v.enterprise_vendor_master_id, { count: prev.count + 1, vendor: prev.vendor })
+            } else {
+              idCounts.set(v.enterprise_vendor_master_id, { count: 1, vendor: v })
+            }
+          }
+        }
+        const common: CustomVendor[] = []
+        const totalTargets = targetItems.length
+        idCounts.forEach(({ count, vendor }) => {
+          if (count === totalTargets) common.push(vendor)
+        })
+        setEditAttachedVendors(common)
+      }
+
+      setEditVendorSelectedIds([])
+      setEditVendorSearchInput("")
+      setEditVendorSearchResults([])
+      setEditVendorDirty(true)
+
+      toast({
+        title: "Vendors added",
+        description: editFormData.isBulk
+          ? `Added ${idsToAdd.length} vendor(s) to ${targetItems.length} items`
+          : `Added ${idsToAdd.length} vendor(s)`,
+      })
+    } finally {
+      setEditVendorMutating(false)
+    }
+  }
+
+  // Remove a vendor from the active item(s). Single: one DELETE. Bulk: DELETE on every selected item.
+  const handleRemoveCustomVendor = async (enterpriseVendorMasterId: string) => {
+    const projectId = getProjectId()
+    if (!projectId) return
+    const targetItems = lineItems.filter((item: any) => selectedItems.includes(item.id))
+    if (targetItems.length === 0) return
+
+    setEditVendorMutating(true)
+    try {
+      await Promise.all(
+        targetItems.map((it: any) =>
+          removeItemCustomVendor(projectId, it.project_item_id, enterpriseVendorMasterId)
+            .catch(err => console.warn('[Remove vendor] Failed for item', it.project_item_id, err))
+        )
+      )
+
+      // Update lineItems: strip the removed vendor from every targeted item
+      setLineItems((prev: any[]) =>
+        prev.map(li => {
+          if (!selectedItems.includes(li.id)) return li
+          const existing: CustomVendor[] = Array.isArray(li.custom_vendors) ? li.custom_vendors : []
+          return {
+            ...li,
+            custom_vendors: existing.filter(v => v.enterprise_vendor_master_id !== enterpriseVendorMasterId),
+          }
+        })
+      )
+
+      setEditAttachedVendors(prev => prev.filter(v => v.enterprise_vendor_master_id !== enterpriseVendorMasterId))
+      setEditVendorDirty(true)
+
+      toast({
+        title: "Vendor removed",
+        description: editFormData.isBulk
+          ? `Removed from ${targetItems.length} items`
+          : `Removed vendor`,
+      })
+    } finally {
+      setEditVendorMutating(false)
+    }
+  }
+
   const handleSaveEdit = async () => {
     if (selectedItems.length === 0) return
 
@@ -3254,12 +4133,22 @@ export default function ProcurementDashboard() {
     // Check if category changed - compare with original for both single and bulk
     const categoryChanged = editFormData.category !== editFormData.originalCategory
 
-    // If no changes, don't proceed
+    // If no other changes, close — custom vendor mutations are already committed.
     if (!assignedToChanged && !categoryChanged) {
-      toast({
-        title: "No Changes",
-        description: "No fields were modified",
-      })
+      if (editVendorDirty) {
+        toast({
+          title: "Saved",
+          description: "Vendor changes saved",
+        })
+      } else {
+        toast({
+          title: "No Changes",
+          description: "No fields were modified",
+        })
+      }
+      setShowEditDialog(false)
+      setEditFormData({})
+      setEditVendorDirty(false)
       return
     }
 
@@ -3480,8 +4369,8 @@ export default function ProcurementDashboard() {
     if (!editFormData || Object.keys(editFormData).length === 0) return false
     const assignedToChanged = editFormData.assignedTo !== editFormData.originalAssignedTo
     const categoryChanged = editFormData.category !== editFormData.originalCategory
-    return assignedToChanged || categoryChanged
-  }, [editFormData])
+    return assignedToChanged || categoryChanged || editVendorDirty
+  }, [editFormData, editVendorDirty])
 
   const handleColumnDrag = (draggedCol: string, targetCol: string) => {
     const draggedIndex = columnOrder.indexOf(draggedCol)
@@ -3524,6 +4413,7 @@ export default function ProcurementDashboard() {
     pricePO: "PO Price",
     priceContract: "Contract",
     priceQuote: "Quote",
+    priceRFQ: "RFQ",
     priceDigikey: "Digi-Key",
     priceMouser: "Mouser",
     priceEXIM: "EXIM",
@@ -3636,7 +4526,43 @@ export default function ProcurementDashboard() {
 
   // Generate realistic analytics data based on actual item data
   const generateAnalyticsData = (item: any) => {
-    // Use item ID for deterministic randomness
+    // ── Real pricing repo v2 history (lazy-loaded when popup opens) ──
+    // Build per-source { vendor, price, quantity }[] from analyticsMpnHistory.
+    const basis = pricingSettings.priceBasis
+
+    // Derive the admin currency symbol from the first available history record
+    const adminCurrSym = (() => {
+      if (!analyticsMpnHistory || analyticsMpnHistory.length === 0) return '₹'
+      for (const r of analyticsMpnHistory) {
+        if (r.admin_currency_symbol) return r.admin_currency_symbol
+      }
+      return '₹'
+    })()
+
+    const historyToSeries = (source: PricingSourceType) => {
+      if (!analyticsMpnHistory) return []
+      return analyticsMpnHistory
+        .filter((r) => r.source === source)
+        .map((r) => {
+          const price = getAdminPrice(r, basis)
+          if (price === null || price <= 0) return null
+          return {
+            vendor: r.supplier_name || 'Unknown',
+            price: Math.round(price * 100) / 100,
+            quantity: typeof r.quantity === 'number' ? r.quantity : 0,
+            date: r.pricing_datetime,
+          }
+        })
+        .filter((d): d is { vendor: string; price: number; quantity: number; date: string } => d !== null)
+        .sort((a, b) => a.date.localeCompare(b.date))
+    }
+
+    const realPoData = historyToSeries('PO')
+    const realContractData = historyToSeries('CONTRACT')
+    const realQuoteData = historyToSeries('QUOTE')
+    const realRfqData = historyToSeries('RFQ')
+
+    // Use item ID for deterministic randomness (for remaining mock-only series)
     const seed = item.id || 1
     let randomSeed = seed * 9999
 
@@ -3751,7 +4677,17 @@ export default function ProcurementDashboard() {
       },
     ]
 
-    return { poData, contractData, eximData, quoteData, onlineData }
+    // Always use real pricing-repo history. No mock fallback for PO/Contract/Quote/RFQ —
+    // empty array → chart card shows "No history for this MPN" empty state.
+    return {
+      poData: realPoData,
+      contractData: realContractData,
+      eximData,
+      quoteData: realQuoteData,
+      rfqData: realRfqData,
+      onlineData,
+      adminCurrSym,
+    }
   }
 
   // Helper function to render different chart types
@@ -3766,16 +4702,17 @@ export default function ProcurementDashboard() {
     xAxisLabel: string,
     yLeftLabel: string,
     yRightLabel: string,
+    currSym: string = '₹',
   ) => {
     const commonTooltip = (value: any, name: string) => [
-      name === dataKey1 ? `$${Number(value).toFixed(2)}` : `${value} pcs`,
+      name === dataKey1 ? `${currSym}${Number(value).toFixed(2)}` : `${value} pcs`,
       name === dataKey1 ? 'Price' : 'Quantity'
     ]
 
     const xLabel = xAxisLabel
     const isCurrencyLeft = /price|rate/i.test(yLeftLabel) || /price|rate/i.test(dataKey1)
     const isCurrencyRight = /price|rate/i.test(yRightLabel) || /price|rate/i.test(dataKey2)
-    const fmtCurrency = (n: number) => `$${Number(n).toFixed(0)}`
+    const fmtCurrency = (n: number) => `${currSym}${Number(n).toFixed(0)}`
     const leftTickFormatter = (v: any) => (isCurrencyLeft ? fmtCurrency(v) : v)
     const rightTickFormatter = (v: any) => (isCurrencyRight ? fmtCurrency(v) : v)
     const hasSecondSeries = Boolean(dataKey2) && data.some((d) => d[dataKey2 as keyof typeof d] !== undefined)
@@ -3803,7 +4740,7 @@ export default function ProcurementDashboard() {
     const fmtLabel = (isCurrency: boolean) => (v: any) => {
       const n = Number(v)
       if (isNaN(n)) return ''
-      return isCurrency ? `$${n.toFixed(0)}` : `${n}`
+      return isCurrency ? `${currSym}${n.toFixed(0)}` : `${n}`
     }
     const labelStyle1 = { fontSize: 9, fill: color1, fontWeight: 600 }
     const labelStyle2 = { fontSize: 9, fill: color2, fontWeight: 600 }
@@ -3814,7 +4751,7 @@ export default function ProcurementDashboard() {
       const n = Number(value)
       if (isNaN(n)) return null
       if (index !== undefined) barTops[index] = y
-      const text = isCurrency ? `$${n.toFixed(0)}` : `${n}`
+      const text = isCurrency ? `${currSym}${n.toFixed(0)}` : `${n}`
       const cx = x + (width || 0) / 2
       const ty = y - 8
       return (
@@ -3833,7 +4770,7 @@ export default function ProcurementDashboard() {
       const { x, y, value, index } = props
       const n = Number(value)
       if (isNaN(n)) return null
-      const text = isCurrency ? `$${n.toFixed(0)}` : `${n}`
+      const text = isCurrency ? `${currSym}${n.toFixed(0)}` : `${n}`
       const barTopY = barTops[index ?? -1]
       // If dot is inside/below a bar, place label above the bar; otherwise above the dot
       const rawY = (barTopY !== undefined && y >= barTopY) ? barTopY - 18 : y - 18
@@ -3913,7 +4850,7 @@ export default function ProcurementDashboard() {
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis {...xAxisProps} tickLine={false} axisLine={false} height={50} />
             <YAxis {...yLeftProps}>
-              <RechartsLabel value="Price ($)" angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
+              <RechartsLabel value={`Price (${currSym})`} angle={-90} position="insideLeft" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
             </YAxis>
             <YAxis {...yRightProps}>
               <RechartsLabel value="Quantity (pcs)" angle={-90} position="insideRight" offset={0} style={{ textAnchor: 'middle' }} fill="#64748b" fontSize={12} />
@@ -3959,10 +4896,12 @@ export default function ProcurementDashboard() {
   }
 
   // Generate analytics data for the selected item
+  // Re-runs when MPN history is (re)loaded or price basis changes
   const analyticsData = useMemo(() => {
     if (!selectedItemForAnalytics) return null
     return generateAnalyticsData(selectedItemForAnalytics)
-  }, [selectedItemForAnalytics])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedItemForAnalytics, analyticsMpnHistory, pricingSettings.priceBasis])
 
   const renderCategoryInput = () => {
     const selectedTags = String(editFormData.category || '').split(',').filter((c: string) => c.trim())
@@ -4617,6 +5556,44 @@ export default function ProcurementDashboard() {
                 Auto Fill Prices
               </Button>
 
+              {/* Load Pricing (pricing repo v2) — split button with settings dropdown */}
+              <PricingLookupSettingsButton
+                variant="split"
+                settings={pricingSettings}
+                onChange={updatePricingSettings}
+                loading={pricingLookup.loading}
+                enabled={pricingEnabled}
+                onLoadPricing={() => {
+                  if (pricingEnabled) {
+                    pricingLookup.refetch()
+                  } else {
+                    setPricingEnabled(true)
+                  }
+                }}
+              />
+
+              {/* Price basis quick switcher — instantly re-fetches with new basis */}
+              {pricingEnabled && (
+                <Select
+                  value={pricingSettings.priceBasis}
+                  onValueChange={(v) =>
+                    updatePricingSettings({ ...pricingSettings, priceBasis: v as any })
+                  }
+                >
+                  <SelectTrigger className="h-9 w-[170px] text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="effective_rate" className="text-xs">Effective Rate</SelectItem>
+                    <SelectItem value="rate" className="text-xs">Base Rate</SelectItem>
+                    <SelectItem value="quoted_rate" className="text-xs">Quoted Rate</SelectItem>
+                    <SelectItem value="landed_rate" className="text-xs">Landed Rate (RFQ only)</SelectItem>
+                    <SelectItem value="total_item_cost" className="text-xs">Total Item Cost</SelectItem>
+                    <SelectItem value="landed_total" className="text-xs">Landed Total (RFQ only)</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+
               {/* Assign Actions */}
               <Button
                 variant="outline"
@@ -5211,32 +6188,45 @@ export default function ProcurementDashboard() {
                       }
 
                       if (columnKey === "vendor") {
-                        const vendors = Array.isArray(item.vendor) ? item.vendor : [item.vendor || ""]
-                        const displayVendor = vendors[0] || ""
-                        const hasMultiple = vendors.length > 1
-                        const isTextTruncated = displayVendor && displayVendor.length > 15
-                        const isMissing = !displayVendor || displayVendor === ""
+                        // Read from custom_vendors[] (loaded via GET /custom-vendors/ or bulk-batched later)
+                        // Fallback: legacy item.vendor string for items where custom_vendors hasn't been loaded yet.
+                        const customVendors: CustomVendor[] = Array.isArray(item.custom_vendors) ? item.custom_vendors : []
+                        const vendorNames: string[] = customVendors.length > 0
+                          ? customVendors.map((v: CustomVendor) => v.vendor_name)
+                          : (item.vendor ? [String(item.vendor)] : [])
+                        const isMissing = vendorNames.length === 0
 
                         return (
                           <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
-                            <div className="flex items-center gap-1 w-full">
-                              <span
-                                className={`text-xs truncate block flex-1 min-w-0 ${
-                                  isMissing ? "text-red-700" : "text-gray-900"
-                                }`}
-                                title={hasMultiple ? vendors.join(", ") : displayVendor || "No vendor"}
-                              >
-                                {displayVendor || "No vendor"}
-                              </span>
-                              {(hasMultiple || isTextTruncated) && !isMissing && (
-                                <span
-                                  className="text-blue-600 text-xs font-medium flex-shrink-0"
-                                  title={hasMultiple ? vendors.join(", ") : displayVendor}
-                                >
-                                  +{hasMultiple ? vendors.length - 1 : "..."}
-                                </span>
-                              )}
-                            </div>
+                            {isMissing ? (
+                              <span className="text-gray-400 text-xs">-</span>
+                            ) : vendorNames.length === 1 ? (
+                              <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[140px]">
+                                {vendorNames[0]}
+                              </Badge>
+                            ) : (
+                              <UiTooltip>
+                                <UiTooltipTrigger>
+                                  <span className="flex items-center gap-1 cursor-pointer overflow-hidden" style={{ maxWidth: '100%' }}>
+                                    <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[110px]">
+                                      {vendorNames[0]}
+                                    </Badge>
+                                    <span className="text-blue-600 font-medium text-xs hover:text-blue-800 whitespace-nowrap flex-shrink-0">
+                                      +{vendorNames.length - 1}
+                                    </span>
+                                  </span>
+                                </UiTooltipTrigger>
+                                <UiTooltipContent side="bottom" align="start">
+                                  <div className="space-y-1">
+                                    {vendorNames.map((name: string, index: number) => (
+                                      <div key={index} className="text-xs">
+                                        {index + 1}. {name}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </UiTooltipContent>
+                              </UiTooltip>
+                            )}
                           </td>
                         )
                       }
@@ -5295,26 +6285,12 @@ export default function ProcurementDashboard() {
                         // Handle new status-based pricing structure
                         const pricingStatus = pricing?.status
                         const displayPrice = pricing?.quantity_price ?? pricing?.unit_price
-                        // Use item's currency (after conversion) or fall back to item.currency
-                        const itemCurrencyCode = (item as any).currency?.code || (item as any).currency?.symbol || 'USD'
-                        const currencySymbol = pricing?.currency ? getCurrencySymbol(pricing.currency) : getCurrencySymbol(itemCurrencyCode)
+                        // Prices are always in item currency after conversion — use item symbol directly
+                        const currencySymbol = (item as any).currency?.symbol || getCurrencySymbol((item as any).currency?.code || '') || '₹'
 
-                        // Calculate if this is the cheapest price
-                        const digikeyPrice = displayPrice ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
-                        const mouserPricing = (item as any).mouser_pricing
-                        const mouserPrice = mouserPricing?.status === 'available'
-                          ? (mouserPricing?.quantity_price ?? mouserPricing?.unit_price)
-                          : null
-                        const allPricesForCheapest = [
-                          (item as any).pricePO,
-                          (item as any).priceContract,
-                          (item as any).priceQuote,
-                          digikeyPrice,
-                          mouserPrice ? (typeof mouserPrice === 'number' ? mouserPrice : parseFloat(mouserPrice)) : null,
-                          (item as any).priceEXIM,
-                        ].filter((p): p is number => p !== null && p !== undefined && !isNaN(p) && p > 0)
-                        const cheapestPrice = allPricesForCheapest.length > 0 ? Math.min(...allPricesForCheapest) : null
-                        const isDigikeyCheapest = digikeyPrice !== null && cheapestPrice !== null && Math.abs(digikeyPrice - cheapestPrice) < 0.001
+                        // Cheapest highlight — use shared map (currency-aware, pricing-load-aware)
+                        const _dkLookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
+                        const isDigikeyCheapest = cheapestSourceByItemKey.get(_dkLookupKey) === 'DIGIKEY'
 
                         // Render based on status
                         const renderPricingContent = () => {
@@ -5335,111 +6311,81 @@ export default function ProcurementDashboard() {
                               return <span className="text-xs text-gray-400">No MPN</span>
                             case 'not_configured':
                               return <span className="text-xs text-gray-400">Not Configured</span>
-                            case 'available':
-                              // Show price with tooltip - green only if cheapest
-                              return displayPrice ? (
+                            case 'available': {
+                              // Variant-aware rendering — read data.variants[] when available
+                              const variants: any[] = Array.isArray(pricing?.variants) ? pricing.variants : []
+                              const hasVariants = variants.length > 0
+                              const preferredIdx = (hasVariants && typeof pricing?.preferred_variant_index === 'number')
+                                ? pricing.preferred_variant_index
+                                : 0
+                              const preferred = hasVariants ? (variants[preferredIdx] || variants[0]) : null
+
+                              // Cell price: pick price break matching item qty, else legacy unit_price
+                              const itemQtyDK = parseFloat(String((item as any).quantity)) || 1
+                              let cellPrice: number | null = null
+                              if (preferred && Array.isArray(preferred.price_breaks) && preferred.price_breaks.length > 0) {
+                                const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? a.min_quantity ?? 0) - (b.quantity ?? b.min_quantity ?? 0))
+                                let matched = sorted[0]
+                                for (const pb of sorted) {
+                                  if ((pb.quantity ?? pb.min_quantity ?? 0) <= itemQtyDK) matched = pb
+                                  else break
+                                }
+                                cellPrice = typeof matched.unit_price === 'number' ? matched.unit_price : parseFloat(matched.unit_price)
+                              } else if (displayPrice !== null && displayPrice !== undefined) {
+                                cellPrice = typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)
+                              }
+
+                              if (cellPrice === null || isNaN(cellPrice)) {
+                                return <span className="text-xs text-gray-400">N/A</span>
+                              }
+
+                              const packaging: string | null = preferred?.packaging || pricing?.packaging || null
+                              const moq: number | null = preferred?.moq ?? pricing?.moq ?? null
+                              const hasMultipleVariants = variants.length > 1
+                              const hasAnyFee = hasVariants && variants.some((v: any) => {
+                                const f = v?.reeling_fee
+                                return f !== undefined && f !== null && parseFloat(String(f)) > 0
+                              })
+
+                              return (
                                 <UiTooltip>
                                   <UiTooltipTrigger asChild>
-                                    <div className="text-xs cursor-help">
-                                      <div className={`font-semibold flex items-center justify-end gap-1 ${isDigikeyCheapest ? 'text-green-700 bg-green-50 px-1 rounded' : 'text-gray-900'}`}>
-                                        {currencySymbol}
-                                        {typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
-                                        {pricing.savings_info && (
-                                          <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">
-                                            -{pricing.savings_info.discount_percent.toFixed(0)}%
+                                    <div className="cursor-help flex flex-col items-end gap-0.5 leading-snug">
+                                      {/* Row 1: price + fee badge + chevron */}
+                                      <div className="flex items-center gap-1.5">
+                                        <span className={`text-sm font-semibold ${isDigikeyCheapest ? 'text-green-700 bg-green-50 px-1.5 py-0.5 rounded' : 'text-gray-900'}`}>
+                                          {currencySymbol}{cellPrice.toFixed(3)}
+                                        </span>
+                                        {hasAnyFee && (
+                                          <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1 py-px rounded">
+                                            +fee
                                           </span>
                                         )}
+                                        {hasMultipleVariants && (
+                                          <ChevronDown className="h-3 w-3 text-gray-400" />
+                                        )}
                                       </div>
-                                      {pricing.stock !== null && pricing.stock !== undefined && (
-                                        <div className="text-gray-500" title={`Stock: ${pricing.stock.toLocaleString()}`}>
-                                          Stock: {pricing.stock > 1000 ? `${(pricing.stock / 1000).toFixed(1)}k` : pricing.stock}
+
+                                      {/* Row 2: packaging · MOQ */}
+                                      {(packaging || moq !== null) && (
+                                        <div className="flex items-center gap-1 text-[11px]">
+                                          {packaging && <span className="text-gray-600 truncate max-w-[100px]">{packaging}</span>}
+                                          {packaging && moq !== null && <span className="text-gray-300">·</span>}
+                                          {moq !== null && (
+                                            <span className={moq > 1 ? 'text-amber-700 font-semibold' : 'text-gray-500'}>
+                                              MOQ {moq.toLocaleString()}
+                                            </span>
+                                          )}
                                         </div>
-                                      )}
-                                      {pricing.next_tier_info && (
-                                        <div className="text-blue-600 text-[10px]">
-                                          +{pricing.next_tier_info.additional_qty_needed} → {currencySymbol}{pricing.next_tier_info.next_tier_price.toFixed(3)}
-                                        </div>
-                                      )}
-                                      {pricing.is_stale && (
-                                        <div className="text-orange-500">Stale</div>
                                       )}
                                     </div>
                                   </UiTooltipTrigger>
-                                  <UiTooltipContent side="left" className="max-w-sm bg-white border border-gray-300 shadow-lg">
-                                    <div className="space-y-2 text-sm p-2">
-                                      <div className="font-semibold text-base text-gray-900 border-b border-gray-300 pb-1.5">Digi-Key Pricing</div>
-
-                                      {pricing.cached_at && (
-                                        <div className="flex justify-between text-xs text-gray-500 italic">
-                                          <span>Last updated:</span>
-                                          <span>{formatCachedDate(pricing.cached_at)}</span>
-                                        </div>
-                                      )}
-
-                                      {pricing.item_quantity && (
-                                        <div className="flex justify-between text-xs">
-                                          <span className="text-gray-600">Order Quantity:</span>
-                                          <span className="font-medium text-gray-900">{pricing.item_quantity} units</span>
-                                        </div>
-                                      )}
-
-                                      {displayPrice && (
-                                        <div className="flex justify-between items-center py-1">
-                                          <span className="text-gray-600 text-xs">Unit Price:</span>
-                                          <span className="font-bold text-base text-gray-900">{currencySymbol}{typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}</span>
-                                        </div>
-                                      )}
-
-                                      {pricing.quantity_tier && (
-                                        <div className="flex justify-between text-xs">
-                                          <span className="text-gray-600">Price Tier:</span>
-                                          <span className="font-medium text-gray-900">{pricing.quantity_tier}+ units</span>
-                                        </div>
-                                      )}
-
-                                      {pricing.savings_info && (
-                                        <div className="flex justify-between text-xs pt-1 border-t border-gray-200">
-                                          <span className="text-gray-600">Discount:</span>
-                                          <span className="font-medium text-green-700">{pricing.savings_info.discount_percent.toFixed(1)}% ({currencySymbol}{pricing.savings_info.total_savings.toFixed(2)} total)</span>
-                                        </div>
-                                      )}
-
-                                      {pricing.price_breaks && pricing.price_breaks.length > 0 && (
-                                        <div className="border-t border-gray-200 pt-2 space-y-1">
-                                          <div className="font-medium text-xs text-gray-700">Price Tiers:</div>
-                                          <div className="grid grid-cols-2 gap-1.5 text-xs">
-                                            {pricing.price_breaks.map((tier: any, idx: number) => {
-                                              const isCurrentTier = pricing.quantity_tier === tier.quantity
-                                              return (
-                                                <div
-                                                  key={idx}
-                                                  className={`px-2 py-1 rounded ${
-                                                    isCurrentTier
-                                                      ? 'bg-blue-50 border border-blue-300 font-semibold'
-                                                      : 'bg-gray-50 border border-gray-200'
-                                                  }`}
-                                                >
-                                                  <div className="text-gray-600">{tier.quantity}+</div>
-                                                  <div className="text-gray-900">
-                                                    {currencySymbol}{typeof tier.price === 'number' ? tier.price.toFixed(3) : parseFloat(tier.price).toFixed(3)}
-                                                  </div>
-                                                </div>
-                                              )
-                                            })}
-                                          </div>
-                                        </div>
-                                      )}
-
-                                      {pricing.stock !== null && pricing.stock !== undefined && (
-                                        <div className="flex justify-between text-xs pt-1 border-t border-gray-200">
-                                          <span className="text-gray-600">Stock:</span>
-                                          <span className="font-medium text-gray-900">{pricing.stock.toLocaleString()} units</span>
-                                        </div>
-                                      )}
-                                    </div>
+                                  <UiTooltipContent side="left" className="bg-white border border-gray-300 shadow-xl p-0">
+                                    {renderDistributorTooltip(pricing, 'Digi-Key', parseFloat(String((item as any).quantity)) || 1, (item as any).currency?.symbol || '₹')}
                                   </UiTooltipContent>
                                 </UiTooltip>
-                              ) : <span className="text-xs text-gray-400">N/A</span>
+                              )
+                            }
                             default:
                               // Backward compatibility: if no status, check if price exists
                               if (displayPrice) {
@@ -5483,31 +6429,16 @@ export default function ProcurementDashboard() {
                         // Handle new status-based pricing structure
                         const pricingStatus = pricing?.status
                         const displayPrice = pricing?.quantity_price ?? pricing?.unit_price
-                        // Use item's currency (after conversion) or fall back to item.currency
-                        const itemCurrencyCode = (item as any).currency?.code || (item as any).currency?.symbol || 'USD'
-                        const displayCurrency = pricing?.currency || itemCurrencyCode
                         const displaySavings = pricing?.savings_info
                         const displayNextTier = pricing?.next_tier_info
                         const wasConverted = pricing?.wasConverted || false
                         const originalPrice = pricing?.original_quantity_price ?? pricing?.original_unit_price
-                        const currencySymbol = getCurrencySymbol(displayCurrency)
+                        // Mouser prices — always show ₹
+                        const currencySymbol = '₹'
 
-                        // Calculate if this is the cheapest price
-                        const mouserPrice = displayPrice ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
-                        const digikeyPricing = (item as any).digikey_pricing
-                        const digikeyPrice = digikeyPricing?.status === 'available'
-                          ? (digikeyPricing?.quantity_price ?? digikeyPricing?.unit_price)
-                          : null
-                        // Note: EXIM excluded since column is hidden
-                        const allPricesForCheapest = [
-                          (item as any).pricePO,
-                          (item as any).priceContract,
-                          (item as any).priceQuote,
-                          digikeyPrice ? (typeof digikeyPrice === 'number' ? digikeyPrice : parseFloat(digikeyPrice)) : null,
-                          mouserPrice,
-                        ].filter((p): p is number => p !== null && p !== undefined && !isNaN(p) && p > 0)
-                        const cheapestPrice = allPricesForCheapest.length > 0 ? Math.min(...allPricesForCheapest) : null
-                        const isMouserCheapest = mouserPrice !== null && cheapestPrice !== null && Math.abs(mouserPrice - cheapestPrice) < 0.001
+                        // Cheapest highlight — use shared map (currency-aware, pricing-load-aware)
+                        const _msLookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
+                        const isMouserCheapest = cheapestSourceByItemKey.get(_msLookupKey) === 'MOUSER'
 
                         // Render based on status
                         const renderMouserContent = () => {
@@ -5528,117 +6459,81 @@ export default function ProcurementDashboard() {
                               return <span className="text-xs text-gray-400">No MPN</span>
                             case 'not_configured':
                               return <span className="text-xs text-gray-400">Not Configured</span>
-                            case 'available':
-                              // Show price with tooltip - green only if cheapest
-                              return displayPrice ? (
+                            case 'available': {
+                              // Variant-aware rendering — read data.variants[] when available
+                              const variants: any[] = Array.isArray(pricing?.variants) ? pricing.variants : []
+                              const hasVariants = variants.length > 0
+                              const preferredIdx = (hasVariants && typeof pricing?.preferred_variant_index === 'number')
+                                ? pricing.preferred_variant_index
+                                : 0
+                              const preferred = hasVariants ? (variants[preferredIdx] || variants[0]) : null
+
+                              // Cell price: pick price break matching item qty, else legacy unit_price
+                              const itemQtyMouser = parseFloat(String((item as any).quantity)) || 1
+                              let cellPrice: number | null = null
+                              if (preferred && Array.isArray(preferred.price_breaks) && preferred.price_breaks.length > 0) {
+                                const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? a.min_quantity ?? 0) - (b.quantity ?? b.min_quantity ?? 0))
+                                let matched = sorted[0]
+                                for (const pb of sorted) {
+                                  if ((pb.quantity ?? pb.min_quantity ?? 0) <= itemQtyMouser) matched = pb
+                                  else break
+                                }
+                                cellPrice = typeof matched.unit_price === 'number' ? matched.unit_price : parseFloat(matched.unit_price)
+                              } else if (displayPrice !== null && displayPrice !== undefined) {
+                                cellPrice = typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)
+                              }
+
+                              if (cellPrice === null || isNaN(cellPrice)) {
+                                return <span className="text-xs text-gray-400">N/A</span>
+                              }
+
+                              const packaging: string | null = preferred?.packaging || pricing?.packaging || null
+                              const moq: number | null = preferred?.moq ?? pricing?.moq ?? null
+                              const hasMultipleVariants = variants.length > 1
+                              const hasAnyFee = hasVariants && variants.some((v: any) => {
+                                const f = v?.reeling_fee
+                                return f !== undefined && f !== null && parseFloat(String(f)) > 0
+                              })
+
+                              return (
                                 <UiTooltip>
                                   <UiTooltipTrigger asChild>
-                                    <div className="text-xs cursor-help">
-                                      <div className={`font-semibold flex items-center justify-end gap-1 ${isMouserCheapest ? 'text-green-700 bg-green-50 px-1 rounded' : 'text-gray-900'}`}>
-                                        {currencySymbol}
-                                        {typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
-                                        {displaySavings && (
-                                          <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">
-                                            -{displaySavings.discount_percent.toFixed(0)}%
+                                    <div className="cursor-help flex flex-col items-end gap-0.5 leading-snug">
+                                      {/* Row 1: price + fee badge + chevron */}
+                                      <div className="flex items-center gap-1.5">
+                                        <span className={`text-sm font-semibold ${isMouserCheapest ? 'text-green-700 bg-green-50 px-1.5 py-0.5 rounded' : 'text-gray-900'}`}>
+                                          {currencySymbol}{cellPrice.toFixed(3)}
+                                        </span>
+                                        {hasAnyFee && (
+                                          <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1 py-px rounded">
+                                            +fee
                                           </span>
                                         )}
+                                        {hasMultipleVariants && (
+                                          <ChevronDown className="h-3 w-3 text-gray-400" />
+                                        )}
                                       </div>
-                                      {pricing.stock !== null && pricing.stock !== undefined && (
-                                        <div className="text-gray-500" title={`Stock: ${pricing.stock.toLocaleString()}`}>
-                                          Stock: {pricing.stock > 1000 ? `${(pricing.stock / 1000).toFixed(1)}k` : pricing.stock}
+
+                                      {/* Row 2: packaging · MOQ */}
+                                      {(packaging || moq !== null) && (
+                                        <div className="flex items-center gap-1 text-[11px]">
+                                          {packaging && <span className="text-gray-600 truncate max-w-[100px]">{packaging}</span>}
+                                          {packaging && moq !== null && <span className="text-gray-300">·</span>}
+                                          {moq !== null && (
+                                            <span className={moq > 1 ? 'text-amber-700 font-semibold' : 'text-gray-500'}>
+                                              MOQ {moq.toLocaleString()}
+                                            </span>
+                                          )}
                                         </div>
-                                      )}
-                                      {displayNextTier && (
-                                        <div className="text-blue-600 text-[10px]">
-                                          +{displayNextTier.additional_qty_needed} → {currencySymbol}{displayNextTier.next_tier_price.toFixed(3)}
-                                        </div>
-                                      )}
-                                      {pricing.is_stale && (
-                                        <div className="text-orange-500">Stale</div>
                                       )}
                                     </div>
                                   </UiTooltipTrigger>
-                                  <UiTooltipContent side="left" className="max-w-sm bg-white border border-gray-300 shadow-lg">
-                                    <div className="space-y-2 text-sm p-2">
-                                      <div className="font-semibold text-base text-gray-900 border-b border-gray-300 pb-1.5">Mouser Pricing</div>
-
-                                      {pricing.cached_at && (
-                                        <div className="flex justify-between text-xs text-gray-500 italic">
-                                          <span>Last updated:</span>
-                                          <span>{formatCachedDate(pricing.cached_at)}</span>
-                                        </div>
-                                      )}
-
-                                      {pricing.item_quantity && (
-                                        <div className="flex justify-between text-xs">
-                                          <span className="text-gray-600">Order Quantity:</span>
-                                          <span className="font-medium text-gray-900">{pricing.item_quantity} units</span>
-                                        </div>
-                                      )}
-
-                                      {displayPrice && (
-                                        <div className="flex justify-between items-center py-1">
-                                          <span className="text-gray-600 text-xs">Unit Price:</span>
-                                          <span className="font-bold text-base text-gray-900">{currencySymbol}{typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}</span>
-                                        </div>
-                                      )}
-
-                                      {wasConverted && originalPrice && (
-                                        <div className="flex justify-between text-xs">
-                                          <span className="text-gray-600">Original (USD):</span>
-                                          <span className="text-gray-500">${originalPrice.toFixed(3)} × {pricing.exchange_rate?.toFixed(2)}</span>
-                                        </div>
-                                      )}
-
-                                      {pricing.quantity_tier && (
-                                        <div className="flex justify-between text-xs">
-                                          <span className="text-gray-600">Price Tier:</span>
-                                          <span className="font-medium text-gray-900">{pricing.quantity_tier}+ units</span>
-                                        </div>
-                                      )}
-
-                                      {displaySavings && (
-                                        <div className="flex justify-between text-xs pt-1 border-t border-gray-200">
-                                          <span className="text-gray-600">Discount:</span>
-                                          <span className="font-medium text-green-700">{displaySavings.discount_percent.toFixed(1)}% ({currencySymbol}{displaySavings.total_savings.toFixed(2)} total)</span>
-                                        </div>
-                                      )}
-
-                                      {pricing.price_breaks && pricing.price_breaks.length > 0 && (
-                                        <div className="border-t border-gray-200 pt-2 space-y-1">
-                                          <div className="font-medium text-xs text-gray-700">Price Tiers:</div>
-                                          <div className="grid grid-cols-2 gap-1.5 text-xs">
-                                            {pricing.price_breaks.map((tier: any, idx: number) => {
-                                              const tierPrice = typeof tier.price === 'number' ? tier.price : parseFloat(tier.price)
-                                              const isCurrentTier = pricing.quantity_tier === tier.quantity
-                                              return (
-                                                <div
-                                                  key={idx}
-                                                  className={`px-2 py-1 rounded ${
-                                                    isCurrentTier
-                                                      ? 'bg-blue-50 border border-blue-300 font-semibold'
-                                                      : 'bg-gray-50 border border-gray-200'
-                                                  }`}
-                                                >
-                                                  <div className="text-gray-600">{tier.quantity}+</div>
-                                                  <div className="text-gray-900">{currencySymbol}{tierPrice.toFixed(3)}</div>
-                                                </div>
-                                              )
-                                            })}
-                                          </div>
-                                        </div>
-                                      )}
-
-                                      {pricing.stock !== null && pricing.stock !== undefined && (
-                                        <div className="flex justify-between text-xs pt-1 border-t border-gray-200">
-                                          <span className="text-gray-600">Stock:</span>
-                                          <span className="font-medium text-gray-900">{pricing.stock.toLocaleString()} units</span>
-                                        </div>
-                                      )}
-                                    </div>
+                                  <UiTooltipContent side="left" className="bg-white border border-gray-300 shadow-xl p-0">
+                                    {renderDistributorTooltip(pricing, 'Mouser', parseFloat(String((item as any).quantity)) || 1, '₹')}
                                   </UiTooltipContent>
                                 </UiTooltip>
-                              ) : <span className="text-xs text-gray-400">N/A</span>
+                              )
+                            }
                             default:
                               // Backward compatibility: if no status, check if price exists
                               if (displayPrice) {
@@ -5662,57 +6557,92 @@ export default function ProcurementDashboard() {
                         )
                       }
 
-                      if (columnKey === "pricePO" || columnKey === "priceContract" || columnKey === "priceQuote" || columnKey === "priceEXIM") {
-                        const priceValue = (item as any)[columnKey] as number | undefined
+                      if (columnKey === "pricePO" || columnKey === "priceContract" || columnKey === "priceQuote" || columnKey === "priceRFQ") {
+                        // Real pricing repo v2 lookup — keyed by item's MPN
+                        const colToSource: Record<string, PricingSourceType> = {
+                          pricePO: "PO",
+                          priceContract: "CONTRACT",
+                          priceQuote: "QUOTE",
+                          priceRFQ: "RFQ",
+                        }
+                        const sourceType = colToSource[columnKey]
+                        const mpn = pricingLookup.itemIdToMpn.get(item.id) ?? null
+                        // Waterfall lookup key: enterprise_item_id || erp_item_code || item_code
+                        const lookupKey = item.enterprise_item_id || item.erp_item_code || item.itemId || null
+                        const perSource = lookupKey
+                          ? pricingLookup.byItemId.get(lookupKey) ?? null
+                          : null
+                        const record = perSource ? perSource[sourceType] ?? null : null
+                        const adminPrice = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
+
+                        // Cell content
+                        let cellInner: React.ReactNode
+                        if (!pricingEnabled) {
+                          cellInner = (
+                            <span
+                              className="text-xs text-gray-400 italic"
+                              title="Click the gear icon and press 'Load Pricing' to fetch real prices"
+                            >
+                              —
+                            </span>
+                          )
+                        } else if (!lookupKey) {
+                          cellInner = <span className="text-xs text-gray-400 italic">No ID</span>
+                        } else if (pricingLookup.loading && !record) {
+                          cellInner = <span className="text-xs text-gray-400">…</span>
+                        } else if (!record || adminPrice === null) {
+                          cellInner = (
+                            <span
+                              className="text-xs text-gray-400"
+                              title={`No ${sourceType} pricing found for ${mpn ? 'MPN ' + mpn : 'this item'} in the selected range`}
+                            >
+                              —
+                            </span>
+                          )
+                        } else {
+                          const sym = record.admin_currency_symbol || record.admin_currency_code || ''
+                          const expired = isExpiredContract(record)
+                          const isCheapest = cheapestSourceByItemKey.get(item.enterprise_item_id || item.erp_item_code || (item as any).itemId || '') === sourceType
+                          cellInner = (
+                            <button
+                              type="button"
+                              className={`text-xs font-medium underline-offset-2 hover:underline focus:outline-none ${
+                                expired ? "text-red-600" : isCheapest ? "text-green-700" : "text-gray-900"
+                              }`}
+                              title={`${record.supplier_name || ""} • ${
+                                record.pricing_datetime?.slice(0, 10) || ""
+                              } — click to open in Factwise`}
+                              onClick={() => setPendingNavRecord(record)}
+                            >
+                              {sym}
+                              {adminPrice.toLocaleString(undefined, {
+                                minimumFractionDigits: 5,
+                                maximumFractionDigits: 5,
+                              })}
+                              {expired && (
+                                <span className="ml-1 text-[9px] uppercase">exp</span>
+                              )}
+                            </button>
+                          )
+                        }
+
+                        const isCheapestCell = cheapestSourceByItemKey.get(item.enterprise_item_id || item.erp_item_code || (item as any).itemId || '') === sourceType
+                        return (
+                          <td key={columnKey} className={`p-2 text-right ${isCheapestCell ? 'bg-green-50' : ''}`} style={stickyStyle}>
+                            {cellInner}
+                          </td>
+                        )
+                      }
+
+                      if (columnKey === "priceEXIM") {
+                        // EXIM stays on the existing item-field path (not in pricing repo v2)
+                        const priceValue = (item as any).priceEXIM as number | undefined
                         const hasPrice = priceValue !== undefined && priceValue > 0
-
-                        // Calculate cheapest price (pricing is already converted to item currency)
-                        // Use quantity_price if available, otherwise fall back to unit_price
-                        // NEW: Only use pricing if status is 'available'
-                        const digikeyPricing = (item as any).digikey_pricing
-                        const digikeyBasePrice = digikeyPricing?.status === 'available'
-                          ? (digikeyPricing?.quantity_price ?? digikeyPricing?.unit_price)
-                          : undefined
-                        const digikeyPrice = digikeyBasePrice ?
-                          (typeof digikeyBasePrice === 'number' ? digikeyBasePrice : parseFloat(digikeyBasePrice)) :
-                          undefined
-
-                        // Mouser pricing is already converted to item currency by processItemPricing()
-                        // NEW: Only use pricing if status is 'available'
-                        const mouserPricing = (item as any).mouser_pricing
-                        const mouserBasePrice = mouserPricing?.status === 'available'
-                          ? (mouserPricing?.quantity_price ?? mouserPricing?.unit_price)
-                          : undefined
-                        const mouserPrice = mouserBasePrice ?
-                          (typeof mouserBasePrice === 'number' ? mouserBasePrice : parseFloat(mouserBasePrice)) :
-                          undefined
-
-                        // Include all price sources for cheapest calculation
-                        const allPrices = [
-                          (item as any).pricePO,
-                          (item as any).priceContract,
-                          (item as any).priceQuote,
-                          (item as any).priceEXIM,
-                          digikeyPrice,
-                          mouserPrice,
-                        ].filter((p): p is number => p !== undefined && !isNaN(p) && p > 0)
-
-                        const cheapestPrice = allPrices.length > 0 ? Math.min(...allPrices) : null
-                        const isCheapest = hasPrice && cheapestPrice !== null && priceValue === cheapestPrice
-
-                        // Use item's currency symbol
                         const itemCurrencySymbol = (item as any).currency?.symbol || '₹'
-
                         return (
                           <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
-                              className={`text-xs font-medium ${
-                                !hasPrice
-                                  ? "text-gray-400"
-                                  : isCheapest
-                                    ? "text-green-700 bg-green-50 px-2 py-1 rounded"
-                                    : "text-gray-900"
-                              }`}
+                              className={`text-xs font-medium ${hasPrice ? "text-gray-900" : "text-gray-400"}`}
                               title={hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(5)}` : "N/A"}
                             >
                               {hasPrice ? `${itemCurrencySymbol}${priceValue.toFixed(5)}` : "-"}
@@ -6102,44 +7032,16 @@ export default function ProcurementDashboard() {
               </Button>
             </div>
 
-            {/* Module Cards */}
-            {analyticsData && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* PO, Contract, EXIM, Quote modules commented out — hardcoded data */}
-                {/* <div className="bg-white p-4 rounded-lg border">
-                  <h4 className="text-sm font-medium text-gray-800 mb-2">PO</h4>
-                  <div className="h-72">
-                    {renderChart(analyticsData.poData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
-                  </div>
-                </div>
-                <div className="bg-white p-4 rounded-lg border">
-                  <h4 className="text-sm font-medium text-gray-800 mb-2">Contract</h4>
-                  <div className="h-72">
-                    {renderChart(analyticsData.contractData, 'composed', 'price', 'quantity', '#f472b6', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
-                  </div>
-                </div>
-                <div className="bg-white p-4 rounded-lg border">
-                  <h4 className="text-sm font-medium text-gray-800 mb-2">EXIM</h4>
-                  <div className="h-72">
-                    {renderChart(analyticsData.eximData, 'composed', 'price', 'quantity', '#22c55e', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
-                  </div>
-                </div>
-                <div className="bg-white p-4 rounded-lg border">
-                  <h4 className="text-sm font-medium text-gray-800 mb-2">Quote</h4>
-                  <div className="h-72">
-                    {renderChart(analyticsData.quoteData, 'composed', 'price', 'quantity', '#8b5cf6', '#93c5fd', 'vendor', 'Vendor', 'Price', 'Quantity')}
-                  </div>
-                </div> */}
+            {/* Pricing history charts — per-source with currency toggle, rate type, date range, cheapest highlight */}
+            <PricingCharts
+              records={analyticsMpnHistory}
+              loading={analyticsHistoryLoading}
+              useAdminCurrency={analyticsUseAdminCurrency}
+              onToggleAdminCurrency={setAnalyticsUseAdminCurrency}
+              priceBasis={(['rate', 'effective_rate', 'quoted_rate'].includes(pricingSettings.priceBasis) ? pricingSettings.priceBasis : 'effective_rate') as 'rate' | 'effective_rate' | 'quoted_rate'}
+            />
 
-                {/* Online Pricing (full width) */}
-                <div className="bg-white p-4 rounded-lg border lg:col-span-2">
-                  <h4 className="text-sm font-medium text-gray-800 mb-2">Online Pricing</h4>
-                  <div className="h-72">
-                    {renderChart(analyticsData.onlineData, 'composed', 'price', 'quantity', '#f97316', '#93c5fd', 'vendor', 'Distributors', 'Price', 'Quantity')}
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* Online Pricing (Digikey/Mouser) — hidden for now */}
 
             <div className="flex justify-end mt-6">
               <Button
@@ -6153,6 +7055,58 @@ export default function ProcurementDashboard() {
           </div>
         </div>
       )}
+
+      {/* Confirm: open source PO/Contract/Quote/RFQ in Factwise */}
+      <Dialog open={!!pendingNavRecord} onOpenChange={(o) => { if (!o) setPendingNavRecord(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Open in Factwise?</DialogTitle>
+            <DialogDescription>
+              {pendingNavRecord && (() => {
+                const url = buildFactwiseUrl(pendingNavRecord)
+                const sourceLabel = ({
+                  PO: 'Purchase Order',
+                  CONTRACT: 'Contract',
+                  QUOTE: 'Quote',
+                  RFQ: 'RFQ',
+                  DIGIKEY: 'Digi-Key listing',
+                  MOUSER: 'Mouser listing',
+                } as Record<string, string>)[pendingNavRecord.source] || pendingNavRecord.source
+                const docId =
+                  pendingNavRecord.po_id ||
+                  pendingNavRecord.quote_id ||
+                  pendingNavRecord.agreement_id ||
+                  pendingNavRecord.rfq_event_id ||
+                  pendingNavRecord.source_parent_id ||
+                  ''
+                const vendor = pendingNavRecord.supplier_name || pendingNavRecord.customer_name || ''
+                return (
+                  <>
+                    <div className="mt-2 space-y-1.5 text-sm text-gray-700">
+                      <div>Open <span className="font-semibold">{sourceLabel}</span>{vendor ? <> from <span className="font-semibold">{vendor}</span></> : ''} in Factwise?</div>
+                      {!url && (
+                        <div className="text-xs text-amber-600">No deep-link available for this record.</div>
+                      )}
+                    </div>
+                  </>
+                )
+              })()}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setPendingNavRecord(null)}>Cancel</Button>
+            <Button
+              disabled={!pendingNavRecord || !buildFactwiseUrl(pendingNavRecord)}
+              onClick={() => {
+                if (pendingNavRecord) navigateInFactwise(pendingNavRecord)
+                setPendingNavRecord(null)
+              }}
+            >
+              Open
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Manual Edit Dialog */}
       <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
@@ -6172,52 +7126,108 @@ export default function ProcurementDashboard() {
             {renderCategoryInput()}
           </div>
 
-          {/* Two Column Layout for Other Fields */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="vendor" className="text-gray-900 font-medium">Vendor</Label>
-              <div className="relative">
-                <Input
-                  placeholder={editFormData.vendor || "Type to search vendors..."}
-                  value={vendorSearchTerm}
-                  onChange={(e) => setVendorSearchTerm(e.target.value)}
-                  onBlur={() => setTimeout(() => setVendorSearchTerm(""), 200)}
-                  className="border-gray-400 bg-white pr-10"
-                />
-                <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+          {/* Vendors section — full-width, custom vendors from backend */}
+          <div className="space-y-1.5">
+            <Label className="text-gray-900 font-medium">
+              {editFormData.isBulk ? 'Common Vendors' : 'Vendors'}
+            </Label>
 
-                {vendorSearchTerm.length > 0 && (
-                  <div className="absolute z-50 w-full mt-1 border-2 border-gray-300 rounded-md bg-white max-h-[180px] overflow-y-auto shadow-lg">
-                    {vendorOptions.filter(v => v.toLowerCase().includes(vendorSearchTerm.toLowerCase())).length === 0 ? (
-                      <div className="p-2 text-sm text-gray-500 text-center">
-                        No vendors match "{vendorSearchTerm}"
-                      </div>
-                    ) : (
-                      <div className="py-1">
-                        {vendorOptions
-                          .filter(v => v.toLowerCase().includes(vendorSearchTerm.toLowerCase()))
-                          .map((vendor) => (
-                            <button
-                              key={vendor}
-                              type="button"
-                              onClick={() => {
-                                setEditFormData({ ...editFormData, vendor })
-                                setVendorSearchTerm("")
-                              }}
-                              className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 focus:bg-blue-100 focus:outline-none"
-                            >
-                              {vendor}
-                            </button>
-                          ))}
-                      </div>
-                    )}
+            {editFormData.isBulk && (
+              <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                Showing only vendors common to all <span className="font-semibold">{editFormData.itemCount}</span> selected items. Adding or removing affects every selected item.
+              </div>
+            )}
+
+            {/* Attached vendor pills */}
+            <div className="flex flex-wrap items-center gap-2 min-h-[36px] p-2 bg-white border border-gray-300 rounded-md">
+              {editAttachedVendors.length === 0 ? (
+                <span className="text-gray-500 text-sm">
+                  {editFormData.isBulk ? 'No common vendors across selected items' : 'No vendors attached'}
+                </span>
+              ) : (
+                editAttachedVendors.map((v) => (
+                  <Badge
+                    key={v.enterprise_vendor_master_id}
+                    variant="outline"
+                    className="bg-blue-50 border-blue-200 text-blue-900 hover:bg-blue-100 pl-2 pr-1 py-0.5 text-xs flex items-center gap-1"
+                  >
+                    <span className="max-w-[180px] truncate" title={`${v.vendor_name} · ${v.vendor_code}`}>
+                      {v.vendor_name}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={editVendorMutating}
+                      onClick={() => handleRemoveCustomVendor(v.enterprise_vendor_master_id)}
+                      className="ml-0.5 rounded-full hover:bg-blue-200 p-0.5 disabled:opacity-40"
+                      title="Remove vendor"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
+                ))
+              )}
+            </div>
+
+            {/* Search input */}
+            <div className="relative">
+              <Input
+                placeholder="Search vendors by name or code..."
+                value={editVendorSearchInput}
+                onChange={(e) => setEditVendorSearchInput(e.target.value)}
+                disabled={editVendorMutating}
+                className="border-gray-400 bg-white pr-10"
+              />
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            </div>
+
+            {/* Inline results — click any row to auto-add immediately */}
+            {editVendorSearchInput.trim().length > 0 && (
+              <div className="border border-gray-300 rounded-md bg-white shadow-sm max-h-[240px] overflow-y-auto">
+                {editVendorSearching ? (
+                  <div className="p-3 text-sm text-gray-500 text-center">Searching...</div>
+                ) : editVendorSearchResults.length === 0 ? (
+                  <div className="p-3 text-sm text-gray-500 text-center">
+                    No vendors match "{editVendorSearchInput}"
+                  </div>
+                ) : (
+                  <div className="py-1">
+                    {editVendorSearchResults.map((v) => {
+                      const statusColor =
+                        v.status === 'ACTIVE'
+                          ? 'bg-green-100 text-green-800 border-green-200'
+                          : v.status === 'INVITED'
+                            ? 'bg-yellow-100 text-yellow-800 border-yellow-200'
+                            : v.status === 'INVITATION_REJECTED'
+                              ? 'bg-red-100 text-red-800 border-red-200'
+                              : 'bg-gray-100 text-gray-700 border-gray-200'
+                      return (
+                        <button
+                          key={v.enterprise_vendor_master_id}
+                          type="button"
+                          disabled={editVendorMutating}
+                          onClick={() => handleAddSingleVendor(v.enterprise_vendor_master_id)}
+                          className="w-full text-left flex items-center gap-2 px-3 py-2 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed border-b border-gray-100 last:border-b-0"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-gray-900 truncate">{v.vendor_name}</div>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="text-[11px] text-gray-500 font-mono">{v.vendor_code}</span>
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${statusColor}`}>
+                                {v.status}
+                              </span>
+                            </div>
+                          </div>
+                        </button>
+                      )
+                    })}
                   </div>
                 )}
               </div>
-              {editFormData.vendor && (
-                <p className="text-xs text-gray-600">Selected: {editFormData.vendor}</p>
-              )}
-            </div>
+            )}
+          </div>
+
+          {/* Two Column Layout for Other Fields */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label className="text-gray-900 font-medium">Assigned To</Label>
 
