@@ -2028,7 +2028,13 @@ export default function ProcurementDashboard() {
     }
     let cancelled = false
     setAnalyticsHistoryLoading(true)
-    fetchMpnHistory(searchTerm)
+    const dateFrom = pricingSettings.daysBack !== null
+      ? new Date(Date.now() - pricingSettings.daysBack * 864e5).toISOString().slice(0, 10)
+      : undefined
+    const dateTo = pricingSettings.daysBack !== null
+      ? new Date().toISOString().slice(0, 10)
+      : undefined
+    fetchMpnHistory(searchTerm, { dateFrom, dateTo })
       .then((rows) => {
         if (cancelled) return
         // If searched by item_code/erp, the results may include other items with similar names.
@@ -2050,7 +2056,7 @@ export default function ProcurementDashboard() {
     return () => {
       cancelled = true
     }
-  }, [showAnalyticsPopup, selectedItemForAnalytics, pricingLookup.itemIdToMpn])
+  }, [showAnalyticsPopup, selectedItemForAnalytics, pricingLookup.itemIdToMpn, pricingSettings.daysBack])
 
   const filteredAndSortedItems = useMemo(() => {
     let filtered = lineItems.filter((item: any) => {
@@ -3502,56 +3508,53 @@ export default function ProcurementDashboard() {
       itemsToUpdate = lineItems.filter((item: any) => selectedItems.includes(item.id))
     }
 
-    // Helper: choose mapping id for an item (one mapping per item; for now pick first configured)
-    const mappingIds: MappingId[] = ['Direct - Materials', 'Indirect - Materials', 'Direct - Capex', 'Indirect - Capex']
-    const pickMappingId = () => mappingIds[0]
-
-    const pickCheapest = (item: any, mapping: MappingId): { price: number; source: PriceSource } => {
-      const sources = currentSettings.prices.sourcesByMapping[mapping] || []
-      if (sources.length === 0) return { price: 0, source: 'Quote' }
-      let best: { price: number; source: PriceSource } | null = null
-      for (const s of sources) {
-        const p = mockPriceForSource(item, s)
-        if (!best || p < best.price) best = { price: p, source: s }
-      }
-      return best || { price: 0, source: 'Quote' }
-    }
-
-    // Items to exclude from auto-fill (2-3 items that should remain blank)
-    const excludedItemIds = [6, 9, 15] // These will remain without prices
-
     const updatedItems = lineItems.map((item: any) => {
-      if (!itemsToUpdate.some((u) => u.id === item.id)) return item
+      if (!itemsToUpdate.some((u: any) => u.id === item.id)) return item
 
-      // Skip certain items to keep them blank
-      if (excludedItemIds.includes(item.id)) return item
+      const itemQty = parseFloat(String(item.quantity)) || 1
+      const lookupKey = item.enterprise_item_id || item.erp_item_code || item.itemId || null
 
-      const mapping = pickMappingId()
+      // Real pricing-repo candidates (PO / CONTRACT / QUOTE / RFQ)
+      const candidates: Array<{ source: string; price: number; label: string }> = []
+      if (pricingEnabled && lookupKey) {
+        const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
+        for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
+          const record = perSource?.[src] ?? null
+          const price = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
+          if (price && price > 0) candidates.push({ source: src, price, label: src })
+        }
+      }
 
-      // Generate prices for all sources
-      const pricePO = Math.round(mockPriceForSource(item, 'PO') * 100) / 100
-      const priceContract = Math.round(mockPriceForSource(item, 'Contract') * 100) / 100
-      const priceQuote = Math.round(mockPriceForSource(item, 'Quote') * 100) / 100
-      const priceDigikey = Math.round(mockPriceForSource(item, 'Online - Digikey') * 100) / 100
-      const priceEXIM = Math.round(mockPriceForSource(item, 'EXIM') * 100) / 100
+      // Distributor candidates — inline slab price logic
+      const getSlabPrice = (pricing: any): number | null => {
+        if (pricing?.status !== 'available') return null
+        const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
+        const preferred = variants.length > 0 ? (variants[pricing.preferred_variant_index ?? 0] || variants[0]) : null
+        if (preferred && Array.isArray(preferred.price_breaks) && preferred.price_breaks.length > 0) {
+          const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
+          let matched = sorted[0]
+          for (const pb of sorted) { if ((pb.quantity ?? 0) <= itemQty) matched = pb; else break }
+          const p = typeof matched.unit_price === 'number' ? matched.unit_price : parseFloat(matched.unit_price)
+          return p > 0 ? p : null
+        }
+        const p = pricing.quantity_price ?? pricing.unit_price
+        return p && p > 0 ? p : null
+      }
+      const dkPrice = getSlabPrice((item as any).digikey_pricing)
+      if (dkPrice !== null) candidates.push({ source: 'DIGIKEY', price: dkPrice, label: 'Digi-Key' })
+      const msPrice = getSlabPrice((item as any).mouser_pricing)
+      if (msPrice !== null) candidates.push({ source: 'MOUSER', price: msPrice, label: 'Mouser' })
 
-      // Find cheapest for unitPrice, totalPrice, and source
-      const priceSources = [
-        { source: 'PO', price: pricePO },
-        { source: 'Contract', price: priceContract },
-        { source: 'Quote', price: priceQuote },
-        { source: 'Digi-Key', price: priceDigikey },
-        { source: 'EXIM', price: priceEXIM },
-      ].filter(p => p.price > 0)
-      const cheapest = priceSources.length > 0
-        ? priceSources.reduce((min, p) => p.price < min.price ? p : min)
-        : null
-      const unitPrice = cheapest ? cheapest.price : 0
-      const totalPrice = Math.round(unitPrice * item.quantity * 100) / 100
-      const cheapestSource = 'Project'
-      const vendor = item.vendor || ''
+      if (candidates.length === 0) {
+        // No real data — leave unit price as-is (keep existing item.rate from backend)
+        return { ...item, source: 'Project' }
+      }
 
-      return { ...item, pricePO, priceContract, priceQuote, priceDigikey, priceEXIM, unitPrice, totalPrice, source: cheapestSource, vendor }
+      const cheapest = candidates.reduce((min, c) => c.price < min.price ? c : min)
+      const unitPrice = cheapest.price
+      const totalPrice = unitPrice * itemQty
+
+      return { ...item, unitPrice, totalPrice, source: 'Project' }
     })
 
     setLineItems(updatedItems)
@@ -7035,6 +7038,7 @@ export default function ProcurementDashboard() {
               loading={analyticsHistoryLoading}
               useAdminCurrency={analyticsUseAdminCurrency}
               onToggleAdminCurrency={setAnalyticsUseAdminCurrency}
+              priceBasis={(['rate', 'effective_rate', 'quoted_rate'].includes(pricingSettings.priceBasis) ? pricingSettings.priceBasis : 'effective_rate') as 'rate' | 'effective_rate' | 'quoted_rate'}
             />
 
             {/* Online Pricing (Digikey/Mouser) — hidden for now */}

@@ -398,18 +398,24 @@ export async function fetchCheapestByItem(
  * The /v2/list/ search is icontains across mpn, all_mpns, item_code, item_name.
  * We return all matching records without strict MPN filtering so item_code searches work.
  */
-export async function fetchMpnHistory(searchTerm: string): Promise<PricingRecord[]> {
+export async function fetchMpnHistory(
+  searchTerm: string,
+  options?: { dateFrom?: string; dateTo?: string },
+): Promise<PricingRecord[]> {
   const trimmed = (searchTerm ?? '').trim();
   if (!trimmed) return [];
 
-  const url = `/pricing_repository/v2/list/?search=${encodeURIComponent(trimmed)}&page_size=500`;
+  const params = new URLSearchParams({ search: trimmed, page_size: '500' });
+  if (options?.dateFrom) params.set('date_from', options.dateFrom);
+  if (options?.dateTo) params.set('date_to', options.dateTo);
+
+  const url = `/pricing_repository/v2/list/?${params.toString()}`;
   const res = await pricingRepoFetch<{
     results?: PricingRecord[];
     items?: PricingRecord[];
     data?: PricingRecord[];
   }>(url);
 
-  // List endpoint may envelope under several keys depending on backend version.
   return res.results ?? res.items ?? res.data ?? [];
 }
 

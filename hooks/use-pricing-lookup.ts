@@ -44,7 +44,7 @@ export const DEFAULT_PRICING_SETTINGS: PricingLookupSettings = {
   priceBasis: 'rate',
   sourceTypes: ['PO', 'CONTRACT', 'QUOTE', 'RFQ'],
   excludeExpiredContracts: true,
-  excludeZeroRateAndDraftQuotes: true,
+  excludeZeroRateAndDraftQuotes: false,
 };
 
 // ----------------------------------------------------------------------------

@@ -167,10 +167,15 @@ interface SourceChartProps {
   sourceType: string
   useAdminCurrency: boolean
   color: string
+  priceBasis?: RateType
 }
 
-export function SourceChart({ entries, sourceType, useAdminCurrency, color }: SourceChartProps) {
-  const [rateType, setRateType] = useState<RateType>('effective_rate')
+export function SourceChart({ entries, sourceType, useAdminCurrency, color, priceBasis }: SourceChartProps) {
+  const [rateType, setRateType] = useState<RateType>(priceBasis ?? 'effective_rate')
+
+  useEffect(() => {
+    if (priceBasis) setRateType(priceBasis)
+  }, [priceBasis])
   const [showCount, setShowCount] = useState<ShowCount>('10')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -404,9 +409,10 @@ export interface PricingChartsProps {
   loading: boolean
   useAdminCurrency: boolean
   onToggleAdminCurrency: (val: boolean) => void
+  priceBasis?: RateType
 }
 
-export function PricingCharts({ records, loading, useAdminCurrency, onToggleAdminCurrency }: PricingChartsProps) {
+export function PricingCharts({ records, loading, useAdminCurrency, onToggleAdminCurrency, priceBasis }: PricingChartsProps) {
   const bySource = useMemo(() => {
     const map: Record<string, PricingRecord[]> = { PO: [], CONTRACT: [], QUOTE: [], RFQ: [] }
     if (records) {
@@ -488,6 +494,7 @@ export function PricingCharts({ records, loading, useAdminCurrency, onToggleAdmi
                 sourceType={source}
                 useAdminCurrency={useAdminCurrency}
                 color={SOURCE_COLORS[source] || '#6b7280'}
+                priceBasis={priceBasis}
               />
             </div>
           </div>
