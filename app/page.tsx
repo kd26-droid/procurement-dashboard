@@ -694,7 +694,7 @@ export default function ProcurementDashboard() {
     action: 80,
     assignedTo: 144,
     dueDate: 100,
-    vendor: 144,
+    vendor: 200,
     unitPrice: 100,
     source: 96,
     pricePO: 88,
@@ -6040,7 +6040,7 @@ export default function ProcurementDashboard() {
                               <UiTooltip>
                                 <UiTooltipTrigger>
                                   <span className="flex items-center gap-1 cursor-pointer overflow-hidden" style={{ maxWidth: '100%' }}>
-                                    <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[110px]">
+                                    <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[150px]">
                                       {categories[0].trim()}
                                     </Badge>
                                     <span className="text-blue-600 font-medium text-xs hover:text-blue-800 whitespace-nowrap flex-shrink-0">
@@ -6121,7 +6121,7 @@ export default function ProcurementDashboard() {
                             ) : vendorNames.length === 1 ? (
                               <UiTooltip>
                                 <UiTooltipTrigger asChild>
-                                  <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[140px] cursor-default">
+                                  <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[190px] cursor-default">
                                     {vendorNames[0]}
                                   </Badge>
                                 </UiTooltipTrigger>
@@ -6133,7 +6133,7 @@ export default function ProcurementDashboard() {
                               <UiTooltip>
                                 <UiTooltipTrigger>
                                   <span className="flex items-center gap-1 cursor-pointer overflow-hidden" style={{ maxWidth: '100%' }}>
-                                    <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[110px]">
+                                    <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[150px]">
                                       {vendorNames[0]}
                                     </Badge>
                                     <span className="text-blue-600 font-medium text-xs hover:text-blue-800 whitespace-nowrap flex-shrink-0">
