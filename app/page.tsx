@@ -1131,7 +1131,7 @@ export default function ProcurementDashboard() {
         return u.name || u.user_id || u
       }).join('; '),
       vendor: '',
-      custom_vendors: [] as CustomVendor[],  // populated when edit popup opens or bulk-loaded later
+      custom_vendors: Array.isArray(item.custom_vendors) ? item.custom_vendors : [] as CustomVendor[],
       action: item.action || '',
       dueDate: '',
       source: '',
@@ -1295,66 +1295,7 @@ export default function ProcurementDashboard() {
     }
   }
 
-  // Background hydrator: fetch custom_vendors for every loaded line item in small parallel waves.
-  // Background hydrator: fetch custom_vendors for every loaded line item in small parallel waves.
-  // Runs once after items finish loading — and only runs once per session per project.
-  // Note: this is a temporary workaround until the backend batches custom_vendors into the items endpoint.
-  const customVendorHydrationDoneRef = useRef(false)
-  useEffect(() => {
-    if (!allItemsLoaded) return
-    if (customVendorHydrationDoneRef.current) return
-    if (lineItems.length === 0) return
-
-    const projectId = getProjectId()
-    if (!projectId) return
-
-    customVendorHydrationDoneRef.current = true
-    let cancelled = false
-
-    const run = async () => {
-      // Snapshot IDs directly from the setter to avoid stale closure on lineItems
-      const snapshot: Array<{ id: number; project_item_id: string }> = []
-      lineItems.forEach((li: any) => {
-        if (li.project_item_id) snapshot.push({ id: li.id, project_item_id: li.project_item_id })
-      })
-      if (snapshot.length === 0) return
-      console.log(`[Custom Vendors] Hydrating ${snapshot.length} items in background...`)
-
-      const CONCURRENCY = 8
-      let i = 0
-      while (i < snapshot.length) {
-        if (cancelled) return
-        const wave = snapshot.slice(i, i + CONCURRENCY)
-        i += CONCURRENCY
-        const results = await Promise.all(
-          wave.map(({ id, project_item_id }) =>
-            getItemCustomVendors(projectId, project_item_id)
-              .then(res => ({ id, vendors: res.custom_vendors || [] }))
-              .catch(err => {
-                console.warn('[Custom Vendors] Failed for', project_item_id, err)
-                return null
-              })
-          )
-        )
-        if (cancelled) return
-        const byId = new Map<number, CustomVendor[]>()
-        for (const r of results) {
-          if (r) byId.set(r.id, r.vendors)
-        }
-        if (byId.size > 0) {
-          setLineItems((prev: any[]) =>
-            prev.map(li => (byId.has(li.id) ? { ...li, custom_vendors: byId.get(li.id)! } : li))
-          )
-        }
-      }
-      console.log('[Custom Vendors] Hydration complete')
-    }
-
-    run()
-    return () => { cancelled = true }
-    // We intentionally only trigger on allItemsLoaded flipping true.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allItemsLoaded])
+  // custom_vendors is now included in the items list response — no hydration needed.
 
   // Retry only the failed chunks
   const retryFailedChunks = async () => {
@@ -3747,55 +3688,32 @@ export default function ProcurementDashboard() {
     setEditVendorMutating(false)
     setEditVendorDirty(false)
 
-    // Fetch attached vendors for each selected item in parallel, then:
-    // - single item: use that item's list as-is
-    // - bulk: intersect by enterprise_vendor_master_id
-    const projectIdForFetch = getProjectId()
-    if (projectIdForFetch) {
-      try {
-        const fetched = await Promise.all(
-          itemsToEdit.map((it: any) =>
-            getItemCustomVendors(projectIdForFetch, it.project_item_id)
-              .then(res => ({ itemId: it.id, project_item_id: it.project_item_id, vendors: res.custom_vendors || [] }))
-              .catch(() => ({ itemId: it.id, project_item_id: it.project_item_id, vendors: [] as CustomVendor[] }))
-          )
-        )
-
-        // Mirror results onto lineItems so the vendor column renders correctly
-        setLineItems((prev: any[]) =>
-          prev.map(li => {
-            const match = fetched.find(f => f.itemId === li.id)
-            return match ? { ...li, custom_vendors: match.vendors } : li
-          })
-        )
-
-        if (itemsToEdit.length === 1) {
-          setEditAttachedVendors(fetched[0]?.vendors || [])
-        } else {
-          // Intersection by vendor ID
-          const idCounts = new Map<string, { count: number; vendor: CustomVendor }>()
-          for (const row of fetched) {
-            const seen = new Set<string>()
-            for (const v of row.vendors) {
-              if (seen.has(v.enterprise_vendor_master_id)) continue
-              seen.add(v.enterprise_vendor_master_id)
-              const prev = idCounts.get(v.enterprise_vendor_master_id)
-              if (prev) {
-                idCounts.set(v.enterprise_vendor_master_id, { count: prev.count + 1, vendor: prev.vendor })
-              } else {
-                idCounts.set(v.enterprise_vendor_master_id, { count: 1, vendor: v })
-              }
-            }
+    // custom_vendors is already on each lineItem from the items list response — read directly.
+    // For single item: use that item's vendors as-is.
+    // For bulk: intersect by enterprise_vendor_master_id (vendors attached to ALL selected items).
+    if (itemsToEdit.length === 1) {
+      setEditAttachedVendors(Array.isArray(itemsToEdit[0].custom_vendors) ? itemsToEdit[0].custom_vendors : [])
+    } else {
+      const idCounts = new Map<string, { count: number; vendor: CustomVendor }>()
+      for (const it of itemsToEdit) {
+        const vendors: CustomVendor[] = Array.isArray(it.custom_vendors) ? it.custom_vendors : []
+        const seen = new Set<string>()
+        for (const v of vendors) {
+          if (seen.has(v.enterprise_vendor_master_id)) continue
+          seen.add(v.enterprise_vendor_master_id)
+          const prev = idCounts.get(v.enterprise_vendor_master_id)
+          if (prev) {
+            idCounts.set(v.enterprise_vendor_master_id, { count: prev.count + 1, vendor: prev.vendor })
+          } else {
+            idCounts.set(v.enterprise_vendor_master_id, { count: 1, vendor: v })
           }
-          const common: CustomVendor[] = []
-          idCounts.forEach(({ count, vendor }) => {
-            if (count === itemsToEdit.length) common.push(vendor)
-          })
-          setEditAttachedVendors(common)
         }
-      } catch (err) {
-        console.warn('[Edit] Failed to load custom vendors for selected items:', err)
       }
+      const common: CustomVendor[] = []
+      idCounts.forEach(({ count, vendor }) => {
+        if (count === itemsToEdit.length) common.push(vendor)
+      })
+      setEditAttachedVendors(common)
     }
 
     // For bulk edit, use common values or empty strings
@@ -6188,7 +6106,7 @@ export default function ProcurementDashboard() {
                       }
 
                       if (columnKey === "vendor") {
-                        // Read from custom_vendors[] (loaded via GET /custom-vendors/ or bulk-batched later)
+                        // custom_vendors[] is included in the items list response directly
                         // Fallback: legacy item.vendor string for items where custom_vendors hasn't been loaded yet.
                         const customVendors: CustomVendor[] = Array.isArray(item.custom_vendors) ? item.custom_vendors : []
                         const vendorNames: string[] = customVendors.length > 0

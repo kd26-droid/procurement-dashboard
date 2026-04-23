@@ -367,6 +367,8 @@ export interface ProjectItem {
   }>;
   // NEW: Internal notes field
   internal_notes?: string | null;
+  // Included in items list response — no separate fetch needed
+  custom_vendors?: CustomVendor[];
 }
 
 // Digikey Pricing Interfaces
