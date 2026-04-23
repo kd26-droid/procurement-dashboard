@@ -6119,9 +6119,16 @@ export default function ProcurementDashboard() {
                             {isMissing ? (
                               <span className="text-gray-400 text-xs">-</span>
                             ) : vendorNames.length === 1 ? (
-                              <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[140px]">
-                                {vendorNames[0]}
-                              </Badge>
+                              <UiTooltip>
+                                <UiTooltipTrigger asChild>
+                                  <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[140px] cursor-default">
+                                    {vendorNames[0]}
+                                  </Badge>
+                                </UiTooltipTrigger>
+                                <UiTooltipContent side="bottom" align="start">
+                                  <span className="text-xs">{vendorNames[0]}</span>
+                                </UiTooltipContent>
+                              </UiTooltip>
                             ) : (
                               <UiTooltip>
                                 <UiTooltipTrigger>
