@@ -220,8 +220,10 @@ export function usePricingLookup(
     return m;
   }, [items]);
 
-  // Per-item metadata: lookupKey, mpn, and whether it has an MPN
+  // Per-item metadata: lookupKey, mpn, currency, and whether it has an MPN
   const itemEntries = useMemo(() => {
+    // NOTE: same MPN can appear on multiple items with different currencies —
+    // do NOT deduplicate by MPN. Deduplicate by lookupKey (enterprise_item_id) only.
     const seen = new Set<string>();
     const entries: Array<{
       lookupKey: string;
@@ -229,6 +231,7 @@ export function usePricingLookup(
       erp_item_code: string | null;
       item_code: string | null;
       mpn: string | null;
+      project_currency_code: string | null;
     }> = [];
     for (const it of items) {
       const eid = it.enterprise_item_id || null;
@@ -243,6 +246,7 @@ export function usePricingLookup(
         erp_item_code: erp,
         item_code: icode,
         mpn: extractMpn(it),
+        project_currency_code: it.currency?.code || null,
       });
     }
     return entries;
@@ -268,22 +272,22 @@ export function usePricingLookup(
     const dateFrom = settings.daysBack !== null ? isoDaysAgo(settings.daysBack) : undefined;
     const dateTo   = settings.daysBack !== null ? todayIso()                     : undefined;
 
-    // Split: items with MPN use fetchCheapestByMpn; items without fall back to fetchCheapestByItem
     const withMpn    = itemEntries.filter(e => !!e.mpn);
     const withoutMpn = itemEntries.filter(e => !e.mpn);
-
-    // Deduplicate MPNs (many items may share an MPN)
-    const uniqueMpns = [...new Set(withMpn.map(e => e.mpn as string))];
 
     const promises: Promise<any>[] = [];
 
     const rankingBasis = toRankingBasis(settings.priceBasis);
 
-    // --- MPN-based lookup ---
-    if (uniqueMpns.length > 0) {
+    // --- MPN-based lookup — new items[] shape, response keyed by enterprise_item_id ---
+    if (withMpn.length > 0) {
       promises.push(
         fetchCheapestByMpn({
-          mpns: uniqueMpns,
+          items: withMpn.map(e => ({
+            mpn: e.mpn as string,
+            enterprise_item_id: e.enterprise_item_id || undefined,
+            project_currency_code: e.project_currency_code || undefined,
+          })),
           source_types: settings.sourceTypes,
           date_from: dateFrom,
           date_to: dateTo,
@@ -320,18 +324,15 @@ export function usePricingLookup(
         const byItemId = new Map<string, CheapestByItemPerSource | null>();
         const byMpn    = new Map<string, CheapestByMpnPerSource | null>();
 
-        // Map MPN results → every item that shares that MPN
+        // Response now keyed by enterprise_item_id — map directly to lookupKey
         if (mpnResp?.results) {
-          for (const mpn of uniqueMpns) {
-            const raw = mpnResp.results[mpn] ?? null;
+          for (const entry of withMpn) {
+            const key = entry.enterprise_item_id || entry.lookupKey;
+            const raw = mpnResp.results[key] ?? null;
             const filtered = applyClientFilters(raw, settings);
-            byMpn.set(mpn, filtered);
-            // Find all items with this MPN and store under their lookupKey
-            for (const entry of withMpn) {
-              if (entry.mpn === mpn) {
-                byItemId.set(entry.lookupKey, filtered);
-              }
-            }
+            byItemId.set(entry.lookupKey, filtered);
+            // Also populate byMpn for chart history lookups
+            if (entry.mpn) byMpn.set(entry.mpn, filtered);
           }
         }
 

@@ -101,8 +101,8 @@ function getDistributorCurrencySymbol(code: string | null | undefined): string {
  * Shows every variant with its full price-break table, MOQ, reeling fee, and part number.
  * Falls back gracefully to legacy fields if `variants` is missing.
  */
-function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQty: number = 1, itemCurrencySymbol: string = '₹') {
-  const sym = itemCurrencySymbol || getDistributorCurrencySymbol(pricing?.currency);
+function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQty: number = 1, itemCurrencySymbol: string = '', useNative: boolean = false) {
+  const sym = itemCurrencySymbol || pricing?.currency_symbol || getDistributorCurrencySymbol(pricing?.currency);
 
   // Build the list of variants to render. If no variants, synthesize a single
   // "variant" from legacy fields so old cached rows still render properly.
@@ -240,7 +240,7 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
                     }
                     return breaks.map((pb: any, bIdx: number) => {
                     const qty = Math.round(parseFloat(String(pb?.quantity)) || 0);
-                    const unitPrice = parseFloat(String(pb?.unit_price)) || 0;
+                    const unitPrice = parseFloat(String(useNative ? (pb?.unit_price ?? pb?.unit_price_in_project_currency) : (pb?.unit_price_in_project_currency ?? pb?.unit_price))) || 0;
                     const isActive = sortedBreaks[activeIdx] === pb
                     // Always recompute total if fee applies; otherwise use backend total if provided
                     let totalPrice: number;
@@ -291,138 +291,23 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
  * NEW STRUCTURE: { status, status_message, data: { unit_price, price_breaks, ... } }
  * Handles: unit_price, quantity_price, price_breaks, savings_info, next_tier_info
  */
-function convertDistributorPricing(pricingWrapper: any, itemCurrency: any, exchangeRates: Record<string, number>) {
+// Prices are pre-converted to admin currency by the backend — just flatten the wrapper.
+function convertDistributorPricing(pricingWrapper: any, _itemCurrency: any, _exchangeRates: Record<string, number>) {
   if (!pricingWrapper) return null;
 
-  // NEW: Handle the new wrapper structure with status field
-  // Status values: available, fetching, pending, not_found, error, no_mpn, rate_limited
-  let status = pricingWrapper.status;
+  const status = pricingWrapper.status;
   const statusMessage = pricingWrapper.status_message;
   const pricingData = pricingWrapper.data;
 
-  // IMPORTANT: Detect MPN not found from data (stock === -1 means MPN doesn't exist on distributor)
-  // This is a cached "not found" result - stop polling and show "Not Listed"
   if (pricingData && pricingData.stock === -1) {
-    return {
-      status: 'not_found',
-      status_message: 'Not Listed',
-      data: null,
-      unit_price: null,
-      currency: null,
-      stock: -1
-    };
+    return { status: 'not_found', status_message: 'Not Listed', data: null, unit_price: null, currency: null, stock: -1 };
   }
 
-  // If status is not 'available', return wrapper with status info only
   if (status !== 'available' || !pricingData) {
-    return {
-      status,
-      status_message: statusMessage,
-      data: null,
-      // Flatten for backward compatibility when no data
-      unit_price: null,
-      currency: null,
-      stock: null
-    };
+    return { status, status_message: statusMessage, data: null, unit_price: null, currency: null, stock: null };
   }
 
-  const distributorCurrency = pricingData.currency; // USD for Digikey, can be INR/USD/etc for Mouser
-
-  // If distributor already returns price in item's currency, no conversion needed
-  if (distributorCurrency === itemCurrency?.code) {
-    return {
-      status,
-      status_message: statusMessage,
-      data: pricingData,
-      // Flatten data for backward compatibility
-      ...pricingData,
-      needsConversion: false
-    };
-  }
-
-  // Get exchange rate - try direct rate first, then inverse
-  const rateKey = `${distributorCurrency}_TO_${itemCurrency?.code}`;
-  let exchangeRate = exchangeRates[rateKey];
-
-  // If direct rate not available, try inverse rate (e.g., INR_TO_USD = 1 / USD_TO_INR)
-  if (!exchangeRate) {
-    const inverseRateKey = `${itemCurrency?.code}_TO_${distributorCurrency}`;
-    const inverseRate = exchangeRates[inverseRateKey];
-    if (inverseRate) {
-      exchangeRate = 1 / inverseRate;
-      console.log(`[Currency] Using inverse rate: 1/${inverseRateKey} = ${exchangeRate}`);
-    }
-  }
-
-  if (!exchangeRate) {
-    console.warn(`No exchange rate for ${rateKey} or inverse`);
-    return {
-      status,
-      status_message: statusMessage,
-      data: pricingData,
-      // Flatten data for backward compatibility
-      ...pricingData,
-      needsConversion: true,
-      conversionFailed: true
-    };
-  }
-
-  // Convert all pricing fields
-  const convertedData = {
-    ...pricingData,
-
-    // Original USD values (keep for reference)
-    original_unit_price: pricingData.unit_price,
-    original_quantity_price: pricingData.quantity_price,
-    original_currency: distributorCurrency,
-
-    // Converted values
-    unit_price: pricingData.unit_price ? pricingData.unit_price * exchangeRate : null,
-    quantity_price: pricingData.quantity_price ? pricingData.quantity_price * exchangeRate : null,
-    currency: itemCurrency.code,
-    exchange_rate: exchangeRate,
-
-    // Convert all price breaks
-    price_breaks: pricingData.price_breaks ? pricingData.price_breaks.map((pb: any) => ({
-      quantity: pb.quantity,
-      price: (typeof pb.price === 'number' ? pb.price : parseFloat(pb.price)) * exchangeRate,
-      original_price: pb.price  // Keep USD for reference
-    })) : [],
-
-    // Convert savings_info if exists
-    savings_info: pricingData.savings_info ? {
-      base_price: pricingData.savings_info.base_price * exchangeRate,
-      current_price: pricingData.savings_info.current_price * exchangeRate,
-      savings_per_unit: pricingData.savings_info.savings_per_unit * exchangeRate,
-      total_savings: pricingData.savings_info.total_savings * exchangeRate,
-      discount_percent: pricingData.savings_info.discount_percent,
-      // Keep originals
-      original_base_price: pricingData.savings_info.base_price,
-      original_current_price: pricingData.savings_info.current_price
-    } : null,
-
-    // Convert next_tier_info if exists
-    next_tier_info: pricingData.next_tier_info ? {
-      next_tier_qty: pricingData.next_tier_info.next_tier_qty,
-      next_tier_price: pricingData.next_tier_info.next_tier_price * exchangeRate,
-      additional_qty_needed: pricingData.next_tier_info.additional_qty_needed,
-      savings_per_unit: pricingData.next_tier_info.savings_per_unit ? pricingData.next_tier_info.savings_per_unit * exchangeRate : 0,
-      potential_total_savings: pricingData.next_tier_info.potential_total_savings ? pricingData.next_tier_info.potential_total_savings * exchangeRate : 0,
-      // Keep originals
-      original_next_tier_price: pricingData.next_tier_info.next_tier_price
-    } : null,
-
-    needsConversion: false,
-    wasConverted: true
-  };
-
-  return {
-    status,
-    status_message: statusMessage,
-    data: convertedData,
-    // Flatten data for backward compatibility
-    ...convertedData
-  };
+  return { status, status_message: statusMessage, data: pricingData, ...pricingData };
 }
 
 /**
@@ -535,8 +420,8 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
     priceContract,
     priceQuote,
     priceEXIM,
-    source: cheapestSource,
     vendor,
+    // source comes from API (price_source field) — don't overwrite it here
   };
 }
 
@@ -660,6 +545,8 @@ export default function ProcurementDashboard() {
   const [pricingSettings, setPricingSettings] = useState<PricingLookupSettings>(DEFAULT_PRICING_SETTINGS)
   // Gate: pricing repo fetch only runs after the user explicitly clicks "Load Pricing"
   const [pricingEnabled, setPricingEnabled] = useState<boolean>(false)
+  // Display mode: 'native' = each source's original currency (default), 'project' = item's currency
+  const [displayCurrency, setDisplayCurrency] = useState<'project' | 'native'>('native')
   useEffect(() => {
     setPricingSettings(loadPricingSettings())
   }, [])
@@ -1136,7 +1023,7 @@ export default function ProcurementDashboard() {
       custom_vendors: Array.isArray(item.custom_vendors) ? item.custom_vendors : [] as CustomVendor[],
       action: item.action || '',
       dueDate: '',
-      source: '',
+      source: (item as any).source || 'Project',
       pricePO: 0,
       priceContract: 0,
       priceQuote: 0,
@@ -1916,21 +1803,18 @@ export default function ProcurementDashboard() {
 
     const getDistributorSlabPrice = (pricing: any, itemQty: number): number | null => {
       if (pricing?.status !== 'available') return null
-      const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
-      const preferred = variants.length > 0
-        ? variants[pricing.preferred_variant_index ?? 0] || variants[0]
-        : null
-      if (preferred && Array.isArray(preferred.price_breaks) && preferred.price_breaks.length > 0) {
-        const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
+      // Use price_in_project_currency from top-level price_breaks for correct ranking
+      if (Array.isArray(pricing.price_breaks) && pricing.price_breaks.length > 0) {
+        const sorted = [...pricing.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
         let matched = sorted[0]
         for (const pb of sorted) {
           if ((pb.quantity ?? 0) <= itemQty) matched = pb
           else break
         }
-        const p = typeof matched.unit_price === 'number' ? matched.unit_price : parseFloat(matched.unit_price)
-        return p > 0 ? p : null
+        const p = matched.price_in_project_currency ?? matched.price
+        return typeof p === 'number' ? (p > 0 ? p : null) : (parseFloat(p) > 0 ? parseFloat(p) : null)
       }
-      const p = pricing.quantity_price ?? pricing.unit_price
+      const p = pricing.quantity_price_in_project_currency ?? pricing.unit_price_in_project_currency ?? pricing.quantity_price ?? pricing.unit_price
       return p && p > 0 ? p : null
     }
 
@@ -2009,7 +1893,8 @@ export default function ProcurementDashboard() {
     const dateTo = pricingSettings.daysBack !== null
       ? new Date().toISOString().slice(0, 10)
       : undefined
-    fetchMpnHistory(mpn, { dateFrom, dateTo })
+    const enterpriseItemId = selectedItemForAnalytics?.enterprise_item_id || undefined
+    fetchMpnHistory(mpn, { dateFrom, dateTo, enterpriseItemId })
       .then((rows) => {
         if (cancelled) return
         setAnalyticsMpnHistory(rows)
@@ -2206,44 +2091,33 @@ export default function ProcurementDashboard() {
         return { ...empty, status: pricing.status_message || pricing.status || 'N/A' }
       }
 
-      const sym = currencySymbol || (pricing.currency ? getCurrencySymbolForExport(pricing.currency) : '')
+      // Export always uses project currency
+      const sym = pricing.project_currency_symbol || pricing.currency_symbol || currencySymbol || (pricing.currency ? getCurrencySymbolForExport(pricing.currency) : '')
       const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
 
-      // Pick the preferred variant (or synthesize one from legacy top-level fields)
-      const preferredIdx =
-        typeof pricing.preferred_variant_index === 'number' ? pricing.preferred_variant_index : 0
-      const preferred =
-        variants.length > 0
-          ? variants[preferredIdx] || variants[0]
-          : {
-              packaging: pricing.packaging || 'Standard',
-              digikey_part_number: distributorLabel === 'Digi-Key' ? pricing.digikey_part_number : undefined,
-              mouser_part_number: distributorLabel === 'Mouser' ? pricing.mouser_part_number : undefined,
-              moq: pricing.moq,
-              reeling_fee: '0',
-              price_breaks: Array.isArray(pricing.price_breaks) ? pricing.price_breaks : [],
-            }
-
       const partNumber =
-        preferred?.digikey_part_number ||
-        preferred?.mouser_part_number ||
         pricing.digikey_part_number ||
         pricing.mouser_part_number ||
+        (variants[0]?.digikey_part_number) ||
+        (variants[0]?.mouser_part_number) ||
         ''
 
-      // Cell price = qty-slab price (highest tier where break.quantity <= itemQty)
+      const preferredIdx = typeof pricing.preferred_variant_index === 'number' ? pricing.preferred_variant_index : 0
+      const preferred = variants.length > 0 ? (variants[preferredIdx] || variants[0]) : null
+
+      // Cell price — use top-level price_breaks[].price_in_project_currency (already converted)
       let cellUnitPrice: number | null = null
-      if (Array.isArray(preferred?.price_breaks) && preferred.price_breaks.length > 0) {
-        const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? a.min_quantity ?? 0) - (b.quantity ?? b.min_quantity ?? 0))
+      if (Array.isArray(pricing.price_breaks) && pricing.price_breaks.length > 0) {
+        const sorted = [...pricing.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
         let matched = sorted[0]
         for (const pb of sorted) {
-          if ((pb.quantity ?? pb.min_quantity ?? 0) <= itemQty) matched = pb
+          if ((pb.quantity ?? 0) <= itemQty) matched = pb
           else break
         }
-        const raw = matched?.unit_price
+        const raw = matched?.price_in_project_currency ?? matched?.price
         cellUnitPrice = typeof raw === 'number' ? raw : parseFloat(String(raw))
       } else {
-        const fallback = pricing.quantity_price ?? pricing.unit_price
+        const fallback = pricing.quantity_price_in_project_currency ?? pricing.unit_price_in_project_currency ?? pricing.quantity_price ?? pricing.unit_price
         if (fallback !== null && fallback !== undefined) {
           cellUnitPrice = typeof fallback === 'number' ? fallback : parseFloat(String(fallback))
         }
@@ -2252,8 +2126,7 @@ export default function ProcurementDashboard() {
       const reelingFeeNum = preferred?.reeling_fee ? parseFloat(String(preferred.reeling_fee)) || 0 : 0
       const reelingFeeStr = reelingFeeNum > 0 ? `${sym}${reelingFeeNum.toFixed(2)}` : ''
 
-      // Compact list of every variant for people who want to see their options at a glance.
-      // Format: "Cut Tape (CT): $0.540 (MOQ 1) | Tape & Reel (TR): $0.254 (MOQ 2500) | Digi-Reel®: $0.540 (MOQ 1) +$7.00 fee"
+      // Variant summary — use unit_price_in_project_currency from variant price_breaks
       const variantSummary =
         variants.length > 0
           ? variants
@@ -2261,7 +2134,8 @@ export default function ProcurementDashboard() {
                 const pack = v?.packaging || 'Standard'
                 const mq = v?.moq != null ? v.moq : ''
                 const breaks = Array.isArray(v?.price_breaks) ? v.price_breaks : []
-                const firstPrice = breaks.length > 0 ? parseFloat(String(breaks[0]?.unit_price)) || 0 : 0
+                const firstRaw = breaks.length > 0 ? (breaks[0]?.unit_price_in_project_currency ?? breaks[0]?.unit_price) : 0
+                const firstPrice = parseFloat(String(firstRaw)) || 0
                 const fee = v?.reeling_fee ? parseFloat(String(v.reeling_fee)) || 0 : 0
                 const feeTag = fee > 0 ? ` +${sym}${fee.toFixed(2)} fee` : ''
                 return `${pack}: ${sym}${firstPrice.toFixed(3)} (MOQ ${mq})${feeTag}`
@@ -2371,10 +2245,10 @@ export default function ProcurementDashboard() {
     const rows: string[][] = []
 
     filteredAndSortedItems.forEach((item: any) => {
-      const itemCurrencySymbol = item.currency?.symbol || (item.currency?.code ? getCurrencySymbolForExport(item.currency.code) : '') || '₹'
+      const itemCurrencySymbol = item.currency?.symbol || (item.currency?.code ? getCurrencySymbolForExport(item.currency.code) : '') || ''
       const _exportItemQty = parseFloat(String(item.quantity)) || 1
       const digikeyDetails = getDistributorPrice(item.digikey_pricing, 'Digi-Key', itemCurrencySymbol, _exportItemQty)
-      const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', '₹', _exportItemQty)
+      const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', itemCurrencySymbol, _exportItemQty)
 
       // Parse tags for this item
       const itemTags = item.category && item.category !== 'Uncategorized'
@@ -3402,7 +3276,7 @@ export default function ProcurementDashboard() {
         // Notify Factwise parent - only send what changed
         const changedFields: any = {}
         const updatedFieldsList: string[] = []
-        const currencySymbol = editFormData.currency?.symbol || '₹'
+        const currencySymbol = editFormData.currency?.symbol || ''
 
         if (updatePayload.rate !== undefined) {
           changedFields.rate = updatePayload.rate
@@ -3468,7 +3342,8 @@ export default function ProcurementDashboard() {
   }
 
   // Auto Fill Prices Handler
-  const handleAutoFillPrices = (scope: 'all' | 'non-selected' | 'selected') => {
+  const handleAutoFillPrices = async (scope: 'all' | 'non-selected' | 'selected') => {
+    const projectId = getProjectId()
     let itemsToUpdate = lineItems
     if (scope === 'non-selected') {
       itemsToUpdate = lineItems.filter((item: any) => !selectedItems.includes(item.id))
@@ -3483,50 +3358,78 @@ export default function ProcurementDashboard() {
       const lookupKey = item.enterprise_item_id || item.erp_item_code || item.itemId || null
 
       // Real pricing-repo candidates (PO / CONTRACT / QUOTE / RFQ)
-      const candidates: Array<{ source: string; price: number; label: string }> = []
+      const candidates: Array<{ source: string; price: number }> = []
       if (pricingEnabled && lookupKey) {
         const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
         for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
           const record = perSource?.[src] ?? null
           const price = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
-          if (price && price > 0) candidates.push({ source: src, price, label: src })
+          if (price && price > 0) candidates.push({ source: src, price })
         }
       }
 
-      // Distributor candidates — inline slab price logic
-      const getSlabPrice = (pricing: any): number | null => {
+      // Use price_in_project_currency from top-level price_breaks for autofill
+      const getDistributorPrice = (pricing: any): number | null => {
         if (pricing?.status !== 'available') return null
-        const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
-        const preferred = variants.length > 0 ? (variants[pricing.preferred_variant_index ?? 0] || variants[0]) : null
-        if (preferred && Array.isArray(preferred.price_breaks) && preferred.price_breaks.length > 0) {
-          const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
+        if (Array.isArray(pricing.price_breaks) && pricing.price_breaks.length > 0) {
+          const sorted = [...pricing.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
           let matched = sorted[0]
           for (const pb of sorted) { if ((pb.quantity ?? 0) <= itemQty) matched = pb; else break }
-          const p = typeof matched.unit_price === 'number' ? matched.unit_price : parseFloat(matched.unit_price)
-          return p > 0 ? p : null
+          const p = matched.price_in_project_currency ?? matched.price
+          return typeof p === 'number' ? (p > 0 ? p : null) : (parseFloat(p) > 0 ? parseFloat(p) : null)
         }
-        const p = pricing.quantity_price ?? pricing.unit_price
+        const p = pricing.quantity_price_in_project_currency ?? pricing.unit_price_in_project_currency ?? pricing.quantity_price ?? pricing.unit_price
         return p && p > 0 ? p : null
       }
-      const dkPrice = getSlabPrice((item as any).digikey_pricing)
-      if (dkPrice !== null) candidates.push({ source: 'DIGIKEY', price: dkPrice, label: 'Digi-Key' })
-      const msPrice = getSlabPrice((item as any).mouser_pricing)
-      if (msPrice !== null) candidates.push({ source: 'MOUSER', price: msPrice, label: 'Mouser' })
 
-      if (candidates.length === 0) {
-        // No real data — leave unit price as-is (keep existing item.rate from backend)
-        return { ...item, source: 'Project' }
-      }
+      const dkPrice = getDistributorPrice((item as any).digikey_pricing)
+      if (dkPrice) candidates.push({ source: 'DIGIKEY', price: dkPrice })
+
+      const msPrice = getDistributorPrice((item as any).mouser_pricing)
+      if (msPrice) candidates.push({ source: 'MOUSER', price: msPrice })
+
+      if (candidates.length === 0) return item
 
       const cheapest = candidates.reduce((min, c) => c.price < min.price ? c : min)
       const unitPrice = cheapest.price
       const totalPrice = unitPrice * itemQty
 
-      return { ...item, unitPrice, totalPrice, source: 'Project' }
+      const sourceLabel: Record<string, string> = {
+        PO: 'PO', CONTRACT: 'Contract', QUOTE: 'Quote', RFQ: 'RFQ',
+        DIGIKEY: 'Digi-Key', MOUSER: 'Mouser',
+      }
+
+      return { ...item, unitPrice, totalPrice, source: sourceLabel[cheapest.source] ?? cheapest.source }
     })
 
+    // Snapshot original prices BEFORE state update for comparison
+    const originalPriceById = new Map(lineItems.map((li: any) => [li.id, li.unitPrice]))
+
     setLineItems(updatedItems)
+    setDisplayCurrency('project')
     document.body.click()
+
+    // Persist changed prices to backend
+    if (projectId) {
+      const changed = updatedItems.filter((item: any) =>
+        itemsToUpdate.some((u: any) => u.id === item.id) &&
+        item.unitPrice !== originalPriceById.get(item.id)
+      )
+      if (changed.length > 0) {
+        const CONCURRENCY = 5
+        for (let i = 0; i < changed.length; i += CONCURRENCY) {
+          const wave = changed.slice(i, i + CONCURRENCY)
+          await Promise.allSettled(
+            wave.map((item: any) => {
+              const rate = parseFloat(item.unitPrice.toFixed(6))
+              return updateProjectItem(projectId, item.project_item_id, { rate, source: item.source })
+                .catch((err: any) => console.warn('[AutoFill] Failed to persist item', item.project_item_id, err))
+            })
+          )
+        }
+        toast({ title: "Prices saved", description: `Updated ${changed.length} item${changed.length > 1 ? 's' : ''}` })
+      }
+    }
   }
 
   // ── Criteria Evaluation Engine ──
@@ -4477,11 +4380,11 @@ export default function ProcurementDashboard() {
 
     // Derive the admin currency symbol from the first available history record
     const adminCurrSym = (() => {
-      if (!analyticsMpnHistory || analyticsMpnHistory.length === 0) return '₹'
+      if (!analyticsMpnHistory || analyticsMpnHistory.length === 0) return ''
       for (const r of analyticsMpnHistory) {
         if (r.admin_currency_symbol) return r.admin_currency_symbol
       }
-      return '₹'
+      return ''
     })()
 
     const historyToSeries = (source: PricingSourceType) => {
@@ -4529,7 +4432,7 @@ export default function ProcurementDashboard() {
 
     // Get item's actual data
     const itemQty = item.quantity || 100
-    const itemCurrency = item.currency?.symbol || '₹'
+    const itemCurrency = item.currency?.symbol || ''
     const poPrice = item.pricePO || 0
     const contractPrice = item.priceContract || 0
     const quotePrice = item.priceQuote || 0
@@ -4647,7 +4550,7 @@ export default function ProcurementDashboard() {
     xAxisLabel: string,
     yLeftLabel: string,
     yRightLabel: string,
-    currSym: string = '₹',
+    currSym: string = '',
   ) => {
     const commonTooltip = (value: any, name: string) => [
       name === dataKey1 ? `${currSym}${Number(value).toFixed(2)}` : `${value} pcs`,
@@ -4997,7 +4900,24 @@ export default function ProcurementDashboard() {
             {/* Project Information - spans 2 columns on large screens */}
             <div className="flex items-center justify-between">
               <h1 className="text-2xl font-bold text-gray-900 mb-2">Procurement Strategy</h1>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3">
+                {/* Currency display toggle */}
+                <div className="flex items-center bg-gray-100 rounded-full p-0.5 gap-0.5">
+                  <button
+                    onClick={() => setDisplayCurrency('native')}
+                    title="Show prices in each source's original currency"
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${displayCurrency === 'native' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                  >
+                    Native
+                  </button>
+                  <button
+                    onClick={() => setDisplayCurrency('project')}
+                    title="Show all prices converted to item currency"
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${displayCurrency === 'project' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                  >
+                    Project
+                  </button>
+                </div>
                 <Button
                   variant="outline"
                   className="flex items-center gap-2 bg-transparent"
@@ -5538,7 +5458,6 @@ export default function ProcurementDashboard() {
                   </SelectContent>
                 </Select>
               )}
-
               {/* Assign Actions */}
               <Button
                 variant="outline"
@@ -6225,9 +6144,12 @@ export default function ProcurementDashboard() {
 
                         // Handle new status-based pricing structure
                         const pricingStatus = pricing?.status
-                        const displayPrice = pricing?.quantity_price ?? pricing?.unit_price
-                        // Prices are always in item currency after conversion — use item symbol directly
-                        const currencySymbol = (item as any).currency?.symbol || getCurrencySymbol((item as any).currency?.code || '') || '₹'
+                        const displayPrice = displayCurrency === 'native'
+                          ? (pricing?.quantity_price ?? pricing?.unit_price)
+                          : (pricing?.quantity_price_in_project_currency ?? pricing?.unit_price_in_project_currency ?? pricing?.quantity_price ?? pricing?.unit_price)
+                        const currencySymbol = displayCurrency === 'native'
+                          ? (pricing?.currency_symbol || getCurrencySymbol(pricing?.currency || '') || '')
+                          : (pricing?.project_currency_symbol || pricing?.currency_symbol || (item as any).currency?.symbol || getCurrencySymbol((item as any).currency?.code || '') || '')
 
                         // Cheapest highlight — use shared map (currency-aware, pricing-load-aware)
                         const _dkLookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
@@ -6255,28 +6177,29 @@ export default function ProcurementDashboard() {
                             case 'not_configured':
                               return <span className="text-xs text-gray-400">Not Configured</span>
                             case 'available': {
-                              // Variant-aware rendering — read data.variants[] when available
+                              // Cell price: project currency (default) or native based on toggle
+                              const itemQtyDK = parseFloat(String((item as any).quantity)) || 1
+                              let cellPrice: number | null = null
+                              if (Array.isArray(pricing?.price_breaks) && pricing.price_breaks.length > 0) {
+                                const sorted = [...pricing.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
+                                let matched = sorted[0]
+                                for (const pb of sorted) {
+                                  if ((pb.quantity ?? 0) <= itemQtyDK) matched = pb
+                                  else break
+                                }
+                                const p = displayCurrency === 'native'
+                                  ? (matched.price ?? matched.price_in_project_currency)
+                                  : (matched.price_in_project_currency ?? matched.price)
+                                cellPrice = typeof p === 'number' ? p : parseFloat(p)
+                              } else {
+                                cellPrice = displayPrice != null ? (typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)) : null
+                              }
                               const variants: any[] = Array.isArray(pricing?.variants) ? pricing.variants : []
                               const hasVariants = variants.length > 0
                               const preferredIdx = (hasVariants && typeof pricing?.preferred_variant_index === 'number')
                                 ? pricing.preferred_variant_index
                                 : 0
                               const preferred = hasVariants ? (variants[preferredIdx] || variants[0]) : null
-
-                              // Cell price: pick price break matching item qty, else legacy unit_price
-                              const itemQtyDK = parseFloat(String((item as any).quantity)) || 1
-                              let cellPrice: number | null = null
-                              if (preferred && Array.isArray(preferred.price_breaks) && preferred.price_breaks.length > 0) {
-                                const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? a.min_quantity ?? 0) - (b.quantity ?? b.min_quantity ?? 0))
-                                let matched = sorted[0]
-                                for (const pb of sorted) {
-                                  if ((pb.quantity ?? pb.min_quantity ?? 0) <= itemQtyDK) matched = pb
-                                  else break
-                                }
-                                cellPrice = typeof matched.unit_price === 'number' ? matched.unit_price : parseFloat(matched.unit_price)
-                              } else if (displayPrice !== null && displayPrice !== undefined) {
-                                cellPrice = typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)
-                              }
 
                               if (cellPrice === null || isNaN(cellPrice)) {
                                 return <span className="text-xs text-gray-400">N/A</span>
@@ -6324,7 +6247,7 @@ export default function ProcurementDashboard() {
                                     </div>
                                   </UiTooltipTrigger>
                                   <UiTooltipContent side="left" className="bg-white border border-gray-300 shadow-xl p-0">
-                                    {renderDistributorTooltip(pricing, 'Digi-Key', parseFloat(String((item as any).quantity)) || 1, (item as any).currency?.symbol || '₹')}
+                                    {renderDistributorTooltip(pricing, 'Digi-Key', parseFloat(String((item as any).quantity)) || 1, displayCurrency === 'native' ? (pricing?.currency_symbol || '') : (pricing?.project_currency_symbol || pricing?.currency_symbol || (item as any).currency?.symbol || ''), displayCurrency === 'native')}
                                   </UiTooltipContent>
                                 </UiTooltip>
                               )
@@ -6371,13 +6294,16 @@ export default function ProcurementDashboard() {
 
                         // Handle new status-based pricing structure
                         const pricingStatus = pricing?.status
-                        const displayPrice = pricing?.quantity_price ?? pricing?.unit_price
+                        const displayPrice = displayCurrency === 'native'
+                          ? (pricing?.quantity_price ?? pricing?.unit_price)
+                          : (pricing?.quantity_price_in_project_currency ?? pricing?.unit_price_in_project_currency ?? pricing?.quantity_price ?? pricing?.unit_price)
                         const displaySavings = pricing?.savings_info
                         const displayNextTier = pricing?.next_tier_info
                         const wasConverted = pricing?.wasConverted || false
                         const originalPrice = pricing?.original_quantity_price ?? pricing?.original_unit_price
-                        // Mouser prices — always show ₹
-                        const currencySymbol = '₹'
+                        const currencySymbol = displayCurrency === 'native'
+                          ? (pricing?.currency_symbol || getCurrencySymbol(pricing?.currency || '') || '')
+                          : (pricing?.project_currency_symbol || pricing?.currency_symbol || (item as any).currency?.symbol || '')
 
                         // Cheapest highlight — use shared map (currency-aware, pricing-load-aware)
                         const _msLookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
@@ -6405,28 +6331,28 @@ export default function ProcurementDashboard() {
                             case 'not_configured':
                               return <span className="text-xs text-gray-400">Not Configured</span>
                             case 'available': {
-                              // Variant-aware rendering — read data.variants[] when available
+                              const itemQtyMouser = parseFloat(String((item as any).quantity)) || 1
+                              let cellPrice: number | null = null
+                              if (Array.isArray(pricing?.price_breaks) && pricing.price_breaks.length > 0) {
+                                const sorted = [...pricing.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
+                                let matched = sorted[0]
+                                for (const pb of sorted) {
+                                  if ((pb.quantity ?? 0) <= itemQtyMouser) matched = pb
+                                  else break
+                                }
+                                const p = displayCurrency === 'native'
+                                  ? (matched.price ?? matched.price_in_project_currency)
+                                  : (matched.price_in_project_currency ?? matched.price)
+                                cellPrice = typeof p === 'number' ? p : parseFloat(p)
+                              } else if (displayPrice !== null && displayPrice !== undefined) {
+                                cellPrice = typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)
+                              }
                               const variants: any[] = Array.isArray(pricing?.variants) ? pricing.variants : []
                               const hasVariants = variants.length > 0
                               const preferredIdx = (hasVariants && typeof pricing?.preferred_variant_index === 'number')
                                 ? pricing.preferred_variant_index
                                 : 0
                               const preferred = hasVariants ? (variants[preferredIdx] || variants[0]) : null
-
-                              // Cell price: pick price break matching item qty, else legacy unit_price
-                              const itemQtyMouser = parseFloat(String((item as any).quantity)) || 1
-                              let cellPrice: number | null = null
-                              if (preferred && Array.isArray(preferred.price_breaks) && preferred.price_breaks.length > 0) {
-                                const sorted = [...preferred.price_breaks].sort((a: any, b: any) => (a.quantity ?? a.min_quantity ?? 0) - (b.quantity ?? b.min_quantity ?? 0))
-                                let matched = sorted[0]
-                                for (const pb of sorted) {
-                                  if ((pb.quantity ?? pb.min_quantity ?? 0) <= itemQtyMouser) matched = pb
-                                  else break
-                                }
-                                cellPrice = typeof matched.unit_price === 'number' ? matched.unit_price : parseFloat(matched.unit_price)
-                              } else if (displayPrice !== null && displayPrice !== undefined) {
-                                cellPrice = typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)
-                              }
 
                               if (cellPrice === null || isNaN(cellPrice)) {
                                 return <span className="text-xs text-gray-400">N/A</span>
@@ -6474,7 +6400,7 @@ export default function ProcurementDashboard() {
                                     </div>
                                   </UiTooltipTrigger>
                                   <UiTooltipContent side="left" className="bg-white border border-gray-300 shadow-xl p-0">
-                                    {renderDistributorTooltip(pricing, 'Mouser', parseFloat(String((item as any).quantity)) || 1, '₹')}
+                                    {renderDistributorTooltip(pricing, 'Mouser', parseFloat(String((item as any).quantity)) || 1, displayCurrency === 'native' ? (pricing?.currency_symbol || '') : (pricing?.project_currency_symbol || pricing?.currency_symbol || (item as any).currency?.symbol || ''), displayCurrency === 'native')}
                                   </UiTooltipContent>
                                 </UiTooltip>
                               )
@@ -6583,7 +6509,7 @@ export default function ProcurementDashboard() {
                         // EXIM stays on the existing item-field path (not in pricing repo v2)
                         const priceValue = (item as any).priceEXIM as number | undefined
                         const hasPrice = priceValue !== undefined && priceValue > 0
-                        const itemCurrencySymbol = (item as any).currency?.symbol || '₹'
+                        const itemCurrencySymbol = (item as any).currency?.symbol || ''
                         return (
                           <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
@@ -6597,11 +6523,10 @@ export default function ProcurementDashboard() {
                       }
 
                       if (columnKey === "source") {
-                        // Source column is always "Project" — no hardcoded distributor sources
                         return (
                           <td key={columnKey} className="p-2 text-center" style={stickyStyle}>
                             <span className="text-xs font-medium text-gray-900">
-                              Project
+                              {item.source || 'Project'}
                             </span>
                           </td>
                         )
@@ -6609,7 +6534,7 @@ export default function ProcurementDashboard() {
 
                       if (columnKey === "unitPrice") {
                         const hasPrice = item.unitPrice && item.unitPrice > 0
-                        const currencySymbol = (item as any).currency?.symbol || '₹'
+                        const currencySymbol = (item as any).currency?.symbol || ''
                         return (
                           <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
@@ -6628,9 +6553,9 @@ export default function ProcurementDashboard() {
                           <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
                               className={`text-xs font-medium ${hasPrice ? "text-gray-900" : "text-red-700"}`}
-                              title={hasPrice ? `${(item as any).currency?.symbol || '₹'}${item.totalPrice.toFixed(5)}` : "N/A"}
+                              title={hasPrice ? `${(item as any).currency?.symbol || ''}${item.totalPrice.toFixed(5)}` : "N/A"}
                             >
-                              {hasPrice ? `${(item as any).currency?.symbol || '₹'}${item.totalPrice.toFixed(5)}` : "N/A"}
+                              {hasPrice ? `${(item as any).currency?.symbol || ''}${item.totalPrice.toFixed(5)}` : "N/A"}
                             </span>
                           </td>
                         )
@@ -7279,7 +7204,7 @@ export default function ProcurementDashboard() {
             <Label htmlFor="rate" className="text-gray-900 font-medium">Rate (Price per Unit)</Label>
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-gray-700">
-                {editFormData.currency?.symbol || '₹'}
+                {editFormData.currency?.symbol || ''}
               </span>
               <Input
                 id="rate"

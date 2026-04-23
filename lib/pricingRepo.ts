@@ -113,10 +113,16 @@ export interface CheapestByMpnResponse {
   results: Record<string, CheapestByMpnPerSource | null>;
 }
 
+export interface CheapestByMpnRequestItem {
+  mpn: string;
+  enterprise_item_id?: string;
+  project_currency_code?: string;
+}
+
 export interface CheapestByMpnRequest {
-  mpns: string[];
+  items: CheapestByMpnRequestItem[];
   source_types?: PricingSourceType[];
-  date_from?: string; // ISO 8601 (YYYY-MM-DD)
+  date_from?: string;
   date_to?: string;
   price_basis?: PriceBasis;
 }
@@ -265,30 +271,27 @@ async function pricingRepoFetch<T>(path: string, init: RequestInit = {}): Promis
 const MAX_BATCH = 500;
 
 /**
- * Fetch the cheapest pricing record per (MPN, source_type) within a date window.
- * Automatically batches MPN lists larger than 500 into multiple requests
- * and merges the responses.
+ * Fetch the cheapest pricing record per (enterprise_item_id, source_type).
+ * Response is keyed by enterprise_item_id. Batches items > 500.
  */
 export async function fetchCheapestByMpn(
   req: CheapestByMpnRequest,
 ): Promise<CheapestByMpnResponse> {
-  const cleanMpns = Array.from(
-    new Set(req.mpns.map((m) => (m ?? '').trim()).filter((m) => m.length > 0)),
-  );
+  const cleanItems = req.items.filter(i => (i.mpn ?? '').trim().length > 0);
 
-  if (cleanMpns.length === 0) {
+  if (cleanItems.length === 0) {
     return {
       price_basis: req.price_basis ?? 'effective_rate',
       date_from: req.date_from ?? null,
       date_to: req.date_to ?? null,
-      source_types: req.source_types ?? ['PO', 'CONTRACT', 'QUOTE', 'RFQ', 'DIGIKEY', 'MOUSER'],
+      source_types: req.source_types ?? ['PO', 'CONTRACT', 'QUOTE', 'RFQ'],
       results: {},
     };
   }
 
-  const batches: string[][] = [];
-  for (let i = 0; i < cleanMpns.length; i += MAX_BATCH) {
-    batches.push(cleanMpns.slice(i, i + MAX_BATCH));
+  const batches: CheapestByMpnRequestItem[][] = [];
+  for (let i = 0; i < cleanItems.length; i += MAX_BATCH) {
+    batches.push(cleanItems.slice(i, i + MAX_BATCH));
   }
 
   const responses = await Promise.all(
@@ -296,7 +299,7 @@ export async function fetchCheapestByMpn(
       pricingRepoFetch<CheapestByMpnResponse>('/pricing_repository/v2/cheapest-by-mpn/', {
         method: 'POST',
         body: JSON.stringify({
-          mpns: batch,
+          items: batch,
           source_types: req.source_types,
           date_from: req.date_from,
           date_to: req.date_to,
@@ -396,7 +399,7 @@ export async function fetchCheapestByItem(
  */
 export async function fetchMpnHistory(
   mpn: string,
-  options?: { dateFrom?: string; dateTo?: string },
+  options?: { dateFrom?: string; dateTo?: string; enterpriseItemId?: string },
 ): Promise<PricingRecord[]> {
   const trimmed = (mpn ?? '').trim();
   if (!trimmed) return [];
@@ -404,6 +407,7 @@ export async function fetchMpnHistory(
   const params = new URLSearchParams({ mpn: trimmed, page_size: '500' });
   if (options?.dateFrom) params.set('date_from', options.dateFrom);
   if (options?.dateTo) params.set('date_to', options.dateTo);
+  if (options?.enterpriseItemId) params.set('enterprise_item_id', options.enterpriseItemId);
 
   const url = `/pricing_repository/v2/history/?${params.toString()}`;
   const res = await pricingRepoFetch<{

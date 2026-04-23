@@ -423,12 +423,6 @@ export function PricingCharts({ records, loading, useAdminCurrency, onToggleAdmi
     return map
   }, [records])
 
-  const hasMixedCurrencies = useMemo(() => {
-    if (!records) return false
-    const codes = new Set(records.map(r => r.currency_code).filter(Boolean))
-    return codes.size > 1
-  }, [records])
-
   const adminCurrencyCode = useMemo(() => {
     if (!records) return ''
     const r = records.find(r => r.admin_currency_code)
@@ -438,47 +432,34 @@ export function PricingCharts({ records, loading, useAdminCurrency, onToggleAdmi
   const totalRecords = records?.length || 0
   const nullAdminCount = records?.filter(r => r.rate_in_admin_currency == null).length || 0
 
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 gap-4">
+        <svg className="animate-spin h-10 w-10 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+        </svg>
+        <span className="text-sm text-blue-600 font-medium">Loading pricing history...</span>
+      </div>
+    )
+  }
+
   return (
     <>
-      {/* Currency toggle + info bar */}
+      {/* Info bar — always admin currency, no toggle */}
       <div className="flex items-center justify-between mb-4 px-1">
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={useAdminCurrency}
-              onChange={(e) => onToggleAdminCurrency(e.target.checked)}
-              className="rounded border-gray-300"
-            />
-            <span className="text-xs font-medium text-gray-700">
-              Show in admin currency{adminCurrencyCode ? ` (${adminCurrencyCode})` : ''}
-            </span>
-          </label>
-          {!useAdminCurrency && hasMixedCurrencies && (
-            <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded font-medium">
-              Mixed currencies — prices may not be directly comparable
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-3 text-[11px] text-gray-400">
-          {nullAdminCount > 0 && useAdminCurrency && (
-            <span className="text-amber-600">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-600">
+            All prices in admin currency{adminCurrencyCode ? ` (${adminCurrencyCode})` : ''}
+          </span>
+          {nullAdminCount > 0 && (
+            <span className="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
               {nullAdminCount} of {totalRecords} records excluded (no FX rate)
             </span>
           )}
-          <span>{totalRecords} total records</span>
         </div>
+        <span className="text-[11px] text-gray-400">{totalRecords} total records</span>
       </div>
-
-      {loading && (
-        <div className="flex items-center gap-2 mb-3">
-          <svg className="animate-spin h-4 w-4 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-          </svg>
-          <span className="text-xs text-blue-600">Loading pricing history...</span>
-        </div>
-      )}
 
       {/* Per-source chart cards */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

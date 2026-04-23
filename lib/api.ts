@@ -546,6 +546,7 @@ export interface UpdateItemRequest {
   quantity?: number;
   notes?: string;
   action?: string;
+  source?: string;
   custom_fields?: Record<string, any>;
   assigned_user_ids?: string[];
 }
