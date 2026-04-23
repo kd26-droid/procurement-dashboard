@@ -135,6 +135,17 @@ function buildCacheKey(ids: string[], settings: PricingLookupSettings): string {
   });
 }
 
+// Map user-facing price basis to the admin-currency equivalent for backend ranking.
+// The backend compares raw numbers across currencies when given 'rate' / 'effective_rate' / 'quoted_rate',
+// which picks the wrong cheapest in mixed-currency projects. The *_in_admin_currency variants
+// rank correctly. We still display native rate + currency_code to the user from the returned record.
+function toRankingBasis(basis: PriceBasis): PriceBasis {
+  if (basis === 'rate') return 'rate_in_admin_currency';
+  if (basis === 'effective_rate') return 'effective_rate_in_admin_currency';
+  if (basis === 'quoted_rate') return 'quoted_rate_in_admin_currency';
+  return basis;
+}
+
 function isoDaysAgo(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);
@@ -266,6 +277,8 @@ export function usePricingLookup(
 
     const promises: Promise<any>[] = [];
 
+    const rankingBasis = toRankingBasis(settings.priceBasis);
+
     // --- MPN-based lookup ---
     if (uniqueMpns.length > 0) {
       promises.push(
@@ -274,7 +287,7 @@ export function usePricingLookup(
           source_types: settings.sourceTypes,
           date_from: dateFrom,
           date_to: dateTo,
-          price_basis: settings.priceBasis,
+          price_basis: rankingBasis,
         }),
       );
     } else {
@@ -293,7 +306,7 @@ export function usePricingLookup(
           source_types: settings.sourceTypes,
           date_from: dateFrom,
           date_to: dateTo,
-          price_basis: settings.priceBasis,
+          price_basis: rankingBasis,
         }),
       );
     } else {

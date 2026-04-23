@@ -46,17 +46,9 @@ const TIME_RANGE_OPTIONS: Array<{ label: string; value: number | 'all' }> = [
 ]
 
 const PRICE_BASIS_OPTIONS: Array<{ label: string; value: PriceBasis; hint?: string }> = [
-  { label: 'Effective Rate (Admin Currency)', value: 'effective_rate_in_admin_currency', hint: 'Recommended — comparable across currencies' },
-  { label: 'Rate (Admin Currency)', value: 'rate_in_admin_currency' },
-  { label: 'Total Item Cost (Admin Currency)', value: 'total_item_cost_in_admin_currency' },
-  { label: 'Effective Rate (Native)', value: 'effective_rate', hint: 'Original document currency' },
-  { label: 'Base Rate (Native)', value: 'rate' },
-  { label: 'Quoted Rate (Native)', value: 'quoted_rate' },
-  { label: 'Landed Rate', value: 'landed_rate', hint: 'RFQ only — others show as no data' },
-  { label: 'Total Item Cost (Native)', value: 'total_item_cost' },
-  { label: 'Landed Total', value: 'landed_total', hint: 'RFQ only — others show as no data' },
-  { label: 'Landed Rate (Admin Currency)', value: 'landed_rate_in_admin_currency', hint: 'RFQ only' },
-  { label: 'Landed Total (Admin Currency)', value: 'landed_total_in_admin_currency', hint: 'RFQ only' },
+  { label: 'Base Rate', value: 'rate', hint: 'Unit price before taxes and charges' },
+  { label: 'Effective Rate', value: 'effective_rate', hint: 'Unit price including taxes and charges' },
+  { label: 'Quoted Rate', value: 'quoted_rate', hint: 'Applies to quotes only' },
 ]
 
 const SOURCE_OPTIONS: Array<{ label: string; value: PricingSourceType }> = [

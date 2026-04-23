@@ -295,7 +295,7 @@ function convertDistributorPricing(pricingWrapper: any, itemCurrency: any, excha
   if (!pricingWrapper) return null;
 
   // NEW: Handle the new wrapper structure with status field
-  // Status values: available, fetching, pending, not_found, error, no_mpn
+  // Status values: available, fetching, pending, not_found, error, no_mpn, rate_limited
   let status = pricingWrapper.status;
   const statusMessage = pricingWrapper.status_message;
   const pricingData = pricingWrapper.data;
@@ -1490,18 +1490,34 @@ export default function ProcurementDashboard() {
             setDigikeyJob(null)
             console.log('[Digikey Poll] Pricing refresh complete')
           }
-          else if (data.job.status === 'failed') {
-            // API error (rate limit, auth failure, etc) - stop polling
+          else if (data.job.status === 'failed' || data.job.status === 'rate_limited') {
             clearInterval(pollInterval)
             setDigikeyJob(null)
-
-            console.log('[Digikey Poll] Job failed:', data.job.error_message)
-
-            toast({
-              title: "Digikey Pricing Failed",
-              description: "API rate limit reached - please try again in a few minutes",
-              variant: "destructive"
-            })
+            const isRateLimited = data.job.status === 'rate_limited' ||
+              (Array.isArray(data.job.errors) && data.job.errors.some((e: any) => e.error === 'rate_limited'))
+            if (isRateLimited) {
+              toast({
+                title: "Digikey Daily Quota Reached",
+                description: "Pricing will resume automatically when the quota resets tomorrow.",
+                variant: "destructive"
+              })
+              await refreshPricingDataInChunks(projectId, 'digikey')
+              // Force any items still showing fetching/pending to rate_limited so the cell updates
+              setLineItems((prev: any[]) => prev.map((li: any) => {
+                const dk = li.digikey_pricing
+                if (dk && (dk.status === 'fetching' || dk.status === 'pending')) {
+                  return { ...li, digikey_pricing: { ...dk, status: 'rate_limited' } }
+                }
+                return li
+              }))
+            } else {
+              console.log('[Digikey Poll] Job failed:', data.job.error_message)
+              toast({
+                title: "Digikey Pricing Failed",
+                description: data.job.error_message || "An error occurred fetching Digikey pricing.",
+                variant: "destructive"
+              })
+            }
           }
         }
       } catch (error) {
@@ -1549,18 +1565,34 @@ export default function ProcurementDashboard() {
             setMouserJob(null)
             console.log('[Mouser Poll] Pricing refresh complete')
           }
-          else if (data.job.status === 'failed') {
-            // API error (rate limit, auth failure, etc) - stop polling
+          else if (data.job.status === 'failed' || data.job.status === 'rate_limited') {
             clearInterval(pollInterval)
             setMouserJob(null)
-
-            console.log('[Mouser Poll] Job failed:', data.job.error_message)
-
-            toast({
-              title: "Mouser Pricing Failed",
-              description: "API rate limit reached - please try again in a few minutes",
-              variant: "destructive"
-            })
+            const isRateLimited = data.job.status === 'rate_limited' ||
+              (Array.isArray(data.job.errors) && data.job.errors.some((e: any) => e.error === 'rate_limited'))
+            if (isRateLimited) {
+              toast({
+                title: "Mouser Daily Quota Reached",
+                description: "Pricing will resume automatically when the quota resets tomorrow.",
+                variant: "destructive"
+              })
+              await refreshPricingDataInChunks(projectId, 'mouser')
+              // Force any items still showing fetching/pending to rate_limited so the cell updates
+              setLineItems((prev: any[]) => prev.map((li: any) => {
+                const ms = li.mouser_pricing
+                if (ms && (ms.status === 'fetching' || ms.status === 'pending')) {
+                  return { ...li, mouser_pricing: { ...ms, status: 'rate_limited' } }
+                }
+                return li
+              }))
+            } else {
+              console.log('[Mouser Poll] Job failed:', data.job.error_message)
+              toast({
+                title: "Mouser Pricing Failed",
+                description: data.job.error_message || "An error occurred fetching Mouser pricing.",
+                variant: "destructive"
+              })
+            }
           }
         }
       } catch (error) {
@@ -2168,6 +2200,7 @@ export default function ProcurementDashboard() {
       if (!pricing) return empty
       if (pricing.status === 'not_configured') return { ...empty, status: 'Not Configured' }
       if (pricing.status === 'not_found') return { ...empty, status: 'Not Listed' }
+      if (pricing.status === 'rate_limited') return { ...empty, status: 'Quota limit reached — retries automatically' }
       if (pricing.status === 'fetching' || pricing.status === 'pending') return { ...empty, status: 'Fetching...' }
       if (pricing.status !== 'available') {
         return { ...empty, status: pricing.status_message || pricing.status || 'N/A' }
@@ -6213,8 +6246,10 @@ export default function ProcurementDashboard() {
                               return <span className="text-xs text-orange-500">Pending...</span>
                             case 'not_found':
                               return <span className="text-xs text-gray-400">Not Listed</span>
+                            case 'rate_limited':
+                              return <span className="text-xs text-amber-500" title="Daily API quota reached — will retry automatically on next load">Quota Reached</span>
                             case 'error':
-                              return <span className="text-xs text-red-500">API Limit</span>
+                              return <span className="text-xs text-red-500">Error</span>
                             case 'no_mpn':
                               return <span className="text-xs text-gray-400">No MPN</span>
                             case 'not_configured':
@@ -6361,8 +6396,10 @@ export default function ProcurementDashboard() {
                               return <span className="text-xs text-orange-500">Pending...</span>
                             case 'not_found':
                               return <span className="text-xs text-gray-400">Not Listed</span>
+                            case 'rate_limited':
+                              return <span className="text-xs text-amber-500" title="Daily API quota reached — will retry automatically on next load">Quota Reached</span>
                             case 'error':
-                              return <span className="text-xs text-red-500">API Limit</span>
+                              return <span className="text-xs text-red-500">Error</span>
                             case 'no_mpn':
                               return <span className="text-xs text-gray-400">No MPN</span>
                             case 'not_configured':

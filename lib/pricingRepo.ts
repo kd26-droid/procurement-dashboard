@@ -34,6 +34,7 @@ export type PriceBasis =
   | 'landed_total'
   | 'rate_in_admin_currency'
   | 'effective_rate_in_admin_currency'
+  | 'quoted_rate_in_admin_currency'
   | 'total_item_cost_in_admin_currency'
   | 'landed_rate_in_admin_currency'
   | 'landed_total_in_admin_currency';

@@ -475,7 +475,7 @@ export interface DigikeyJobStatus {
   success: boolean;
   job: {
     job_id: string;
-    status: 'pending' | 'processing' | 'completed' | 'partial' | 'failed';
+    status: 'pending' | 'processing' | 'completed' | 'partial' | 'failed' | 'rate_limited';
     progress_percentage: number;
     total_items: number;
     processed_items: number;
@@ -487,6 +487,7 @@ export interface DigikeyJobStatus {
     completed_at?: string;
     estimated_completion?: string;
     error_message?: string;
+    errors?: Array<{ error: string; timestamp?: string }>;
   };
 }
 
