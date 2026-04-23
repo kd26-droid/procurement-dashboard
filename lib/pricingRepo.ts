@@ -389,27 +389,22 @@ export async function fetchCheapestByItem(
 }
 
 /**
- * Fetch full pricing history for one MPN (used by the chart popover).
- * Uses the existing /v2/list/ endpoint with search=mpn — no date filter.
- */
-/**
- * Fetch full pricing history for an item.
- * Searches by the given term (MPN, item_code, or erp_code — whatever the caller has).
- * The /v2/list/ search is icontains across mpn, all_mpns, item_code, item_name.
- * We return all matching records without strict MPN filtering so item_code searches work.
+ * Fetch full pricing history for one MPN using the dedicated /v2/history/ endpoint.
+ * Exact MPN match (not icontains), date-scoped to match cheapest-by-mpn window.
+ * Only returns RFQ, QUOTE, CONTRACT, PO — no distributor snapshots.
  */
 export async function fetchMpnHistory(
-  searchTerm: string,
+  mpn: string,
   options?: { dateFrom?: string; dateTo?: string },
 ): Promise<PricingRecord[]> {
-  const trimmed = (searchTerm ?? '').trim();
+  const trimmed = (mpn ?? '').trim();
   if (!trimmed) return [];
 
-  const params = new URLSearchParams({ search: trimmed, page_size: '500' });
+  const params = new URLSearchParams({ mpn: trimmed, page_size: '500' });
   if (options?.dateFrom) params.set('date_from', options.dateFrom);
   if (options?.dateTo) params.set('date_to', options.dateTo);
 
-  const url = `/pricing_repository/v2/list/?${params.toString()}`;
+  const url = `/pricing_repository/v2/history/?${params.toString()}`;
   const res = await pricingRepoFetch<{
     results?: PricingRecord[];
     items?: PricingRecord[];

@@ -718,6 +718,8 @@ export default function ProcurementDashboard() {
   const [actionResultsLoading, setActionResultsLoading] = useState(false)
   const [showAnalyticsPopup, setShowAnalyticsPopup] = useState(false)
   const [selectedItemForAnalytics, setSelectedItemForAnalytics] = useState<any>(null)
+  // MPN captured at popup-open time — stable, doesn't re-fire chart fetch as itemIdToMpn rebuilds
+  const [analyticsItemMpn, setAnalyticsItemMpn] = useState<string | null>(null)
   // Full pricing-repo history for the currently-open analytics popup (lazy-loaded)
   const [analyticsMpnHistory, setAnalyticsMpnHistory] = useState<PricingRecord[] | null>(null)
   const [analyticsUseAdminCurrency, setAnalyticsUseAdminCurrency] = useState(true)
@@ -1953,17 +1955,17 @@ export default function ProcurementDashboard() {
   }, [lineItems, pricingLookup.byItemId, pricingEnabled, pricingSettings.priceBasis, exchangeRates])
 
   // Load full pricing-repo history for the currently-selected analytics item.
-  // Search by MPN first, fall back to item_code if no MPN, then erp_item_code.
+  // MPN is captured at popup-open time (analyticsItemMpn) so this doesn't re-fire
+  // as itemIdToMpn rebuilds while items load in chunks.
   useEffect(() => {
     if (!showAnalyticsPopup || !selectedItemForAnalytics) {
       setAnalyticsMpnHistory(null)
       return
     }
-    const item = selectedItemForAnalytics
-    const mpn = pricingLookup.itemIdToMpn.get(item.id) ?? null
-    // Waterfall: MPN → item_code → erp_item_code
-    const searchTerm = mpn || item.itemId || item.erp_item_code || null
-    if (!searchTerm) {
+    // Only MPN supported by /v2/history/ — no fallback to item_code since the
+    // new endpoint requires exact MPN. Items without MPN show empty chart.
+    const mpn = analyticsItemMpn
+    if (!mpn) {
       setAnalyticsMpnHistory([])
       return
     }
@@ -1975,18 +1977,10 @@ export default function ProcurementDashboard() {
     const dateTo = pricingSettings.daysBack !== null
       ? new Date().toISOString().slice(0, 10)
       : undefined
-    fetchMpnHistory(searchTerm, { dateFrom, dateTo })
+    fetchMpnHistory(mpn, { dateFrom, dateTo })
       .then((rows) => {
         if (cancelled) return
-        // If searched by item_code/erp, the results may include other items with similar names.
-        // Filter to only rows matching this item's enterprise_item_id when available.
-        let filtered = rows
-        if (!mpn && item.enterprise_item_id) {
-          filtered = rows.filter((r: any) => r.enterprise_item_id === item.enterprise_item_id)
-          // If strict filter yields nothing, fall back to all results
-          if (filtered.length === 0) filtered = rows
-        }
-        setAnalyticsMpnHistory(filtered)
+        setAnalyticsMpnHistory(rows)
         setAnalyticsHistoryLoading(false)
       })
       .catch(() => {
@@ -1997,7 +1991,7 @@ export default function ProcurementDashboard() {
     return () => {
       cancelled = true
     }
-  }, [showAnalyticsPopup, selectedItemForAnalytics, pricingLookup.itemIdToMpn, pricingSettings.daysBack])
+  }, [showAnalyticsPopup, selectedItemForAnalytics, analyticsItemMpn, pricingSettings.daysBack])
 
   const filteredAndSortedItems = useMemo(() => {
     let filtered = lineItems.filter((item: any) => {
@@ -6637,6 +6631,7 @@ export default function ProcurementDashboard() {
                           size="sm"
                           onClick={() => {
                             setSelectedItemForAnalytics(item)
+                            setAnalyticsItemMpn(pricingLookup.itemIdToMpn.get(item.id) ?? null)
                             setShowAnalyticsPopup(true)
                           }}
                           className="h-5 w-5 p-0"
