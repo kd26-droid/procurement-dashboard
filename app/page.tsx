@@ -6118,34 +6118,23 @@ export default function ProcurementDashboard() {
                           <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
                             {isMissing ? (
                               <span className="text-gray-400 text-xs">-</span>
-                            ) : vendorNames.length === 1 ? (
-                              <UiTooltip>
-                                <UiTooltipTrigger asChild>
-                                  <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[190px] cursor-default">
-                                    {vendorNames[0]}
-                                  </Badge>
-                                </UiTooltipTrigger>
-                                <UiTooltipContent side="bottom" align="start">
-                                  <span className="text-xs">{vendorNames[0]}</span>
-                                </UiTooltipContent>
-                              </UiTooltip>
                             ) : (
                               <UiTooltip>
-                                <UiTooltipTrigger>
-                                  <span className="flex items-center gap-1 cursor-pointer overflow-hidden" style={{ maxWidth: '100%' }}>
-                                    <Badge variant="outline" className="border-gray-200 text-gray-700 text-xs truncate max-w-[150px]">
-                                      {vendorNames[0]}
-                                    </Badge>
-                                    <span className="text-blue-600 font-medium text-xs hover:text-blue-800 whitespace-nowrap flex-shrink-0">
-                                      +{vendorNames.length - 1}
-                                    </span>
+                                <UiTooltipTrigger asChild>
+                                  <span className="flex items-center gap-1 cursor-default overflow-hidden w-full">
+                                    <span className="text-xs text-gray-700 truncate">{vendorNames[0]}</span>
+                                    {vendorNames.length > 1 && (
+                                      <span className="text-blue-600 font-medium text-xs whitespace-nowrap flex-shrink-0">
+                                        +{vendorNames.length - 1}
+                                      </span>
+                                    )}
                                   </span>
                                 </UiTooltipTrigger>
                                 <UiTooltipContent side="bottom" align="start">
                                   <div className="space-y-1">
                                     {vendorNames.map((name: string, index: number) => (
                                       <div key={index} className="text-xs">
-                                        {index + 1}. {name}
+                                        {vendorNames.length > 1 ? `${index + 1}. ${name}` : name}
                                       </div>
                                     ))}
                                   </div>
