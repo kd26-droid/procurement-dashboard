@@ -522,6 +522,31 @@ export function navigateInFactwise(record: PricingRecord): boolean {
 // Helpers — pull the displayed admin-currency value off a record
 // ----------------------------------------------------------------------------
 
+/** Picks the native (source currency) price value for the chosen basis. */
+export function getNativePrice(record: PricingRecord, basis: PriceBasis): number | null {
+  switch (basis) {
+    case 'rate':
+    case 'rate_in_admin_currency':
+      return record.rate;
+    case 'effective_rate':
+    case 'effective_rate_in_admin_currency':
+      return record.effective_rate;
+    case 'quoted_rate':
+      return record.quoted_rate;
+    case 'landed_rate':
+    case 'landed_rate_in_admin_currency':
+      return record.landed_rate;
+    case 'total_item_cost':
+    case 'total_item_cost_in_admin_currency':
+      return record.total_item_cost;
+    case 'landed_total':
+    case 'landed_total_in_admin_currency':
+      return record.landed_total;
+    default:
+      return null;
+  }
+}
+
 /** Picks the price value for the chosen basis. Handles both native and admin-currency bases. */
 export function getAdminPrice(record: PricingRecord, basis: PriceBasis): number | null {
   switch (basis) {

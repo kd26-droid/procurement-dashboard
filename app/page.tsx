@@ -28,6 +28,7 @@ import { PricingCharts } from "@/components/pricing-charts"
 import {
   fetchMpnHistory,
   getAdminPrice,
+  getNativePrice,
   isExpiredContract,
   navigateInFactwise,
   buildFactwiseUrl,
@@ -291,6 +292,27 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
  * NEW STRUCTURE: { status, status_message, data: { unit_price, price_breaks, ... } }
  * Handles: unit_price, quantity_price, price_breaks, savings_info, next_tier_info
  */
+/**
+ * Convert an amount from one currency to another using an exchange-rate map.
+ * Rate map keys follow the form `X_TO_Y`. Falls back to inverse lookup.
+ * Returns null if conversion isn't possible (so callers can skip rather than silently show wrong value).
+ */
+function fxConvert(
+  amount: number | null,
+  fromCode: string | null | undefined,
+  toCode: string | null | undefined,
+  exchangeRates: Record<string, number>
+): number | null {
+  if (amount == null || isNaN(amount)) return null
+  if (!fromCode || !toCode) return null
+  if (fromCode === toCode) return amount
+  const direct = exchangeRates[`${fromCode}_TO_${toCode}`]
+  if (typeof direct === 'number' && direct > 0) return amount * direct
+  const inverse = exchangeRates[`${toCode}_TO_${fromCode}`]
+  if (typeof inverse === 'number' && inverse > 0) return amount / inverse
+  return null
+}
+
 // Prices are pre-converted to admin currency by the backend — just flatten the wrapper.
 function convertDistributorPricing(pricingWrapper: any, _itemCurrency: any, _exchangeRates: Record<string, number>) {
   if (!pricingWrapper) return null;
@@ -1822,15 +1844,20 @@ export default function ProcurementDashboard() {
       const lookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || null
       if (!lookupKey) continue
       const itemQty = parseFloat(String(item.quantity)) || 1
+      const projectCode = (item as any).currency?.code || null
       const candidates: Array<{ source: string; price: number }> = []
 
-      // PO / CONTRACT / QUOTE / RFQ — use displayed admin price, only when pricing loaded
+      // PO / CONTRACT / QUOTE / RFQ — convert native price to project currency for fair comparison
       if (pricingEnabled) {
         const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
         for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
           const record = perSource?.[src] ?? null
-          const price = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
-          if (price && price > 0) candidates.push({ source: src, price })
+          if (!record) continue
+          const nativeP = getNativePrice(record, pricingSettings.priceBasis)
+          if (nativeP == null || nativeP <= 0) continue
+          const projectP = fxConvert(nativeP, record.currency_code, projectCode, exchangeRates)
+          // Skip candidate if FX missing — can't compare fairly
+          if (projectP != null && projectP > 0) candidates.push({ source: src, price: projectP })
         }
       }
 
@@ -1839,28 +1866,9 @@ export default function ProcurementDashboard() {
       const dkPrice = getDistributorSlabPrice((item as any).digikey_pricing, itemQty)
       if (dkPrice !== null) candidates.push({ source: 'DIGIKEY', price: dkPrice })
 
-      // Mouser — always INR (hardcoded ₹). Convert to admin currency if admin currency != INR.
+      // Mouser — getDistributorSlabPrice already returns project-currency value
       const msPrice = getDistributorSlabPrice((item as any).mouser_pricing, itemQty)
-      if (msPrice !== null) {
-        // Get admin currency from any loaded record
-        const adminCurrency = (() => {
-          if (!pricingEnabled) return null
-          const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
-          for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
-            const code = perSource?.[src]?.admin_currency_code
-            if (code) return code
-          }
-          return null
-        })()
-        let msPriceNormalized = msPrice
-        if (adminCurrency && adminCurrency !== 'INR') {
-          // Convert INR → admin currency
-          const rate = exchangeRates[`INR_TO_${adminCurrency}`] || (exchangeRates[`${adminCurrency}_TO_INR`] ? 1 / exchangeRates[`${adminCurrency}_TO_INR`] : null)
-          if (rate) msPriceNormalized = msPrice * rate
-          else msPriceNormalized = msPrice // can't convert, include raw (best effort)
-        }
-        candidates.push({ source: 'MOUSER', price: msPriceNormalized })
-      }
+      if (msPrice !== null) candidates.push({ source: 'MOUSER', price: msPrice })
 
       if (candidates.length === 0) continue
       const minPrice = Math.min(...candidates.map(c => c.price))
@@ -2327,13 +2335,17 @@ export default function ProcurementDashboard() {
         priceQuote: 'QUOTE',
         priceRFQ: 'RFQ',
       }
+      const _exportProjectCode = item.currency?.code || null
+      const _exportProjectSym = item.currency?.symbol || ''
       for (const colKey of ['pricePO', 'priceContract', 'priceQuote', 'priceRFQ']) {
         const sourceType = colToSource[colKey] as PricingSourceType
         const record = perSource ? (perSource as any)[sourceType] ?? null : null
-        const adminPrice = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
-        const sym = record?.admin_currency_symbol || record?.admin_currency_code || ''
+        // Export always uses project currency (converted client-side via FX)
+        const nativeP = record ? getNativePrice(record, pricingSettings.priceBasis) : null
+        const projectP = nativeP != null ? fxConvert(nativeP, record?.currency_code ?? null, _exportProjectCode, exchangeRates) : null
+        const sym = _exportProjectSym || _exportProjectCode || ''
         row.push(
-          adminPrice !== null ? `${sym}${adminPrice.toFixed(5)}` : '',
+          projectP !== null ? `${sym}${projectP.toFixed(5)}` : (nativeP != null ? `${record?.currency_symbol || record?.currency_code || ''}${nativeP.toFixed(5)}` : ''),
           escapeCSV(record?.supplier_name || record?.customer_name || ''),
           escapeCSV(record?.pricing_datetime ? record.pricing_datetime.slice(0, 10) : ''),
         )
@@ -3357,14 +3369,18 @@ export default function ProcurementDashboard() {
       const itemQty = parseFloat(String(item.quantity)) || 1
       const lookupKey = item.enterprise_item_id || item.erp_item_code || item.itemId || null
 
-      // Real pricing-repo candidates (PO / CONTRACT / QUOTE / RFQ)
+      // Real pricing-repo candidates (PO / CONTRACT / QUOTE / RFQ) — always compared in PROJECT currency
+      const projectCode = (item as any).currency?.code || null
       const candidates: Array<{ source: string; price: number }> = []
       if (pricingEnabled && lookupKey) {
         const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
         for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
           const record = perSource?.[src] ?? null
-          const price = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
-          if (price && price > 0) candidates.push({ source: src, price })
+          if (!record) continue
+          const nativeP = getNativePrice(record, pricingSettings.priceBasis)
+          if (nativeP == null || nativeP <= 0) continue
+          const projectP = fxConvert(nativeP, record.currency_code, projectCode, exchangeRates)
+          if (projectP != null && projectP > 0) candidates.push({ source: src, price: projectP })
         }
       }
 
@@ -6444,9 +6460,34 @@ export default function ProcurementDashboard() {
                           ? pricingLookup.byItemId.get(lookupKey) ?? null
                           : null
                         const record = perSource ? perSource[sourceType] ?? null : null
-                        const adminPrice = record ? getAdminPrice(record, pricingSettings.priceBasis) : null
 
-                        // Cell content
+                        // Native price + currency code for this source record
+                        const nativePrice = record ? getNativePrice(record, pricingSettings.priceBasis) : null
+                        const nativeCode = record?.currency_code || null
+                        const projectCode = (item as any).currency?.code || null
+                        const projectSym = (item as any).currency?.symbol || ''
+
+                        // Display price: either raw native or FX-converted to project currency
+                        let displayPrice: number | null = null
+                        let displaySym = ''
+                        let fxMissing = false
+                        if (record && nativePrice != null) {
+                          if (displayCurrency === 'native') {
+                            displayPrice = nativePrice
+                            displaySym = record.currency_symbol || record.currency_code || ''
+                          } else {
+                            const converted = fxConvert(nativePrice, nativeCode, projectCode, exchangeRates)
+                            if (converted == null) {
+                              fxMissing = true
+                              displayPrice = nativePrice
+                              displaySym = record.currency_symbol || record.currency_code || ''
+                            } else {
+                              displayPrice = converted
+                              displaySym = projectSym || projectCode || ''
+                            }
+                          }
+                        }
+
                         let cellInner: React.ReactNode
                         if (!pricingEnabled) {
                           cellInner = (
@@ -6461,7 +6502,7 @@ export default function ProcurementDashboard() {
                           cellInner = <span className="text-xs text-gray-400 italic">No ID</span>
                         } else if (pricingLookup.loading && !record) {
                           cellInner = <span className="text-xs text-gray-400">…</span>
-                        } else if (!record || adminPrice === null) {
+                        } else if (!record || displayPrice === null) {
                           cellInner = (
                             <span
                               className="text-xs text-gray-400"
@@ -6471,9 +6512,9 @@ export default function ProcurementDashboard() {
                             </span>
                           )
                         } else {
-                          const sym = record.admin_currency_symbol || record.admin_currency_code || ''
                           const expired = isExpiredContract(record)
                           const isCheapest = cheapestSourceByItemKey.get(item.enterprise_item_id || item.erp_item_code || (item as any).itemId || '') === sourceType
+                          const titleFx = fxMissing ? ' • No FX rate — showing native' : ''
                           cellInner = (
                             <button
                               type="button"
@@ -6482,14 +6523,17 @@ export default function ProcurementDashboard() {
                               }`}
                               title={`${record.supplier_name || ""} • ${
                                 record.pricing_datetime?.slice(0, 10) || ""
-                              } — click to open in Factwise`}
+                              }${titleFx} — click to open in Factwise`}
                               onClick={() => setPendingNavRecord(record)}
                             >
-                              {sym}
-                              {adminPrice.toLocaleString(undefined, {
+                              {displaySym}
+                              {displayPrice.toLocaleString(undefined, {
                                 minimumFractionDigits: 5,
                                 maximumFractionDigits: 5,
                               })}
+                              {fxMissing && (
+                                <span className="ml-1 text-[9px] uppercase text-amber-600">native</span>
+                              )}
                               {expired && (
                                 <span className="ml-1 text-[9px] uppercase">exp</span>
                               )}
