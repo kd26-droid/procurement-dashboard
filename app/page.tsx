@@ -2069,7 +2069,8 @@ export default function ProcurementDashboard() {
       pricing: any,
       distributorLabel: 'Digi-Key' | 'Mouser',
       currencySymbol: string = '',
-      itemQty: number = 1
+      itemQty: number = 1,
+      useNative: boolean = false
     ): {
       status: string
       partNumber: string
@@ -2099,8 +2100,10 @@ export default function ProcurementDashboard() {
         return { ...empty, status: pricing.status_message || pricing.status || 'N/A' }
       }
 
-      // Export always uses project currency
-      const sym = pricing.project_currency_symbol || pricing.currency_symbol || currencySymbol || (pricing.currency ? getCurrencySymbolForExport(pricing.currency) : '')
+      // Symbol depends on toggle: native uses source's own currency, project uses item's currency
+      const sym = useNative
+        ? (pricing.currency_symbol || (pricing.currency ? getCurrencySymbolForExport(pricing.currency) : '') || currencySymbol)
+        : (pricing.project_currency_symbol || pricing.currency_symbol || currencySymbol || (pricing.currency ? getCurrencySymbolForExport(pricing.currency) : ''))
       const variants: any[] = Array.isArray(pricing.variants) ? pricing.variants : []
 
       const partNumber =
@@ -2113,7 +2116,7 @@ export default function ProcurementDashboard() {
       const preferredIdx = typeof pricing.preferred_variant_index === 'number' ? pricing.preferred_variant_index : 0
       const preferred = variants.length > 0 ? (variants[preferredIdx] || variants[0]) : null
 
-      // Cell price — use top-level price_breaks[].price_in_project_currency (already converted)
+      // Cell price — top-level price_breaks; native uses .price, project uses .price_in_project_currency
       let cellUnitPrice: number | null = null
       if (Array.isArray(pricing.price_breaks) && pricing.price_breaks.length > 0) {
         const sorted = [...pricing.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
@@ -2122,10 +2125,14 @@ export default function ProcurementDashboard() {
           if ((pb.quantity ?? 0) <= itemQty) matched = pb
           else break
         }
-        const raw = matched?.price_in_project_currency ?? matched?.price
+        const raw = useNative
+          ? (matched?.price ?? matched?.price_in_project_currency)
+          : (matched?.price_in_project_currency ?? matched?.price)
         cellUnitPrice = typeof raw === 'number' ? raw : parseFloat(String(raw))
       } else {
-        const fallback = pricing.quantity_price_in_project_currency ?? pricing.unit_price_in_project_currency ?? pricing.quantity_price ?? pricing.unit_price
+        const fallback = useNative
+          ? (pricing.quantity_price ?? pricing.unit_price ?? pricing.quantity_price_in_project_currency ?? pricing.unit_price_in_project_currency)
+          : (pricing.quantity_price_in_project_currency ?? pricing.unit_price_in_project_currency ?? pricing.quantity_price ?? pricing.unit_price)
         if (fallback !== null && fallback !== undefined) {
           cellUnitPrice = typeof fallback === 'number' ? fallback : parseFloat(String(fallback))
         }
@@ -2134,7 +2141,7 @@ export default function ProcurementDashboard() {
       const reelingFeeNum = preferred?.reeling_fee ? parseFloat(String(preferred.reeling_fee)) || 0 : 0
       const reelingFeeStr = reelingFeeNum > 0 ? `${sym}${reelingFeeNum.toFixed(2)}` : ''
 
-      // Variant summary — use unit_price_in_project_currency from variant price_breaks
+      // Variant summary — flips between unit_price (native) and unit_price_in_project_currency
       const variantSummary =
         variants.length > 0
           ? variants
@@ -2142,7 +2149,9 @@ export default function ProcurementDashboard() {
                 const pack = v?.packaging || 'Standard'
                 const mq = v?.moq != null ? v.moq : ''
                 const breaks = Array.isArray(v?.price_breaks) ? v.price_breaks : []
-                const firstRaw = breaks.length > 0 ? (breaks[0]?.unit_price_in_project_currency ?? breaks[0]?.unit_price) : 0
+                const firstRaw = breaks.length > 0
+                  ? (useNative ? (breaks[0]?.unit_price ?? breaks[0]?.unit_price_in_project_currency) : (breaks[0]?.unit_price_in_project_currency ?? breaks[0]?.unit_price))
+                  : 0
                 const firstPrice = parseFloat(String(firstRaw)) || 0
                 const fee = v?.reeling_fee ? parseFloat(String(v.reeling_fee)) || 0 : 0
                 const feeTag = fee > 0 ? ` +${sym}${fee.toFixed(2)} fee` : ''
@@ -2255,8 +2264,9 @@ export default function ProcurementDashboard() {
     filteredAndSortedItems.forEach((item: any) => {
       const itemCurrencySymbol = item.currency?.symbol || (item.currency?.code ? getCurrencySymbolForExport(item.currency.code) : '') || ''
       const _exportItemQty = parseFloat(String(item.quantity)) || 1
-      const digikeyDetails = getDistributorPrice(item.digikey_pricing, 'Digi-Key', itemCurrencySymbol, _exportItemQty)
-      const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', itemCurrencySymbol, _exportItemQty)
+      const _exportUseNative = displayCurrency === 'native'
+      const digikeyDetails = getDistributorPrice(item.digikey_pricing, 'Digi-Key', itemCurrencySymbol, _exportItemQty, _exportUseNative)
+      const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', itemCurrencySymbol, _exportItemQty, _exportUseNative)
 
       // Parse tags for this item
       const itemTags = item.category && item.category !== 'Uncategorized'
@@ -2340,12 +2350,26 @@ export default function ProcurementDashboard() {
       for (const colKey of ['pricePO', 'priceContract', 'priceQuote', 'priceRFQ']) {
         const sourceType = colToSource[colKey] as PricingSourceType
         const record = perSource ? (perSource as any)[sourceType] ?? null : null
-        // Export always uses project currency (converted client-side via FX)
         const nativeP = record ? getNativePrice(record, pricingSettings.priceBasis) : null
-        const projectP = nativeP != null ? fxConvert(nativeP, record?.currency_code ?? null, _exportProjectCode, exchangeRates) : null
-        const sym = _exportProjectSym || _exportProjectCode || ''
+        let displayP: number | null = null
+        let displaySym = ''
+        if (record && nativeP != null) {
+          if (_exportUseNative) {
+            displayP = nativeP
+            displaySym = record.currency_symbol || record.currency_code || ''
+          } else {
+            const converted = fxConvert(nativeP, record.currency_code, _exportProjectCode, exchangeRates)
+            if (converted != null) {
+              displayP = converted
+              displaySym = _exportProjectSym || _exportProjectCode || ''
+            } else {
+              displayP = nativeP
+              displaySym = record.currency_symbol || record.currency_code || ''
+            }
+          }
+        }
         row.push(
-          projectP !== null ? `${sym}${projectP.toFixed(5)}` : (nativeP != null ? `${record?.currency_symbol || record?.currency_code || ''}${nativeP.toFixed(5)}` : ''),
+          displayP !== null ? `${displaySym}${displayP.toFixed(5)}` : '',
           escapeCSV(record?.supplier_name || record?.customer_name || ''),
           escapeCSV(record?.pricing_datetime ? record.pricing_datetime.slice(0, 10) : ''),
         )
