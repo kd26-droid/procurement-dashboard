@@ -5434,8 +5434,8 @@ export default function ProcurementDashboard() {
           </div>
 
           {/* Second row with action buttons */}
-          <div className="flex items-center justify-between gap-4 mb-4">
-            <div className="flex items-center gap-4">
+          <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
+            <div className="flex items-center gap-4 flex-wrap">
               {/* Auto Assign Users */}
               <Button
                 variant="outline"
@@ -5534,7 +5534,7 @@ export default function ProcurementDashboard() {
                 Export CSV {filteredAndSortedItems.length > 0 ? `(${filteredAndSortedItems.length})` : ''}
               </Button>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
               {/* Eye Button - Column Visibility Toggle */}
               <div className="relative">
                 <Button
