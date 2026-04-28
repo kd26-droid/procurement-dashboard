@@ -345,6 +345,8 @@ export interface ProjectItem {
   digikey_pricing?: DigikeyPricing | null;
   // NEW: Mouser pricing support
   mouser_pricing?: MouserPricing | null;
+  // NEW: Element14 / Farnell pricing support
+  element14_pricing?: Element14Pricing | null;
   // NEW: Alternate item information
   alternate_info?: {
     is_alternate: boolean;
@@ -443,6 +445,47 @@ export interface MouserPricing {
   };
 }
 
+// Element14 / Farnell Pricing Interfaces — same shape as Mouser
+export interface Element14Pricing {
+  unit_price: number | null;
+  currency: string;
+  stock: number | null;
+  manufacturer: string | null;
+  element14_sku?: string | null;
+  store_id?: string | null;
+  product_status?: string | null;
+  datasheet_url?: string | null;
+  packaging?: string | null;
+  moq?: number | null;
+  price_breaks?: Array<{
+    quantity: number;
+    price: number | string;
+    price_in_project_currency?: number | null;
+  }>;
+  cached_at: string;
+  is_stale: boolean;
+  source: 'cache' | 'live';
+  quantity_price?: number | null;
+  quantity_tier?: number | null;
+  item_quantity?: number | null;
+  unit_price_in_project_currency?: number | null;
+  quantity_price_in_project_currency?: number | null;
+  project_currency?: string | null;
+  project_currency_symbol?: string | null;
+  variants?: Array<{
+    packaging?: string;
+    element14_sku?: string;
+    moq?: number | null;
+    stock?: number | null;
+    reeling_fee?: string | number;
+    price_breaks?: Array<{
+      quantity: number;
+      unit_price: number | string;
+      unit_price_in_project_currency?: number | null;
+    }>;
+  }>;
+}
+
 export interface ProjectItemsResponse {
   success: boolean;
   items: ProjectItem[];
@@ -461,6 +504,11 @@ export interface ProjectItemsResponse {
   mouser_uncached_count?: number;
   mouser_job_id?: string;
   mouser_estimated_duration_seconds?: number;
+  // Element14 / Farnell status fields
+  element14_status?: 'all_cached' | 'background_job_started' | 'not_configured';
+  element14_uncached_count?: number;
+  element14_job_id?: string;
+  element14_estimated_duration_seconds?: number;
   // Dynamic column name for internal notes (from Item Directory template)
   internal_notes_column_name?: string;
   // Legacy fields (for backward compatibility)
@@ -958,6 +1006,43 @@ export async function triggerMouserPricing(
 ): Promise<DigikeyJobStatus> { // Same interface structure
   return apiRequest(
     `/organization/project/${projectId}/strategy/mouser/fetch/`,
+    {
+      method: 'POST'
+    }
+  );
+}
+
+/**
+ * Get Element14 job status
+ */
+export async function getElement14JobStatus(
+  projectId: string,
+  jobId: string
+): Promise<DigikeyJobStatus> {
+  return apiRequest(
+    `/organization/project/${projectId}/strategy/element14/job/${jobId}/`
+  );
+}
+
+/**
+ * Get latest Element14 job for project
+ */
+export async function getLatestElement14Job(
+  projectId: string
+): Promise<DigikeyJobStatus> {
+  return apiRequest(
+    `/organization/project/${projectId}/strategy/element14/job/latest/`
+  );
+}
+
+/**
+ * Manually trigger Element14 pricing job for all items
+ */
+export async function triggerElement14Pricing(
+  projectId: string
+): Promise<DigikeyJobStatus> {
+  return apiRequest(
+    `/organization/project/${projectId}/strategy/element14/fetch/`,
     {
       method: 'POST'
     }
