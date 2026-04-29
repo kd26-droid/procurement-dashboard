@@ -163,10 +163,19 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
         if (nativeCode && projectCode && nativeCode !== projectCode && typeof nativeVal === 'number' && typeof projectVal === 'number' && nativeVal > 0) {
           const fxRate = projectVal / nativeVal;
           return (
-            <div className="text-[11px] text-blue-700 bg-blue-50 border border-blue-100 rounded px-2 py-1 mb-2">
-              {useNative
-                ? `Project equivalent: ${projectSym}${projectVal.toFixed(4)} (${fxRate.toFixed(4)} ${nativeCode}→${projectCode}, standard rate)`
-                : `Native: ${nativeSym}${nativeVal.toFixed(4)} ${nativeCode} × ${fxRate.toFixed(4)} = ${projectSym}${projectVal.toFixed(4)} ${projectCode} (standard rate)`}
+            <div className="text-[11px] text-blue-700 bg-blue-50 border border-blue-100 rounded px-2 py-1 mb-2 leading-snug">
+              {useNative ? (
+                <>
+                  <div>Project equivalent: {projectSym}{projectVal.toFixed(4)}</div>
+                  <div>Rate: {fxRate.toFixed(4)} {nativeCode}→{projectCode} (standard)</div>
+                </>
+              ) : (
+                <>
+                  <div>Native: {nativeSym}{nativeVal.toFixed(4)} {nativeCode}</div>
+                  <div>Rate: × {fxRate.toFixed(4)} (standard)</div>
+                  <div>Project: {projectSym}{projectVal.toFixed(4)} {projectCode}</div>
+                </>
+              )}
             </div>
           );
         }
@@ -583,20 +592,6 @@ export default function ProcurementDashboard() {
   const [customIdColumns, setCustomIdColumns] = useState<string[]>([])
   // Dynamic internal notes column name (from Item Directory template)
   const [internalNotesLabel, setInternalNotesLabel] = useState<string>('Internal Notes')
-
-  // Autofill changes — recently changed items get a yellow pulse + a popup shows the diff
-  type AutofillChange = {
-    itemId: string
-    itemCode: string
-    description: string
-    oldPrice: number
-    newPrice: number
-    currencySym: string
-    source: string
-  }
-  const [autofillChanges, setAutofillChanges] = useState<AutofillChange[]>([])
-  const [showAutofillChangesDialog, setShowAutofillChangesDialog] = useState(false)
-  const [recentlyChangedIds, setRecentlyChangedIds] = useState<Set<string>>(new Set())
 
   // Pricing repo lookup settings — persisted to localStorage
   const [pricingSettings, setPricingSettings] = useState<PricingLookupSettings>(DEFAULT_PRICING_SETTINGS)
@@ -3490,23 +3485,6 @@ export default function ProcurementDashboard() {
       item.unitPrice !== originalPriceById.get(item.id)
     )
 
-    if (changed.length > 0) {
-      const changes: AutofillChange[] = changed.map((item: any) => ({
-        itemId: item.id,
-        itemCode: item.itemId || item.erp_item_code || '',
-        description: item.description || '',
-        oldPrice: originalPriceById.get(item.id) ?? 0,
-        newPrice: item.unitPrice,
-        currencySym: (item as any).currency?.symbol || '',
-        source: item.source || '',
-      }))
-      setAutofillChanges(changes)
-      const ids = new Set<string>(changed.map((it: any) => it.id))
-      setRecentlyChangedIds(ids)
-      // Clear pulse after 4 seconds
-      setTimeout(() => setRecentlyChangedIds(new Set()), 4000)
-    }
-
     // Persist changed prices to backend
     if (projectId && changed.length > 0) {
       const CONCURRENCY = 5
@@ -3520,18 +3498,10 @@ export default function ProcurementDashboard() {
           })
         )
       }
-      // Build a short preview for the toast (first 3)
-      const preview = changed.slice(0, 3).map((c: any) => {
-        const sym = (c as any).currency?.symbol || ''
-        const old = (originalPriceById.get(c.id) ?? 0).toFixed(3)
-        return `${c.itemId}: ${sym}${old}→${sym}${c.unitPrice.toFixed(3)}`
-      }).join(', ')
-      const more = changed.length > 3 ? ` +${changed.length - 3} more` : ''
       toast({
-        title: `Prices saved — ${changed.length} item${changed.length > 1 ? 's' : ''} updated`,
-        description: `${preview}${more}. Click "View changes" for full list.`,
+        title: 'Prices saved',
+        description: `${changed.length} item${changed.length > 1 ? 's' : ''} converted to project currency.`,
       })
-      setShowAutofillChangesDialog(true)
     }
   }
 
@@ -5007,14 +4977,24 @@ export default function ProcurementDashboard() {
                 {/* Currency display toggle */}
                 <div className="flex items-center bg-gray-100 rounded-full p-0.5 gap-0.5">
                   <button
-                    onClick={() => setDisplayCurrency('native')}
+                    onClick={() => {
+                      if (displayCurrency !== 'native') {
+                        setDisplayCurrency('native')
+                        toast({ title: 'Currency: Native', description: 'Showing each source in its original currency.' })
+                      }
+                    }}
                     title="Show prices in each source's original currency"
                     className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${displayCurrency === 'native' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                   >
                     Native
                   </button>
                   <button
-                    onClick={() => setDisplayCurrency('project')}
+                    onClick={() => {
+                      if (displayCurrency !== 'project') {
+                        setDisplayCurrency('project')
+                        toast({ title: 'Currency: Project', description: 'All prices converted to item currency (standard rate).' })
+                      }
+                    }}
                     title="Show all prices converted to item currency"
                     className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${displayCurrency === 'project' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                   >
@@ -6602,24 +6582,29 @@ export default function ProcurementDashboard() {
                           const expired = isExpiredContract(record)
                           const isCheapest = cheapestSourceByItemKey.get(item.enterprise_item_id || item.erp_item_code || (item as any).itemId || '') === sourceType
 
-                          // Build FX info line for tooltip — show conversion math when relevant
-                          let fxLine = ''
+                          // Build FX info lines for tooltip — show conversion math when relevant
+                          const titleLines: string[] = []
+                          if (record.supplier_name) titleLines.push(record.supplier_name)
+                          if (record.pricing_datetime) titleLines.push(record.pricing_datetime.slice(0, 10))
                           if (fxMissing) {
-                            fxLine = ` • No FX rate — showing native`
+                            titleLines.push('No FX rate — showing native')
                           } else if (nativeCode && projectCode && nativeCode !== projectCode && nativePrice != null) {
                             const nativeSym = record.currency_symbol || record.currency_code || ''
                             if (displayCurrency === 'project') {
                               const fxRate = displayPrice && nativePrice ? (displayPrice / nativePrice) : null
-                              fxLine = fxRate
-                                ? ` • Native ${nativeSym}${nativePrice.toFixed(4)} × ${fxRate.toFixed(4)} = ${displaySym}${displayPrice.toFixed(4)} (standard rate)`
-                                : ''
+                              if (fxRate) {
+                                titleLines.push(`Native: ${nativeSym}${nativePrice.toFixed(4)}`)
+                                titleLines.push(`Rate: × ${fxRate.toFixed(4)} (standard)`)
+                                titleLines.push(`Project: ${displaySym}${displayPrice.toFixed(4)}`)
+                              }
                             } else {
                               const projectVal = fxConvert(nativePrice, nativeCode, projectCode, exchangeRates)
                               if (projectVal != null) {
-                                fxLine = ` • In project currency: ${projectSym || projectCode}${projectVal.toFixed(4)} (standard rate)`
+                                titleLines.push(`Project equivalent: ${projectSym || projectCode}${projectVal.toFixed(4)} (standard rate)`)
                               }
                             }
                           }
+                          titleLines.push('Click to open in Factwise')
 
                           cellInner = (
                             <button
@@ -6627,9 +6612,7 @@ export default function ProcurementDashboard() {
                               className={`text-xs font-medium underline-offset-2 hover:underline focus:outline-none ${
                                 expired ? "text-red-600" : isCheapest ? "text-green-700" : "text-gray-900"
                               }`}
-                              title={`${record.supplier_name || ""} • ${
-                                record.pricing_datetime?.slice(0, 10) || ""
-                              }${fxLine} — click to open in Factwise`}
+                              title={titleLines.join('\n')}
                               onClick={() => setPendingNavRecord(record)}
                             >
                               {displaySym}
@@ -6685,16 +6668,11 @@ export default function ProcurementDashboard() {
                       if (columnKey === "unitPrice") {
                         const hasPrice = item.unitPrice && item.unitPrice > 0
                         const currencySymbol = (item as any).currency?.symbol || ''
-                        const isJustChanged = recentlyChangedIds.has(item.id)
                         return (
-                          <td
-                            key={columnKey}
-                            className={`p-2 text-right ${isJustChanged ? 'bg-yellow-100 transition-colors duration-700' : ''}`}
-                            style={stickyStyle}
-                          >
+                          <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             <span
                               className={`text-xs font-semibold ${hasPrice ? "text-gray-900" : "text-red-700"}`}
-                              title={hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(5)}${isJustChanged ? ' • just updated by autofill' : ''}` : "N/A"}
+                              title={hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(5)}` : "N/A"}
                             >
                               {hasPrice ? `${currencySymbol}${item.unitPrice.toFixed(5)}` : "N/A"}
                             </span>
@@ -6919,60 +6897,6 @@ export default function ProcurementDashboard() {
         }}
       />
 
-      {/* Autofill changes detail dialog */}
-      <Dialog open={showAutofillChangesDialog} onOpenChange={setShowAutofillChangesDialog}>
-        <DialogContent className="w-[720px] max-w-[92vw] max-h-[80vh] overflow-hidden flex flex-col">
-          <DialogHeader>
-            <DialogTitle>Autofill — {autofillChanges.length} item{autofillChanges.length !== 1 ? 's' : ''} updated</DialogTitle>
-            <DialogDescription>
-              Prices below are in each item's project currency. Source shows where the new price came from.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="overflow-auto -mx-1 px-1">
-            <table className="w-full text-xs">
-              <thead className="bg-gray-50 sticky top-0">
-                <tr className="text-left text-gray-600">
-                  <th className="px-2 py-1.5 font-medium">Item</th>
-                  <th className="px-2 py-1.5 font-medium">Description</th>
-                  <th className="px-2 py-1.5 font-medium text-right">Old</th>
-                  <th className="px-2 py-1.5 font-medium text-right">New</th>
-                  <th className="px-2 py-1.5 font-medium text-right">Δ</th>
-                  <th className="px-2 py-1.5 font-medium">Source</th>
-                </tr>
-              </thead>
-              <tbody>
-                {autofillChanges.map((c) => {
-                  const delta = c.newPrice - c.oldPrice
-                  const pct = c.oldPrice > 0 ? (delta / c.oldPrice) * 100 : 0
-                  return (
-                    <tr key={c.itemId} className="border-t border-gray-100">
-                      <td className="px-2 py-1.5 font-mono">{c.itemCode}</td>
-                      <td className="px-2 py-1.5 text-gray-700 max-w-[260px] truncate" title={c.description}>{c.description}</td>
-                      <td className="px-2 py-1.5 text-right tabular-nums text-gray-500">
-                        {c.currencySym}{c.oldPrice.toFixed(3)}
-                      </td>
-                      <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-gray-900">
-                        {c.currencySym}{c.newPrice.toFixed(3)}
-                      </td>
-                      <td className={`px-2 py-1.5 text-right tabular-nums ${delta < 0 ? 'text-green-700' : 'text-red-700'}`}>
-                        {delta < 0 ? '−' : '+'}{Math.abs(delta).toFixed(3)} ({pct.toFixed(1)}%)
-                      </td>
-                      <td className="px-2 py-1.5">
-                        <span className="inline-block px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded text-[11px]">
-                          {c.source}
-                        </span>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowAutofillChangesDialog(false)}>Close</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <AutoAssignActionsPopover
         open={showAssignActionsPopup}
