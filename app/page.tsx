@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel, LabelList } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
-import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getElement14JobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, searchVendors, getItemCustomVendors, addItemCustomVendors, removeItemCustomVendor, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion, type CustomVendor } from '@/lib/api'
+import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, searchVendors, getItemCustomVendors, addItemCustomVendors, removeItemCustomVendor, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion, type CustomVendor } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -112,9 +112,7 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
   const legacyPartNum =
     distributorLabel === 'Digi-Key'
       ? pricing?.digikey_part_number
-      : distributorLabel === 'Mouser'
-      ? pricing?.mouser_part_number
-      : pricing?.element14_sku;
+      : pricing?.mouser_part_number;
   const variantsToRender = hasRealVariants
     ? rawVariants
     : [
@@ -122,7 +120,6 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
           packaging: pricing?.packaging || 'Standard',
           digikey_part_number: distributorLabel === 'Digi-Key' ? legacyPartNum : undefined,
           mouser_part_number: distributorLabel === 'Mouser' ? legacyPartNum : undefined,
-          element14_sku: distributorLabel === 'Element14' ? legacyPartNum : undefined,
           moq: pricing?.moq ?? null,
           reeling_fee: '0',
           price_breaks: Array.isArray(pricing?.price_breaks) ? pricing.price_breaks : [],
@@ -181,7 +178,7 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
         {variantsToRender.map((variant: any, idx: number) => {
           const isPreferred = hasRealVariants && idx === preferredIdx;
           const partNum =
-            variant?.digikey_part_number || variant?.mouser_part_number || variant?.element14_sku || '';
+            variant?.digikey_part_number || variant?.mouser_part_number || '';
           const fee =
             variant?.reeling_fee !== undefined && variant?.reeling_fee !== null
               ? parseFloat(String(variant.reeling_fee)) || 0
@@ -373,21 +370,12 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
     exchangeRates
   );
 
-  const element14Pricing = convertDistributorPricing(
-    item.element14_pricing,
-    item.currency,
-    exchangeRates
-  );
-
   // Get base price from distributor data
   const digikeyPrice = digikeyPricing?.status === 'available'
     ? (digikeyPricing.quantity_price ?? digikeyPricing.unit_price)
     : null;
   const mouserPrice = mouserPricing?.status === 'available'
     ? (mouserPricing.quantity_price ?? mouserPricing.unit_price)
-    : null;
-  const element14Price = element14Pricing?.status === 'available'
-    ? (element14Pricing.quantity_price ?? element14Pricing.unit_price)
     : null;
 
   // Calculate base price from available distributor pricing
@@ -458,12 +446,6 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
       priceOptions.push({ source: 'Mouser', price: mPrice });
     }
   }
-  if (element14Pricing?.status === 'available') {
-    const ePrice = element14Pricing.quantity_price ?? element14Pricing.unit_price;
-    if (ePrice && ePrice > 0) {
-      priceOptions.push({ source: 'Element14', price: ePrice });
-    }
-  }
 
   // Find cheapest source — always Project (no hardcoded sources)
   const validPrices = priceOptions.filter(p => p.price > 0);
@@ -477,7 +459,6 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
     ...item,
     digikey_pricing: digikeyPricing,
     mouser_pricing: mouserPricing,
-    element14_pricing: element14Pricing,
     pricePO,
     priceContract,
     priceQuote,
@@ -590,7 +571,6 @@ export default function ProcurementDashboard() {
     "priceRFQ",
     "priceDigikey",
     "priceMouser",
-    "priceElement14",
   ])
   const [hiddenColumns, setHiddenColumns] = useState<string[]>(["customer"])
   const [savedViews, setSavedViews] = useState<{ [key: string]: { order: string[]; hidden: string[] } }>({})
@@ -639,8 +619,6 @@ export default function ProcurementDashboard() {
   const [digikeyJob, setDigikeyJob] = useState<any>(null)
   // Mouser job state
   const [mouserJob, setMouserJob] = useState<any>(null)
-  const [element14Job, setElement14Job] = useState<any>(null)
-  const [element14Enabled, setElement14Enabled] = useState<boolean>(false)
   // Exchange rates for currency conversion (USD_TO_XXX format)
   const [exchangeRates, setExchangeRates] = useState<Record<string, number>>({})
 
@@ -668,7 +646,6 @@ export default function ProcurementDashboard() {
     priceQuote: 88,
     priceDigikey: 88,
     priceMouser: 88,
-    priceElement14: 88,
     priceEXIM: 88,
     totalPrice: 128,
     customer: 120,
@@ -710,7 +687,7 @@ export default function ProcurementDashboard() {
   const [adminActionRules, setAdminActionRules] = useState<import('@/lib/api').ActionRule[]>([])
 
   // Helper function to refresh pricing data in chunks (avoids timeout)
-  const refreshPricingDataInChunks = async (projectId: string, pricingType: 'digikey' | 'mouser' | 'element14' | 'both') => {
+  const refreshPricingDataInChunks = async (projectId: string, pricingType: 'digikey' | 'mouser' | 'both') => {
     console.log(`[Pricing Refresh] Starting chunked refresh for ${pricingType}...`)
     const CHUNK_SIZE = 200
     let offset = 0
@@ -738,9 +715,6 @@ export default function ProcurementDashboard() {
           }
           if (pricingType === 'mouser' || pricingType === 'both') {
             update.mouser_pricing = item.mouser_pricing
-          }
-          if (pricingType === 'element14' || pricingType === 'both') {
-            update.element14_pricing = item.element14_pricing
           }
           pricingUpdates.set(item.project_item_id, update)
         })
@@ -773,9 +747,6 @@ export default function ProcurementDashboard() {
       }
       if (update.mouser_pricing !== undefined) {
         updatedItem.mouser_pricing = update.mouser_pricing
-      }
-      if (update.element14_pricing !== undefined) {
-        updatedItem.element14_pricing = update.element14_pricing
       }
       // Re-process pricing with currency conversion
       return processItemPricing(updatedItem, exchangeRates)
@@ -1115,7 +1086,6 @@ export default function ProcurementDashboard() {
       priceQuote: 0,
       priceDigikey: 0,
       priceMouser: 0,
-      priceElement14: 0,
       priceEXIM: 0,
       manuallyEdited: item.custom_fields?.manually_edited || false,
       notes: item.notes || '',
@@ -1153,7 +1123,6 @@ export default function ProcurementDashboard() {
 
     baseItem.digikey_pricing = item.digikey_pricing || null
     baseItem.mouser_pricing = item.mouser_pricing || null
-    baseItem.element14_pricing = (item as any).element14_pricing || null
 
     return processItemPricing(baseItem, exchangeRates)
   }
@@ -1351,11 +1320,9 @@ export default function ProcurementDashboard() {
       // Only enable columns if backend returns a valid status (all_cached or background_job_started)
       const digikeyConfigured = response.digikey_status === 'all_cached' || response.digikey_status === 'background_job_started'
       const mouserConfigured = response.mouser_status === 'all_cached' || response.mouser_status === 'background_job_started'
-      const element14Configured = response.element14_status === 'all_cached' || response.element14_status === 'background_job_started'
       setDigikeyEnabled(digikeyConfigured)
       setMouserEnabled(mouserConfigured)
-      setElement14Enabled(element14Configured)
-      console.log('[Pricing Jobs] API keys configured - Digikey:', digikeyConfigured, 'Mouser:', mouserConfigured, 'Element14:', element14Configured)
+      console.log('[Pricing Jobs] API keys configured - Digikey:', digikeyConfigured, 'Mouser:', mouserConfigured)
 
       // Handle Digikey status
       if (response.digikey_status === 'background_job_started') {
@@ -1409,39 +1376,10 @@ export default function ProcurementDashboard() {
         console.log('✅ Mouser pricing already cached')
       }
 
-      // Handle Element14 status
-      if (response.element14_status === 'background_job_started') {
-        const uncachedCount = response.element14_uncached_count || 0
-        const jobId = response.element14_job_id
-
-        console.log(`🔄 Element14 background job started for ${uncachedCount} items`)
-
-        setElement14Job({
-          job_id: jobId,
-          status: 'processing',
-          uncached_count: uncachedCount,
-          progress_percentage: 0,
-          total_items: uncachedCount,
-          processed_items: 0,
-          successful_items: 0,
-          failed_items: 0
-        })
-
-        if (jobId) {
-          pollElement14JobProgress(jobId)
-        }
-      } else {
-        console.log('✅ Element14 pricing already cached')
-      }
-
-      if (
-        response.digikey_status === 'background_job_started' ||
-        response.mouser_status === 'background_job_started' ||
-        response.element14_status === 'background_job_started'
-      ) {
+      if (response.digikey_status === 'background_job_started' || response.mouser_status === 'background_job_started') {
         toast({
           title: "Pricing Jobs Started",
-          description: "Fetching distributor pricing for all items...",
+          description: "Fetching Digikey and Mouser pricing for all items...",
         })
       }
 
@@ -1611,76 +1549,6 @@ export default function ProcurementDashboard() {
         })
       }
     }, 3000) // Poll every 3 seconds
-  }
-
-  // Poll Element14 job progress
-  const pollElement14JobProgress = async (jobId: string) => {
-    const projectId = getProjectId()
-    if (!projectId) return
-
-    const pollInterval = setInterval(async () => {
-      try {
-        const data = await getElement14JobStatus(projectId, jobId)
-
-        if (data.success) {
-          setElement14Job(data.job)
-
-          if (data.job.status === 'processing') {
-            console.log(`Element14 pricing: ${data.job.progress_percentage.toFixed(1)}%`)
-          }
-          else if (data.job.status === 'completed' || data.job.status === 'partial') {
-            clearInterval(pollInterval)
-
-            toast({
-              title: "Element14 Pricing Complete!",
-              description: `Pricing loaded for ${data.job.successful_items}/${data.job.total_items} items`,
-            })
-
-            await new Promise(resolve => setTimeout(resolve, 1000))
-            await refreshPricingDataInChunks(projectId, 'element14')
-
-            setElement14Job(null)
-            console.log('[Element14 Poll] Pricing refresh complete')
-          }
-          else if (data.job.status === 'failed' || data.job.status === 'rate_limited') {
-            clearInterval(pollInterval)
-            setElement14Job(null)
-            const isRateLimited = data.job.status === 'rate_limited' ||
-              (Array.isArray(data.job.errors) && data.job.errors.some((e: any) => e.error === 'rate_limited'))
-            if (isRateLimited) {
-              toast({
-                title: "Element14 Quota Reached",
-                description: "Pricing will resume automatically when the quota resets.",
-                variant: "destructive"
-              })
-              await refreshPricingDataInChunks(projectId, 'element14')
-              setLineItems((prev: any[]) => prev.map((li: any) => {
-                const e = li.element14_pricing
-                if (e && (e.status === 'fetching' || e.status === 'pending')) {
-                  return { ...li, element14_pricing: { ...e, status: 'rate_limited' } }
-                }
-                return li
-              }))
-            } else {
-              console.log('[Element14 Poll] Job failed:', data.job.error_message)
-              toast({
-                title: "Element14 Pricing Failed",
-                description: data.job.error_message || "An error occurred fetching Element14 pricing.",
-                variant: "destructive"
-              })
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Failed to poll Element14 job status:', error)
-        clearInterval(pollInterval)
-        toast({
-          title: "Error",
-          description: "Failed to check Element14 pricing progress",
-          variant: "destructive"
-        })
-      }
-    }, 3000)
   }
 
   // Click outside handler for column visibility dropdown
@@ -2037,10 +1905,6 @@ export default function ProcurementDashboard() {
       const msPrice = getDistributorSlabPrice((item as any).mouser_pricing, itemQty)
       if (msPrice !== null) candidates.push({ source: 'MOUSER', price: msPrice })
 
-      // Element14 / Farnell — same shape as Mouser
-      const e14Price = getDistributorSlabPrice((item as any).element14_pricing, itemQty)
-      if (e14Price !== null) candidates.push({ source: 'ELEMENT14', price: e14Price })
-
       if (candidates.length === 0) continue
       const minPrice = Math.min(...candidates.map(c => c.price))
       const cheapest = candidates.find(c => Math.abs(c.price - minPrice) < 0.000001)
@@ -2238,7 +2102,7 @@ export default function ProcurementDashboard() {
     // PLUS a compact "All Variants" string listing every other option the buyer could pick.
     const getDistributorPrice = (
       pricing: any,
-      distributorLabel: 'Digi-Key' | 'Mouser' | 'Element14',
+      distributorLabel: 'Digi-Key' | 'Mouser',
       currencySymbol: string = '',
       itemQty: number = 1,
       useNative: boolean = false
@@ -2280,10 +2144,8 @@ export default function ProcurementDashboard() {
       const partNumber =
         pricing.digikey_part_number ||
         pricing.mouser_part_number ||
-        pricing.element14_sku ||
         (variants[0]?.digikey_part_number) ||
         (variants[0]?.mouser_part_number) ||
-        (variants[0]?.element14_sku) ||
         ''
 
       const preferredIdx = typeof pricing.preferred_variant_index === 'number' ? pricing.preferred_variant_index : 0
@@ -2420,16 +2282,6 @@ export default function ProcurementDashboard() {
       'Mouser Status',
       'Mouser All Variants',
     )
-    headers.push(
-      'Element14 SKU',
-      'Element14 Packaging',
-      'Element14 MOQ',
-      'Element14 Unit Price',
-      'Element14 Reeling Fee',
-      'Element14 Stock',
-      'Element14 Status',
-      'Element14 All Variants',
-    )
 
     // Add dynamic spec columns
     specColumns.forEach(specName => {
@@ -2450,7 +2302,6 @@ export default function ProcurementDashboard() {
       const _exportUseNative = displayCurrency === 'native'
       const digikeyDetails = getDistributorPrice(item.digikey_pricing, 'Digi-Key', itemCurrencySymbol, _exportItemQty, _exportUseNative)
       const mouserDetails = getDistributorPrice(item.mouser_pricing, 'Mouser', itemCurrencySymbol, _exportItemQty, _exportUseNative)
-      const element14Details = getDistributorPrice((item as any).element14_pricing, 'Element14', itemCurrencySymbol, _exportItemQty, _exportUseNative)
 
       // Parse tags for this item
       const itemTags = item.category && item.category !== 'Uncategorized'
@@ -2580,17 +2431,6 @@ export default function ProcurementDashboard() {
         mouserDetails.stock,
         escapeCSV(mouserDetails.status),
         escapeCSV(mouserDetails.allVariants),
-      )
-      // Always add rich Element14 values
-      row.push(
-        escapeCSV(element14Details.partNumber),
-        escapeCSV(element14Details.packaging),
-        element14Details.moq,
-        element14Details.unitPrice,
-        element14Details.reelingFee,
-        element14Details.stock,
-        escapeCSV(element14Details.status),
-        escapeCSV(element14Details.allVariants),
       )
 
       // Add dynamic spec values
@@ -3623,9 +3463,6 @@ export default function ProcurementDashboard() {
       const msPrice = getDistributorPrice((item as any).mouser_pricing)
       if (msPrice) candidates.push({ source: 'MOUSER', price: msPrice })
 
-      const e14Price = getDistributorPrice((item as any).element14_pricing)
-      if (e14Price) candidates.push({ source: 'ELEMENT14', price: e14Price })
-
       if (candidates.length === 0) return item
 
       const cheapest = candidates.reduce((min, c) => c.price < min.price ? c : min)
@@ -3634,7 +3471,7 @@ export default function ProcurementDashboard() {
 
       const sourceLabel: Record<string, string> = {
         PO: 'PO', CONTRACT: 'Contract', QUOTE: 'Quote', RFQ: 'RFQ',
-        DIGIKEY: 'Digi-Key', MOUSER: 'Mouser', ELEMENT14: 'Element14',
+        DIGIKEY: 'Digi-Key', MOUSER: 'Mouser',
       }
 
       return { ...item, unitPrice, totalPrice, source: sourceLabel[cheapest.source] ?? cheapest.source }
@@ -4530,7 +4367,6 @@ export default function ProcurementDashboard() {
     priceRFQ: "RFQ",
     priceDigikey: "Digi-Key",
     priceMouser: "Mouser",
-    priceElement14: "Element14",
     priceEXIM: "EXIM",
     source: "Source",
     unitPrice: "Price",
@@ -5904,33 +5740,6 @@ export default function ProcurementDashboard() {
             </div>
           )}
 
-          {/* Element14 Progress Banner */}
-          {element14Job && (element14Job.status === 'processing' || element14Job.status === 'pending') && (
-            <div className="mb-4 p-4 bg-orange-50 border border-orange-200 rounded-lg">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="animate-spin h-5 w-5 border-2 border-orange-600 border-t-transparent rounded-full" />
-                  <div>
-                    <div className="font-medium text-orange-900">
-                      {element14Job.status === 'pending' ? 'Preparing Element14 pricing...' : 'Fetching Element14 pricing...'}
-                    </div>
-                    <div className="text-sm text-orange-700">
-                      {element14Job.processed_items || 0}/{element14Job.total_items} items processed
-                      ({element14Job.progress_percentage?.toFixed(1) || 0}%)
-                    </div>
-                  </div>
-                </div>
-
-                <div className="w-64 h-2 bg-orange-200 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-orange-600 transition-all duration-300"
-                    style={{ width: `${element14Job.progress_percentage || 0}%` }}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Loading All Items Progress Banner */}
           {isLoadingAllItems && loadingProgress.total > 0 && (
             <div className="mb-4 p-4 bg-purple-50 border border-purple-200 rounded-lg">
@@ -6718,148 +6527,6 @@ export default function ProcurementDashboard() {
                         return (
                           <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
                             {renderMouserContent()}
-                          </td>
-                        )
-                      }
-
-                      if (columnKey === "priceElement14") {
-                        const pricing = (item as any).element14_pricing
-
-                        const getCurrencySymbol = (currency: string) => {
-                          const symbols: Record<string, string> = {
-                            'INR': '₹',
-                            'USD': '$',
-                            'EUR': '€',
-                            'GBP': '£',
-                            'JPY': '¥',
-                            'CNY': '¥',
-                            'SGD': 'S$',
-                          }
-                          return symbols[currency] || '$'
-                        }
-
-                        const pricingStatus = pricing?.status
-                        const displayPrice = displayCurrency === 'native'
-                          ? (pricing?.quantity_price ?? pricing?.unit_price)
-                          : (pricing?.quantity_price_in_project_currency ?? pricing?.unit_price_in_project_currency ?? pricing?.quantity_price ?? pricing?.unit_price)
-                        const currencySymbol = displayCurrency === 'native'
-                          ? (pricing?.currency_symbol || getCurrencySymbol(pricing?.currency || '') || '')
-                          : (pricing?.project_currency_symbol || pricing?.currency_symbol || (item as any).currency?.symbol || '')
-
-                        const _e14LookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
-                        const isElement14Cheapest = cheapestSourceByItemKey.get(_e14LookupKey) === 'ELEMENT14'
-
-                        const renderElement14Content = () => {
-                          if (!pricing) {
-                            return <span className="text-xs text-gray-400">-</span>
-                          }
-
-                          switch (pricingStatus) {
-                            case 'fetching':
-                              return <span className="text-xs text-blue-500 animate-pulse">Fetching...</span>
-                            case 'pending':
-                              return <span className="text-xs text-orange-500">Pending...</span>
-                            case 'not_found':
-                              return <span className="text-xs text-gray-400">Not Listed</span>
-                            case 'rate_limited':
-                              return <span className="text-xs text-amber-500" title="Daily API quota reached — will retry automatically on next load">Quota Reached</span>
-                            case 'error':
-                              return <span className="text-xs text-red-500">Error</span>
-                            case 'no_mpn':
-                              return <span className="text-xs text-gray-400">No MPN</span>
-                            case 'not_configured':
-                              return <span className="text-xs text-gray-400">Not Configured</span>
-                            case 'available': {
-                              const itemQtyE14 = parseFloat(String((item as any).quantity)) || 1
-                              let cellPrice: number | null = null
-                              if (Array.isArray(pricing?.price_breaks) && pricing.price_breaks.length > 0) {
-                                const sorted = [...pricing.price_breaks].sort((a: any, b: any) => (a.quantity ?? 0) - (b.quantity ?? 0))
-                                let matched = sorted[0]
-                                for (const pb of sorted) {
-                                  if ((pb.quantity ?? 0) <= itemQtyE14) matched = pb
-                                  else break
-                                }
-                                const p = displayCurrency === 'native'
-                                  ? (matched.price ?? matched.price_in_project_currency)
-                                  : (matched.price_in_project_currency ?? matched.price)
-                                cellPrice = typeof p === 'number' ? p : parseFloat(p)
-                              } else if (displayPrice !== null && displayPrice !== undefined) {
-                                cellPrice = typeof displayPrice === 'number' ? displayPrice : parseFloat(displayPrice)
-                              }
-                              const variants: any[] = Array.isArray(pricing?.variants) ? pricing.variants : []
-                              const hasVariants = variants.length > 0
-                              const preferredIdx = (hasVariants && typeof pricing?.preferred_variant_index === 'number')
-                                ? pricing.preferred_variant_index
-                                : 0
-                              const preferred = hasVariants ? (variants[preferredIdx] || variants[0]) : null
-
-                              if (cellPrice === null || isNaN(cellPrice)) {
-                                return <span className="text-xs text-gray-400">N/A</span>
-                              }
-
-                              const packaging: string | null = preferred?.packaging || pricing?.packaging || null
-                              const moq: number | null = preferred?.moq ?? pricing?.moq ?? null
-                              const hasMultipleVariants = variants.length > 1
-                              const hasAnyFee = hasVariants && variants.some((v: any) => {
-                                const f = v?.reeling_fee
-                                return f !== undefined && f !== null && parseFloat(String(f)) > 0
-                              })
-
-                              return (
-                                <UiTooltip>
-                                  <UiTooltipTrigger asChild>
-                                    <div className="cursor-help flex flex-col items-end gap-0.5 leading-snug">
-                                      <div className="flex items-center gap-1.5">
-                                        <span className={`text-sm font-semibold ${isElement14Cheapest ? 'text-green-700 bg-green-50 px-1.5 py-0.5 rounded' : 'text-gray-900'}`}>
-                                          {currencySymbol}{cellPrice.toFixed(3)}
-                                        </span>
-                                        {hasAnyFee && (
-                                          <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1 py-px rounded">
-                                            +fee
-                                          </span>
-                                        )}
-                                        {hasMultipleVariants && (
-                                          <ChevronDown className="h-3 w-3 text-gray-400" />
-                                        )}
-                                      </div>
-
-                                      {(packaging || moq !== null) && (
-                                        <div className="flex items-center gap-1 text-[11px]">
-                                          {packaging && <span className="text-gray-600 truncate max-w-[100px]">{packaging}</span>}
-                                          {packaging && moq !== null && <span className="text-gray-300">·</span>}
-                                          {moq !== null && (
-                                            <span className={moq > 1 ? 'text-amber-700 font-semibold' : 'text-gray-500'}>
-                                              MOQ {moq.toLocaleString()}
-                                            </span>
-                                          )}
-                                        </div>
-                                      )}
-                                    </div>
-                                  </UiTooltipTrigger>
-                                  <UiTooltipContent side="left" className="bg-white border border-gray-300 shadow-xl p-0">
-                                    {renderDistributorTooltip(pricing, 'Element14', parseFloat(String((item as any).quantity)) || 1, displayCurrency === 'native' ? (pricing?.currency_symbol || '') : (pricing?.project_currency_symbol || pricing?.currency_symbol || (item as any).currency?.symbol || ''), displayCurrency === 'native')}
-                                  </UiTooltipContent>
-                                </UiTooltip>
-                              )
-                            }
-                            default:
-                              if (displayPrice) {
-                                return (
-                                  <div className="text-xs">
-                                    <div className="font-semibold text-green-700">
-                                      {currencySymbol}
-                                      {typeof displayPrice === 'number' ? displayPrice.toFixed(3) : parseFloat(displayPrice).toFixed(3)}
-                                    </div>
-                                  </div>
-                                )
-                              }
-                              return <span className="text-xs text-gray-400">-</span>
-                          }
-                        }
-
-                        return (
-                          <td key={columnKey} className="p-2 text-right" style={stickyStyle}>
-                            {renderElement14Content()}
                           </td>
                         )
                       }
