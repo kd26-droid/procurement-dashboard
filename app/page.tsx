@@ -165,20 +165,14 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
         const projectVal = pricing?.unit_price_in_project_currency ?? pricing?.quantity_price_in_project_currency;
         if (nativeCode && projectCode && nativeCode !== projectCode && typeof nativeVal === 'number' && typeof projectVal === 'number' && nativeVal > 0) {
           const fxRate = projectVal / nativeVal;
+          const rateLine = fxRate < 1
+            ? `1 ${projectCode} = ${nativeSym}${(1 / fxRate).toFixed(2)} ${nativeCode} (standard)`
+            : `1 ${nativeCode} = ${projectSym}${fxRate.toFixed(2)} ${projectCode} (standard)`;
           return (
             <div className="text-[11px] text-blue-700 bg-blue-50 border border-blue-100 rounded px-2 py-1 mb-2 leading-snug">
-              {useNative ? (
-                <>
-                  <div>Project equivalent: {projectSym}{projectVal.toFixed(4)}</div>
-                  <div>Rate: {fxRate.toFixed(4)} {nativeCode}→{projectCode} (standard)</div>
-                </>
-              ) : (
-                <>
-                  <div>Native: {nativeSym}{nativeVal.toFixed(4)} {nativeCode}</div>
-                  <div>Rate: × {fxRate.toFixed(4)} (standard)</div>
-                  <div>Project: {projectSym}{projectVal.toFixed(4)} {projectCode}</div>
-                </>
-              )}
+              <div>Native: {nativeSym}{nativeVal.toFixed(4)} {nativeCode}</div>
+              <div>Project: {projectSym}{projectVal.toFixed(4)} {projectCode}</div>
+              <div>{rateLine}</div>
             </div>
           );
         }
@@ -6923,17 +6917,17 @@ export default function ProcurementDashboard() {
                             titleLines.push('No FX rate — showing native')
                           } else if (nativeCode && projectCode && nativeCode !== projectCode && nativePrice != null) {
                             const nativeSym = record.currency_symbol || record.currency_code || ''
-                            if (displayCurrency === 'project') {
-                              const fxRate = displayPrice && nativePrice ? (displayPrice / nativePrice) : null
-                              if (fxRate) {
-                                titleLines.push(`Native: ${nativeSym}${nativePrice.toFixed(4)}`)
-                                titleLines.push(`Rate: × ${fxRate.toFixed(4)} (standard)`)
-                                titleLines.push(`Project: ${displaySym}${displayPrice.toFixed(4)}`)
-                              }
-                            } else {
-                              const projectVal = fxConvert(nativePrice, nativeCode, projectCode, exchangeRates)
-                              if (projectVal != null) {
-                                titleLines.push(`Project equivalent: ${projectSym || projectCode}${projectVal.toFixed(4)} (standard rate)`)
+                            const projectVal = displayCurrency === 'project'
+                              ? displayPrice
+                              : fxConvert(nativePrice, nativeCode, projectCode, exchangeRates)
+                            if (projectVal != null && projectVal > 0) {
+                              titleLines.push(`Native: ${nativeSym}${nativePrice.toFixed(4)} ${nativeCode}`)
+                              titleLines.push(`Project: ${projectSym || projectCode}${projectVal.toFixed(4)} ${projectCode}`)
+                              const fxRate = projectVal / nativePrice
+                              if (fxRate < 1) {
+                                titleLines.push(`1 ${projectCode} = ${nativeSym}${(1 / fxRate).toFixed(2)} ${nativeCode} (standard)`)
+                              } else {
+                                titleLines.push(`1 ${nativeCode} = ${projectSym || projectCode}${fxRate.toFixed(2)} ${projectCode} (standard)`)
                               }
                             }
                           }
