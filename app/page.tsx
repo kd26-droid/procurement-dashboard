@@ -3579,7 +3579,7 @@ export default function ProcurementDashboard() {
 
       // Real pricing-repo candidates (PO / CONTRACT / QUOTE / RFQ) — always compared in PROJECT currency
       const projectCode = (item as any).currency?.code || null
-      const candidates: Array<{ source: string; price: number }> = []
+      const candidates: Array<{ source: string; price: number; meta?: Record<string, string | null> }> = []
       if (pricingEnabled && lookupKey) {
         const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
         for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
@@ -3588,7 +3588,23 @@ export default function ProcurementDashboard() {
           const nativeP = getNativePrice(record, pricingSettings.priceBasis)
           if (nativeP == null || nativeP <= 0) continue
           const projectP = fxConvert(nativeP, record.currency_code, projectCode, exchangeRates)
-          if (projectP != null && projectP > 0) candidates.push({ source: src, price: projectP })
+          if (projectP != null && projectP > 0) candidates.push({
+            source: src,
+            price: projectP,
+            // IDs needed downstream by the bid matrix to deep-link to this source doc.
+            meta: {
+              source_parent_id: record.source_parent_id ?? null,
+              source_id: record.source_id ?? null,
+              po_id: record.po_id ?? null,
+              po_group_id: record.po_group_id ?? null,
+              quote_id: record.quote_id ?? null,
+              agreement_id: record.agreement_id ?? null,
+              template_id: record.template_id ?? null,
+              event_id: record.event_id ?? null,
+              rfq_event_id: record.rfq_event_id ?? null,
+              rfq_item_id: record.rfq_item_id ?? null,
+            },
+          })
         }
       }
 
@@ -3626,7 +3642,13 @@ export default function ProcurementDashboard() {
         DIGIKEY: 'Digi-Key', MOUSER: 'Mouser', ELEMENT14: 'Element14',
       }
 
-      return { ...item, unitPrice, totalPrice, source: sourceLabel[cheapest.source] ?? cheapest.source }
+      return {
+        ...item,
+        unitPrice,
+        totalPrice,
+        source: sourceLabel[cheapest.source] ?? cheapest.source,
+        source_meta: cheapest.meta ?? {},
+      }
     })
 
     // Snapshot original prices BEFORE state update for comparison
@@ -3650,7 +3672,11 @@ export default function ProcurementDashboard() {
         await Promise.allSettled(
           wave.map((item: any) => {
             const rate = parseFloat(item.unitPrice.toFixed(6))
-            return updateProjectItem(projectId, item.project_item_id, { rate, source: item.source })
+            return updateProjectItem(projectId, item.project_item_id, {
+              rate,
+              source: item.source,
+              source_meta: item.source_meta ?? {},
+            })
               .catch((err: any) => console.warn('[AutoFill] Failed to persist item', item.project_item_id, err))
           })
         )
