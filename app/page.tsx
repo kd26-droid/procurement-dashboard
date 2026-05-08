@@ -2260,7 +2260,9 @@ export default function ProcurementDashboard() {
       if (pricing.status === 'not_configured') return { ...empty, status: 'Not Configured' }
       if (pricing.status === 'not_found') return { ...empty, status: 'Not Listed' }
       if (pricing.status === 'rate_limited') return { ...empty, status: 'Quota limit reached — retries automatically' }
-      if (pricing.status === 'fetching' || pricing.status === 'pending') return { ...empty, status: 'Fetching...' }
+      // Don't surface in-progress states in the CSV — they're transient and meaningless after the file is opened.
+      // Leave the row blank so users can re-export once pricing finishes loading.
+      if (pricing.status === 'fetching' || pricing.status === 'pending') return empty
       if (pricing.status !== 'available') {
         return { ...empty, status: pricing.status_message || pricing.status || 'N/A' }
       }
