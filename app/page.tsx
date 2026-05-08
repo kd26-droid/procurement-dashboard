@@ -2182,6 +2182,11 @@ export default function ProcurementDashboard() {
 
   const totalPages = Math.ceil(filteredAndSortedItems.length / itemsPerPage)
 
+  // When search/filter changes, snap back to page 1 so matching items aren't hidden behind pagination.
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [searchTerm, activeFilter, reverseFilter, vendorFilter, actionFilter, assignedFilter, categoryFilter])
+
   // Export to CSV function
   const handleExportCSV = () => {
     if (filteredAndSortedItems.length === 0) {
@@ -2317,7 +2322,7 @@ export default function ProcurementDashboard() {
                 const firstPrice = parseFloat(String(firstRaw)) || 0
                 const fee = v?.reeling_fee ? parseFloat(String(v.reeling_fee)) || 0 : 0
                 const feeTag = fee > 0 ? ` +${sym}${fee.toFixed(2)} fee` : ''
-                return `${pack}: ${sym}${firstPrice.toFixed(3)} (MOQ ${mq})${feeTag}`
+                return `${pack}: ${sym}${firstPrice.toFixed(5)} (MOQ ${mq})${feeTag}`
               })
               .join(' | ')
           : ''
@@ -7536,6 +7541,27 @@ export default function ProcurementDashboard() {
                 className="border-gray-400 bg-white pr-10"
               />
               <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            </div>
+
+            {/* Vendor not found? Open Factwise vendor master in new tab to add a new vendor.
+                When user comes back, the search picks up the new vendor automatically (no caching). */}
+            <div className="text-[11px] text-gray-600">
+              Can't find the vendor?{' '}
+              <a
+                href={(() => {
+                  if (typeof window === 'undefined') return 'https://apps.factwise.io/admin/vendors'
+                  const apiEnv = new URLSearchParams(window.location.search).get('api_env')
+                  return apiEnv === 'prod'
+                    ? 'https://apps.factwise.io/admin/vendors'
+                    : 'https://factwise-newdbtest.netlify.app/admin/vendors'
+                })()}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-800 underline font-medium"
+              >
+                Add a new vendor in Factwise
+              </a>
+              {' '}then return here to search and attach.
             </div>
 
             {/* Inline results — click any row to auto-add immediately */}
