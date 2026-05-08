@@ -6472,7 +6472,14 @@ export default function ProcurementDashboard() {
                             case 'rate_limited':
                               return <span className="text-xs text-amber-500" title="Daily API quota reached — will retry automatically on next load">Quota Reached</span>
                             case 'error':
-                              return <span className="text-xs text-red-500">Error</span>
+                              return (
+                                <span
+                                  className="text-xs text-amber-600 cursor-help underline decoration-dotted underline-offset-2"
+                                  title={pricing.status_message || 'Distributor could not fetch this MPN. Click Load Pricing to retry.'}
+                                >
+                                  Unavailable
+                                </span>
+                              )
                             case 'no_mpn':
                               return <span className="text-xs text-gray-400">No MPN</span>
                             case 'not_configured':
@@ -6626,7 +6633,14 @@ export default function ProcurementDashboard() {
                             case 'rate_limited':
                               return <span className="text-xs text-amber-500" title="Daily API quota reached — will retry automatically on next load">Quota Reached</span>
                             case 'error':
-                              return <span className="text-xs text-red-500">Error</span>
+                              return (
+                                <span
+                                  className="text-xs text-amber-600 cursor-help underline decoration-dotted underline-offset-2"
+                                  title={pricing.status_message || 'Distributor could not fetch this MPN. Click Load Pricing to retry.'}
+                                >
+                                  Unavailable
+                                </span>
+                              )
                             case 'no_mpn':
                               return <span className="text-xs text-gray-400">No MPN</span>
                             case 'not_configured':
@@ -6771,7 +6785,14 @@ export default function ProcurementDashboard() {
                             case 'rate_limited':
                               return <span className="text-xs text-amber-500" title="Daily API quota reached — will retry automatically on next load">Quota Reached</span>
                             case 'error':
-                              return <span className="text-xs text-red-500">Error</span>
+                              return (
+                                <span
+                                  className="text-xs text-amber-600 cursor-help underline decoration-dotted underline-offset-2"
+                                  title={pricing.status_message || 'Distributor could not fetch this MPN. Click Load Pricing to retry.'}
+                                >
+                                  Unavailable
+                                </span>
+                              )
                             case 'no_mpn':
                               return <span className="text-xs text-gray-400">No MPN</span>
                             case 'not_configured':
