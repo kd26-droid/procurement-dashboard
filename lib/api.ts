@@ -595,6 +595,9 @@ export interface UpdateItemRequest {
   notes?: string;
   action?: string;
   source?: string;
+  // IDs from the picked PricingRecord — needed so the bid matrix can deep-link
+  // back to the original source doc (PO/Quote/Contract/RFQ).
+  source_meta?: Record<string, string | null>;
   custom_fields?: Record<string, any>;
   assigned_user_ids?: string[];
 }

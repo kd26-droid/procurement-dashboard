@@ -2182,6 +2182,11 @@ export default function ProcurementDashboard() {
 
   const totalPages = Math.ceil(filteredAndSortedItems.length / itemsPerPage)
 
+  // When search/filter changes, snap back to page 1 so matching items aren't hidden behind pagination.
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [searchTerm, activeFilter, reverseFilter, vendorFilter, actionFilter, assignedFilter, categoryFilter])
+
   // Export to CSV function
   const handleExportCSV = () => {
     if (filteredAndSortedItems.length === 0) {
@@ -2255,7 +2260,9 @@ export default function ProcurementDashboard() {
       if (pricing.status === 'not_configured') return { ...empty, status: 'Not Configured' }
       if (pricing.status === 'not_found') return { ...empty, status: 'Not Listed' }
       if (pricing.status === 'rate_limited') return { ...empty, status: 'Quota limit reached — retries automatically' }
-      if (pricing.status === 'fetching' || pricing.status === 'pending') return { ...empty, status: 'Fetching...' }
+      // Don't surface in-progress states in the CSV — they're transient and meaningless after the file is opened.
+      // Leave the row blank so users can re-export once pricing finishes loading.
+      if (pricing.status === 'fetching' || pricing.status === 'pending') return empty
       if (pricing.status !== 'available') {
         return { ...empty, status: pricing.status_message || pricing.status || 'N/A' }
       }
@@ -2317,7 +2324,7 @@ export default function ProcurementDashboard() {
                 const firstPrice = parseFloat(String(firstRaw)) || 0
                 const fee = v?.reeling_fee ? parseFloat(String(v.reeling_fee)) || 0 : 0
                 const feeTag = fee > 0 ? ` +${sym}${fee.toFixed(2)} fee` : ''
-                return `${pack}: ${sym}${firstPrice.toFixed(3)} (MOQ ${mq})${feeTag}`
+                return `${pack}: ${sym}${firstPrice.toFixed(5)} (MOQ ${mq})${feeTag}`
               })
               .join(' | ')
           : ''
@@ -3579,7 +3586,7 @@ export default function ProcurementDashboard() {
 
       // Real pricing-repo candidates (PO / CONTRACT / QUOTE / RFQ) — always compared in PROJECT currency
       const projectCode = (item as any).currency?.code || null
-      const candidates: Array<{ source: string; price: number }> = []
+      const candidates: Array<{ source: string; price: number; meta?: Record<string, string | null> }> = []
       if (pricingEnabled && lookupKey) {
         const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
         for (const src of ['PO', 'CONTRACT', 'QUOTE', 'RFQ'] as const) {
@@ -3588,7 +3595,23 @@ export default function ProcurementDashboard() {
           const nativeP = getNativePrice(record, pricingSettings.priceBasis)
           if (nativeP == null || nativeP <= 0) continue
           const projectP = fxConvert(nativeP, record.currency_code, projectCode, exchangeRates)
-          if (projectP != null && projectP > 0) candidates.push({ source: src, price: projectP })
+          if (projectP != null && projectP > 0) candidates.push({
+            source: src,
+            price: projectP,
+            // IDs needed downstream by the bid matrix to deep-link to this source doc.
+            meta: {
+              source_parent_id: record.source_parent_id ?? null,
+              source_id: record.source_id ?? null,
+              po_id: record.po_id ?? null,
+              po_group_id: record.po_group_id ?? null,
+              quote_id: record.quote_id ?? null,
+              agreement_id: record.agreement_id ?? null,
+              template_id: record.template_id ?? null,
+              event_id: record.event_id ?? null,
+              rfq_event_id: record.rfq_event_id ?? null,
+              rfq_item_id: record.rfq_item_id ?? null,
+            },
+          })
         }
       }
 
@@ -3626,7 +3649,13 @@ export default function ProcurementDashboard() {
         DIGIKEY: 'Digi-Key', MOUSER: 'Mouser', ELEMENT14: 'Element14',
       }
 
-      return { ...item, unitPrice, totalPrice, source: sourceLabel[cheapest.source] ?? cheapest.source }
+      return {
+        ...item,
+        unitPrice,
+        totalPrice,
+        source: sourceLabel[cheapest.source] ?? cheapest.source,
+        source_meta: cheapest.meta ?? {},
+      }
     })
 
     // Snapshot original prices BEFORE state update for comparison
@@ -3650,7 +3679,11 @@ export default function ProcurementDashboard() {
         await Promise.allSettled(
           wave.map((item: any) => {
             const rate = parseFloat(item.unitPrice.toFixed(6))
-            return updateProjectItem(projectId, item.project_item_id, { rate, source: item.source })
+            return updateProjectItem(projectId, item.project_item_id, {
+              rate,
+              source: item.source,
+              source_meta: item.source_meta ?? {},
+            })
               .catch((err: any) => console.warn('[AutoFill] Failed to persist item', item.project_item_id, err))
           })
         )
@@ -6439,7 +6472,14 @@ export default function ProcurementDashboard() {
                             case 'rate_limited':
                               return <span className="text-xs text-amber-500" title="Daily API quota reached — will retry automatically on next load">Quota Reached</span>
                             case 'error':
-                              return <span className="text-xs text-red-500">Error</span>
+                              return (
+                                <span
+                                  className="text-xs text-amber-600 cursor-help underline decoration-dotted underline-offset-2"
+                                  title={pricing.status_message || 'Distributor could not fetch this MPN. Click Load Pricing to retry.'}
+                                >
+                                  Unavailable
+                                </span>
+                              )
                             case 'no_mpn':
                               return <span className="text-xs text-gray-400">No MPN</span>
                             case 'not_configured':
@@ -6593,7 +6633,14 @@ export default function ProcurementDashboard() {
                             case 'rate_limited':
                               return <span className="text-xs text-amber-500" title="Daily API quota reached — will retry automatically on next load">Quota Reached</span>
                             case 'error':
-                              return <span className="text-xs text-red-500">Error</span>
+                              return (
+                                <span
+                                  className="text-xs text-amber-600 cursor-help underline decoration-dotted underline-offset-2"
+                                  title={pricing.status_message || 'Distributor could not fetch this MPN. Click Load Pricing to retry.'}
+                                >
+                                  Unavailable
+                                </span>
+                              )
                             case 'no_mpn':
                               return <span className="text-xs text-gray-400">No MPN</span>
                             case 'not_configured':
@@ -6738,7 +6785,14 @@ export default function ProcurementDashboard() {
                             case 'rate_limited':
                               return <span className="text-xs text-amber-500" title="Daily API quota reached — will retry automatically on next load">Quota Reached</span>
                             case 'error':
-                              return <span className="text-xs text-red-500">Error</span>
+                              return (
+                                <span
+                                  className="text-xs text-amber-600 cursor-help underline decoration-dotted underline-offset-2"
+                                  title={pricing.status_message || 'Distributor could not fetch this MPN. Click Load Pricing to retry.'}
+                                >
+                                  Unavailable
+                                </span>
+                              )
                             case 'no_mpn':
                               return <span className="text-xs text-gray-400">No MPN</span>
                             case 'not_configured':
@@ -7510,6 +7564,27 @@ export default function ProcurementDashboard() {
                 className="border-gray-400 bg-white pr-10"
               />
               <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            </div>
+
+            {/* Vendor not found? Open Factwise vendor master in new tab to add a new vendor.
+                When user comes back, the search picks up the new vendor automatically (no caching). */}
+            <div className="text-[11px] text-gray-600">
+              Can't find the vendor?{' '}
+              <a
+                href={(() => {
+                  if (typeof window === 'undefined') return 'https://apps.factwise.io/admin/vendors'
+                  const apiEnv = new URLSearchParams(window.location.search).get('api_env')
+                  return apiEnv === 'prod'
+                    ? 'https://apps.factwise.io/admin/vendors'
+                    : 'https://factwise-newdbtest.netlify.app/admin/vendors'
+                })()}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-800 underline font-medium"
+              >
+                Add a new vendor in Factwise
+              </a>
+              {' '}then return here to search and attach.
             </div>
 
             {/* Inline results — click any row to auto-add immediately */}
