@@ -701,7 +701,7 @@ export default function ProcurementDashboard() {
   // Helper function to refresh pricing data in chunks (avoids timeout)
   const refreshPricingDataInChunks = async (projectId: string, pricingType: 'digikey' | 'mouser' | 'element14' | 'both') => {
     console.log(`[Pricing Refresh] Starting chunked refresh for ${pricingType}...`)
-    const CHUNK_SIZE = 200
+    const CHUNK_SIZE = 100
     let offset = 0
     let hasMore = true
     const pricingUpdates: Map<string, any> = new Map()
@@ -776,7 +776,7 @@ export default function ProcurementDashboard() {
   // Helper function to refresh user assignments in chunks (avoids timeout)
   const refreshUserAssignmentsInChunks = async (projectId: string) => {
     console.log(`[User Refresh] Starting chunked refresh for user assignments...`)
-    const CHUNK_SIZE = 200
+    const CHUNK_SIZE = 100
     let offset = 0
     let hasMore = true
     const userUpdates: Map<string, any> = new Map()
@@ -1147,10 +1147,12 @@ export default function ProcurementDashboard() {
     return processItemPricing(baseItem, exchangeRates)
   }
 
-  // Load remaining items in background with parallel fetching and retry
+  // Load remaining items in background — sequential with small chunks to keep BE
+  // memory low (delivery-schedule lookups scale per item, parallel × big chunks
+  // = 60MB+ growth per request).
   const loadRemainingItems = async (projectId: string, exchangeRates: Record<string, number>, uniqueSpecNames: string[], totalItems: number, uniqueCustomIdNames: string[] = [], resumeFromOffset: number = 100) => {
-    const CHUNK_SIZE = 500
-    const CONCURRENCY = 3 // Fetch 3 chunks in parallel
+    const CHUNK_SIZE = 100
+    const CONCURRENCY = 1
     const MAX_CHUNK_RETRIES = 3
 
     loadingAbortRef.current = false
