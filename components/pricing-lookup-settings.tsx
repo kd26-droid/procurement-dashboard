@@ -75,6 +75,11 @@ export interface PricingLookupSettingsButtonProps {
    *  - 'split' = full "Load Pricing" button with a caret that opens settings
    */
   variant?: 'gear' | 'split'
+  /**
+   * If set, the load-pricing trigger is disabled and the string is shown
+   * as a hover tooltip — used when the API returned 403 (permission denied).
+   */
+  disabledReason?: string | null
 }
 
 export function PricingLookupSettingsButton({
@@ -85,6 +90,7 @@ export function PricingLookupSettingsButton({
   enabled,
   onLoadPricing,
   variant = 'gear',
+  disabledReason,
 }: PricingLookupSettingsButtonProps) {
   const [open, setOpen] = useState(false)
 
@@ -104,13 +110,19 @@ export function PricingLookupSettingsButton({
         <div className={`inline-flex items-stretch rounded-md border border-input bg-background ${className ?? ''}`}>
           <button
             type="button"
-            className="flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground rounded-l-md disabled:opacity-50 disabled:pointer-events-none"
-            disabled={loading}
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground rounded-l-md disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-auto"
+            disabled={loading || !!disabledReason}
             onClick={() => {
-              if (!onLoadPricing) return
+              if (!onLoadPricing || disabledReason) return
               onLoadPricing()
             }}
-            title={enabled ? 'Reload pricing for all MPNs' : 'Load cheapest pricing per MPN from pricing repository'}
+            title={
+              disabledReason
+                ? disabledReason
+                : enabled
+                  ? 'Reload pricing for all MPNs'
+                  : 'Load cheapest pricing per MPN from pricing repository'
+            }
           >
             {loading ? (
               <Loader2 className="h-4 w-4 animate-spin" />
