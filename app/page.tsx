@@ -611,6 +611,9 @@ export default function ProcurementDashboard() {
   const [pricingSettings, setPricingSettings] = useState<PricingLookupSettings>(DEFAULT_PRICING_SETTINGS)
   // Gate: pricing repo fetch only runs after the user explicitly clicks "Load Pricing"
   const [pricingEnabled, setPricingEnabled] = useState<boolean>(false)
+  // Set when cheapest-by-mpn returns 403 — disables Load Pricing button with a tooltip.
+  // Users without PRICING_REPOSITORY_VIEW on their primary entity hit this.
+  const [pricingPermissionDenied, setPricingPermissionDenied] = useState<boolean>(false)
   // Display mode: 'native' = each source's original currency (default), 'project' = item's currency
   const [displayCurrency, setDisplayCurrency] = useState<'project' | 'native'>('native')
   useEffect(() => {
@@ -1974,6 +1977,27 @@ export default function ProcurementDashboard() {
   // ── Pricing repo v2 cheapest-by-MPN lookup ──
   // Gated by pricingEnabled — only fires after the user clicks "Load Pricing"
   const pricingLookup = usePricingLookup(lineItems, pricingSettings, pricingEnabled)
+
+  // If cheapest-by-mpn returns 403, the user lacks PRICING_REPOSITORY_VIEW on their
+  // primary entity. Lock the button, surface a one-time toast, and stop further
+  // auto-retries so we don't spam the BE.
+  useEffect(() => {
+    if (!pricingLookup.error) return
+    const msg = String(pricingLookup.error)
+    const looks_like_403 =
+      /\b403\b/.test(msg) ||
+      /forbidden/i.test(msg) ||
+      /permission/i.test(msg)
+    if (looks_like_403 && !pricingPermissionDenied) {
+      setPricingPermissionDenied(true)
+      setPricingEnabled(false) // stop refetch loop
+      toast({
+        title: 'Pricing access denied',
+        description: 'You need the "Pricing Repository View" permission to load PO/Contract/Quote/RFQ pricing. Ask an admin to grant it on your primary entity.',
+        variant: 'destructive',
+      })
+    }
+  }, [pricingLookup.error, pricingPermissionDenied, toast])
 
   // Cheapest source per item — green-highlights the cheapest price cell across all 6 sources.
   // Compares displayed values directly. No currency conversion — each source shows its own
@@ -5704,7 +5728,13 @@ export default function ProcurementDashboard() {
                 onChange={updatePricingSettings}
                 loading={pricingLookup.loading}
                 enabled={pricingEnabled}
+                disabledReason={
+                  pricingPermissionDenied
+                    ? 'You do not have permission to load pricing. Ask an admin to grant "Pricing Repository View" on your primary entity.'
+                    : null
+                }
                 onLoadPricing={() => {
+                  if (pricingPermissionDenied) return
                   if (pricingEnabled) {
                     pricingLookup.refetch()
                   } else {
