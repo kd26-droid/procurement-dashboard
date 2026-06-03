@@ -3594,7 +3594,13 @@ export default function ProcurementDashboard() {
     }
   }
 
-  // Auto Fill Prices Handler
+  // Auto Fill Prices Handler.
+  // Walks per-source records in pricingLookup.byItemId, picks min in
+  // project currency across PO/CONTRACT/QUOTE/RFQ + Digikey/Mouser/Element14,
+  // writes that rate + source meta back onto the project item.
+  // CONTRACT column already arrives blended-rate aware from the BE (Load
+  // Pricing call sends requested_qty), so the min here is comparing
+  // apples-to-apples without any FE-side cherry-picking.
   const handleAutoFillPrices = async (scope: 'all' | 'non-selected' | 'selected') => {
     const projectId = getProjectId()
     let itemsToUpdate = lineItems

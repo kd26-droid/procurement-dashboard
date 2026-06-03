@@ -21,10 +21,15 @@ import {
   isZeroRateOrDraftQuote,
   type CheapestByItemPerSource,
   type CheapestByMpnPerSource,
+  type CheapestOverall,
   type PriceBasis,
   type PricingRecord,
   type PricingSourceType,
 } from '@/lib/pricingRepo';
+import {
+  fetchAutofillSettings,
+  type AutofillSettings,
+} from '@/lib/autofillSettings';
 
 // ----------------------------------------------------------------------------
 // Settings shape (mirrors the settings dialog)
@@ -187,6 +192,14 @@ export interface PricingLookupState {
   itemIdToMpn: Map<string | number, string | null>;
   /** Map: mpn → per-source (for chart history lookups). */
   byMpn: Map<string, CheapestByMpnPerSource | null>;
+  /**
+   * Map: lookupKey → BE-synthesised winner. Drives the Autofill button
+   * (no FE-side cherry-picking). Honours UOM normalization, contract
+   * blended rate, vendor block, tiebreakers — all server-side.
+   */
+  byItemIdOverall: Map<string, CheapestOverall | null>;
+  /** Enterprise-level autofill setting fetched from BE on mount. */
+  autofillSettings: AutofillSettings | null;
   loading: boolean;
   error: string | null;
   refetch: () => void;
@@ -200,16 +213,37 @@ export function usePricingLookup(
   const [state, setState] = useState<{
     byItemId: Map<string, CheapestByItemPerSource | null>;
     byMpn: Map<string, CheapestByMpnPerSource | null>;
+    byItemIdOverall: Map<string, CheapestOverall | null>;
     loading: boolean;
     error: string | null;
   }>({
     byItemId: new Map(),
     byMpn: new Map(),
+    byItemIdOverall: new Map(),
     loading: false,
     error: null,
   });
+  // Fetched once on mount, drives the hierarchy + price_basis on every
+  // cheapest-by-mpn call. We don't refetch on dashboard prefs changes —
+  // these are enterprise-wide, not session-local.
+  const [autofillSettings, setAutofillSettings] =
+    useState<AutofillSettings | null>(null);
   const [refetchToken, setRefetchToken] = useState(0);
   const inFlight = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAutofillSettings()
+      .then((data) => {
+        if (!cancelled) setAutofillSettings(data);
+      })
+      .catch((err) => {
+        console.error('[usePricingLookup] settings fetch failed', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // lineItem.id → mpn (for chart history)
   const itemIdToMpn = useMemo(() => {
@@ -232,6 +266,18 @@ export function usePricingLookup(
       item_code: string | null;
       mpn: string | null;
       project_currency_code: string | null;
+      /** Project item's UOM id — drives BE-side rate normalisation. */
+      target_uom_id: string | null;
+      /** Project item's UOM id for the requested_qty — sent for blended math. */
+      requested_qty_uom_id: string | null;
+      /** Item quantity — engages CONTRACT blended-rate engine on BE. */
+      requested_qty: string | null;
+      /**
+       * Custom Part Number — used by the hierarchy walker when the item's
+       * MPN doesn't return any rows but the buyer has CPN mapped on the
+       * EnterpriseItem.
+       */
+      cpn: string | null;
     }> = [];
     for (const it of items) {
       const eid = it.enterprise_item_id || null;
@@ -240,6 +286,21 @@ export function usePricingLookup(
       const key = eid || erp || icode;
       if (!key || seen.has(key)) continue;
       seen.add(key);
+      // Pull UOM + qty from whichever shape the page passes us. Project
+      // items expose these as measurement_unit_id / quantity directly;
+      // event/req items use slightly different keys.
+      const uomId =
+        it.measurement_unit_id ||
+        it.measurementUnitId ||
+        it.measurement_unit?.measurement_unit_id ||
+        null;
+      const qty =
+        it.quantity != null
+          ? String(it.quantity)
+          : it.qty != null
+          ? String(it.qty)
+          : null;
+      const cpn = it.cpn || it.CPN_item_code || null;
       entries.push({
         lookupKey: key,
         enterprise_item_id: eid,
@@ -247,6 +308,10 @@ export function usePricingLookup(
         item_code: icode,
         mpn: extractMpn(it),
         project_currency_code: it.currency?.code || null,
+        target_uom_id: uomId,
+        requested_qty_uom_id: uomId,
+        requested_qty: qty,
+        cpn,
       });
     }
     return entries;
@@ -259,7 +324,13 @@ export function usePricingLookup(
 
   useEffect(() => {
     if (!enabled || itemEntries.length === 0) {
-      setState({ byItemId: new Map(), byMpn: new Map(), loading: false, error: null });
+      setState({
+        byItemId: new Map(),
+        byMpn: new Map(),
+        byItemIdOverall: new Map(),
+        loading: false,
+        error: null,
+      });
       return;
     }
 
@@ -283,11 +354,23 @@ export function usePricingLookup(
     if (withMpn.length > 0) {
       promises.push(
         fetchCheapestByMpn({
-          items: withMpn.map(e => ({
+          items: withMpn.map((e) => ({
             mpn: e.mpn as string,
             enterprise_item_id: e.enterprise_item_id || undefined,
+            erp: e.erp_item_code || undefined,
+            code: e.item_code || undefined,
+            cpn: e.cpn || undefined,
             project_currency_code: e.project_currency_code || undefined,
+            target_uom_id: e.target_uom_id || undefined,
+            requested_qty: e.requested_qty || undefined,
+            requested_qty_uom_id: e.requested_qty_uom_id || undefined,
           })),
+          // analytics keeps the per-source breakdown the dashboard already
+          // renders AND attaches cheapest_overall on every item. Switching to
+          // 'autofill' would strip the per-source columns and break the
+          // existing UI — only flip later when an autofill-only surface uses
+          // this hook.
+          mode: 'analytics',
           source_types: settings.sourceTypes,
           date_from: dateFrom,
           date_to: dateTo,
@@ -323,6 +406,7 @@ export function usePricingLookup(
 
         const byItemId = new Map<string, CheapestByItemPerSource | null>();
         const byMpn    = new Map<string, CheapestByMpnPerSource | null>();
+        const byItemIdOverall = new Map<string, CheapestOverall | null>();
 
         // Response now keyed by enterprise_item_id — map directly to lookupKey
         if (mpnResp?.results) {
@@ -333,10 +417,20 @@ export function usePricingLookup(
             byItemId.set(entry.lookupKey, filtered);
             // Also populate byMpn for chart history lookups
             if (entry.mpn) byMpn.set(entry.mpn, filtered);
+            // cheapest_overall lives on the per-item bucket in analytics mode
+            byItemIdOverall.set(
+              entry.lookupKey,
+              raw?.cheapest_overall ?? null,
+            );
           }
         }
 
-        // Map item-ID results for no-MPN items
+        // Map item-ID results for no-MPN items. cheapest-by-item endpoint
+        // doesn't return cheapest_overall (it's a different endpoint pre-
+        // dating the synth) — leave overall as null for these so the
+        // Autofill button falls back to client-side cherry-picking just
+        // for this slice. Once we migrate the no-MPN path to cheapest-by-
+        // mpn with hierarchy fallback, this branch goes away.
         if (itemResp?.results) {
           for (const entry of withoutMpn) {
             const raw = itemResp.results[entry.lookupKey] ?? null;
@@ -344,12 +438,24 @@ export function usePricingLookup(
           }
         }
 
-        setState({ byItemId, byMpn, loading: false, error: null });
+        setState({
+          byItemId,
+          byMpn,
+          byItemIdOverall,
+          loading: false,
+          error: null,
+        });
       })
       .catch((err: any) => {
         if (controller.signal.aborted) return;
         console.error('[usePricingLookup] fetch failed:', err);
-        setState({ byItemId: new Map(), byMpn: new Map(), loading: false, error: err?.message || 'Pricing lookup failed' });
+        setState({
+          byItemId: new Map(),
+          byMpn: new Map(),
+          byItemIdOverall: new Map(),
+          loading: false,
+          error: err?.message || 'Pricing lookup failed',
+        });
       });
 
     return () => controller.abort();
@@ -368,6 +474,8 @@ export function usePricingLookup(
   return {
     byItemId: state.byItemId,
     byMpn:    state.byMpn,
+    byItemIdOverall: state.byItemIdOverall,
+    autofillSettings,
     itemIdToMpn,
     loading:  state.loading,
     error:    state.error,
@@ -406,4 +514,11 @@ export function savePricingSettings(settings: PricingLookupSettings): void {
 // Re-exports
 // ----------------------------------------------------------------------------
 
-export type { PricingRecord, CheapestByMpnPerSource, PriceBasis, PricingSourceType };
+export type {
+  PricingRecord,
+  CheapestByMpnPerSource,
+  CheapestOverall,
+  PriceBasis,
+  PricingSourceType,
+};
+export type { AutofillSettings };

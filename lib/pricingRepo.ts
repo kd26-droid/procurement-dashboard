@@ -101,11 +101,146 @@ export interface PricingRecord {
   pricing_datetime: string;
 }
 
-/** One MPN's results — every requested source_type is a key, value is record or null. */
-export type CheapestByMpnPerSource = Partial<Record<PricingSourceType, PricingRecord | null>>;
+/**
+ * Per-tier breakdown row inside a CONTRACT blended record. Reflects what
+ * the BE engine consumed at each cumulative-tier band when computing the
+ * blended rate for `requested_qty`.
+ */
+export interface BlendedTierRow {
+  tier_id: string | null;
+  min_quantity: string;
+  max_quantity: string;
+  rate: string;
+  qty_consumed_now: string;
+  subtotal: string;
+}
+
+/**
+ * Live-blended CONTRACT info — only present on CONTRACT-source records
+ * when `requested_qty` is sent. Cursor-aware: respects the contract's
+ * already-consumed quantity (accepted > issued > approval_pending).
+ */
+export interface BlendedContract {
+  contract_item_id: string;
+  contract_id: string;
+  vendor_entity_id: string | null;
+  contract_quantity: string;
+  requested_qty_in_contract_uom: string;
+  conversion_warning: string | null;
+  cursor: string;
+  cursor_source: 'accepted' | 'issued' | 'approval_pending' | 'none';
+  blended_unit_rate: string;
+  total_cost: string;
+  qty_within_contract: string;
+  qty_exceeds_contract: string;
+  exceeds_contract: boolean;
+  tier_breakdown: BlendedTierRow[];
+  currency_code: string | null;
+  matched_identifier_tier: IdentifierType | null;
+}
+
+export type IdentifierType = 'MPN' | 'ERP' | 'CODE' | 'CPN';
+
+/**
+ * Records returned per source. Extends PricingRecord with the new
+ * matched_identifier_tier + optional blended block. Defined as
+ * intersection so existing field access (rec.rate, rec.supplier_name etc.)
+ * keeps type-checking.
+ */
+export type CheapestByMpnRecord = PricingRecord & {
+  matched_identifier_tier?: IdentifierType;
+  blended?: BlendedContract;
+};
+
+/**
+ * Skip / drop reason surfaced by the BE synth. Lists vendors that were
+ * eligible by rate but excluded by a rule (exceeded contract qty, blocked
+ * vendor, UOM conversion failure, etc.). FE renders these as warnings
+ * next to the autofilled rate.
+ */
+export interface CheapestOverallWarning {
+  source: PricingSourceType;
+  reason:
+    | 'insufficient_remaining_quantity'
+    | 'vendor_blocked_global'
+    | 'vendor_blocked_for_item'
+    | 'uom_unknown'
+    | 'uom_unconvertible'
+    | 'uom_conversion_failed'
+    | 'uom_conversion_math_failed'
+    | string;
+  vendor_entity_id?: string | null;
+  qty_exceeds_contract?: string;
+  source_uom_id?: string | null;
+  source_uom_name?: string | null;
+}
+
+/**
+ * Tied-candidate snippet — vendors that matched the winner on rate
+ * (currency-normalised), surfaced for FE transparency. The BE already
+ * picked one via the tiebreaker chain; this just exposes the field that
+ * actually broke the tie so the UI can say "won by payment_term".
+ */
+export interface CheapestOverallTied {
+  source: PricingSourceType;
+  vendor_entity_id: string | null;
+  payment_term_key: string | null;
+  lead_time_days: number | null;
+  incoterm: string | null;
+  broke_tie_by:
+    | 'rate'
+    | 'payment_term'
+    | 'lead_time'
+    | 'incoterm'
+    | 'contract_qty'
+    | 'vendor_id';
+}
+
+/**
+ * The synthesised single winner per item. Drives autofill — FE just
+ * reads `cheapest_overall.rate` + `.vendor_entity_id` instead of
+ * computing min across sources itself. `has_match=false` means the BE
+ * found no eligible candidate (no source, every vendor blocked, every
+ * contract exceeded). Surfaces `warnings` so FE can explain why.
+ */
+export interface CheapestOverall {
+  has_match: boolean;
+  source?: PricingSourceType;
+  vendor_entity_id?: string | null;
+  vendor_name?: string | null;
+  rate?: number | null;
+  rate_in_project_currency?: number | null;
+  currency_code?: string | null;
+  project_currency_code?: string | null;
+  matched_identifier_tier?: IdentifierType | null;
+  pricing_entry_id?: string;
+  contract_item_id?: string | null;
+  is_blended?: boolean;
+  tiebreakers_applied?: {
+    payment_term_key: string | null;
+    lead_time_days: number | null;
+    incoterm: string | null;
+    contract_quantity: string | null;
+  };
+  tied_candidates?: CheapestOverallTied[];
+  warnings: CheapestOverallWarning[];
+}
+
+/**
+ * One MPN's results — every requested source_type is a key, value is
+ * record or null. In autofill mode the per-source records are stripped;
+ * only `cheapest_overall` is sent.
+ */
+export type CheapestByMpnPerSource = Partial<
+  Record<PricingSourceType, CheapestByMpnRecord | null>
+> & {
+  cheapest_overall?: CheapestOverall | null;
+};
 
 export interface CheapestByMpnResponse {
+  mode?: 'autofill' | 'analytics';
   price_basis: PriceBasis;
+  identifier_hierarchy?: IdentifierType[];
   date_from: string | null;
   date_to: string | null;
   source_types: PricingSourceType[];
@@ -115,12 +250,39 @@ export interface CheapestByMpnResponse {
 
 export interface CheapestByMpnRequestItem {
   mpn: string;
+  /** Loose-match identifiers — used when the hierarchy walker falls back from MPN. */
+  erp?: string;
+  code?: string;
+  cpn?: string;
   enterprise_item_id?: string;
   project_currency_code?: string;
+  /**
+   * Live UOM normalization. When set, every candidate's native rate is
+   * converted from its source UOM to this target UOM before comparison.
+   * Set this to the EnterpriseItem's primary UOM id for the project.
+   */
+  target_uom_id?: string;
+  /**
+   * Engages the CONTRACT blended-rate engine. When sent, the cheapest
+   * CONTRACT record uses cursor-aware tier walking instead of the static
+   * cheapest-tier-row. Required for accurate event-time autofill on
+   * tiered contracts.
+   */
+  requested_qty?: string | number;
+  requested_qty_uom_id?: string;
 }
 
 export interface CheapestByMpnRequest {
   items: CheapestByMpnRequestItem[];
+  /**
+   * 'autofill' (default) -> response is slim, only `cheapest_overall` per item.
+   * 'analytics' -> per-source records PLUS `cheapest_overall`. Use this
+   * mode here because the dashboard's PO/Contract/Quote/RFQ columns still
+   * need the per-source records.
+   */
+  mode?: 'autofill' | 'analytics';
+  /** Override the enterprise saved hierarchy for this one call. Usually omitted. */
+  identifier_hierarchy?: IdentifierType[];
   source_types?: PricingSourceType[];
   date_from?: string;
   date_to?: string;
@@ -277,10 +439,20 @@ const MAX_BATCH = 500;
 export async function fetchCheapestByMpn(
   req: CheapestByMpnRequest,
 ): Promise<CheapestByMpnResponse> {
-  const cleanItems = req.items.filter(i => (i.mpn ?? '').trim().length > 0);
+  // We accept items WITHOUT a primary mpn now (the hierarchy walker
+  // can match by ERP / CODE / CPN). Drop only items with no identifier
+  // at all — they can't match anything regardless of tier.
+  const cleanItems = req.items.filter(
+    (i) =>
+      (i.mpn ?? '').trim().length > 0 ||
+      (i.erp ?? '').trim().length > 0 ||
+      (i.code ?? '').trim().length > 0 ||
+      (i.cpn ?? '').trim().length > 0,
+  );
 
   if (cleanItems.length === 0) {
     return {
+      mode: req.mode ?? 'autofill',
       price_basis: req.price_basis ?? 'effective_rate',
       date_from: req.date_from ?? null,
       date_to: req.date_to ?? null,
@@ -296,21 +468,30 @@ export async function fetchCheapestByMpn(
 
   const responses = await Promise.all(
     batches.map((batch) =>
-      pricingRepoFetch<CheapestByMpnResponse>('/pricing_repository/v2/cheapest-by-mpn/', {
-        method: 'POST',
-        body: JSON.stringify({
-          items: batch,
-          source_types: req.source_types,
-          date_from: req.date_from,
-          date_to: req.date_to,
-          price_basis: req.price_basis,
-        }),
-      }),
+      pricingRepoFetch<CheapestByMpnResponse>(
+        '/pricing_repository/v2/cheapest-by-mpn/',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            items: batch,
+            mode: req.mode,
+            identifier_hierarchy: req.identifier_hierarchy,
+            source_types: req.source_types,
+            date_from: req.date_from,
+            date_to: req.date_to,
+            price_basis: req.price_basis,
+          }),
+        },
+      ),
     ),
   );
 
   const merged: CheapestByMpnResponse = {
-    price_basis: responses[0]?.price_basis ?? req.price_basis ?? 'effective_rate',
+    mode: responses[0]?.mode ?? req.mode ?? 'autofill',
+    price_basis:
+      responses[0]?.price_basis ?? req.price_basis ?? 'effective_rate',
+    identifier_hierarchy:
+      responses[0]?.identifier_hierarchy ?? req.identifier_hierarchy,
     date_from: responses[0]?.date_from ?? req.date_from ?? null,
     date_to: responses[0]?.date_to ?? req.date_to ?? null,
     source_types: responses[0]?.source_types ?? [],
