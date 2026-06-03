@@ -573,6 +573,123 @@ export async function fetchCheapestByItem(
   return merged;
 }
 
+// ----------------------------------------------------------------------------
+// cheapest-by-id — setting-driven strict match (POST /v2/cheapest-by-id/)
+// ----------------------------------------------------------------------------
+/**
+ * Server-side cheapest-price lookup honouring the buyer's Primary ID for
+ * tracking (MPN / ERP / CPN / HSN).
+ *
+ *   - Setting unset → endpoint returns 400. Caller must short-circuit
+ *     to the legacy cheapest-by-mpn flow before calling this.
+ *   - Each item carries its OWN project_currency_code so mixed-currency
+ *     projects get per-item conversion in a single round-trip. Two items
+ *     with the same id but different currencies each get their own
+ *     converted response under their own `key`.
+ *   - Response is keyed by the FE-supplied `key` — the FE chooses what
+ *     to use (typically the lineItem's lookupKey) and the BE echoes it
+ *     back so the FE doesn't have to map id → row.
+ */
+export interface CheapestByIdRequestItem {
+  /** FE-chosen response key. Typically lineItem.enterprise_item_id or
+   *  whatever uniquely identifies the row on the FE. */
+  key: string;
+  /** Identifier value to match against (MPN / ERP / CPN / HSN). */
+  id: string;
+  /** Currency this item ranks + converts into. Omit to skip conversion
+   *  (response will carry native rate only). */
+  project_currency_code?: string;
+}
+
+export interface CheapestByIdRequest {
+  items: CheapestByIdRequestItem[];
+  source_types?: PricingSourceType[];
+  date_from?: string;
+  date_to?: string;
+  price_basis?: PriceBasis;
+}
+
+export type CheapestByIdPerSource = CheapestByMpnPerSource;
+
+export interface CheapestByIdResponse {
+  price_basis: PriceBasis;
+  primary_id_for_tracking: string;
+  date_from: string | null;
+  date_to: string | null;
+  source_types: PricingSourceType[];
+  results: Record<string, CheapestByIdPerSource>;
+}
+
+export async function fetchCheapestById(
+  req: CheapestByIdRequest,
+): Promise<CheapestByIdResponse> {
+  // Drop entries missing key / id. Dedupe on key (last wins). The BE
+  // rejects empty list / > MAX_BATCH per call.
+  const seenKey = new Set<string>();
+  const cleaned: CheapestByIdRequestItem[] = [];
+  for (const raw of req.items ?? []) {
+    if (!raw) continue;
+    const id = String(raw.id ?? '').trim();
+    if (!id) continue;
+    const key = String(raw.key ?? id).trim();
+    if (!key || seenKey.has(key)) continue;
+    seenKey.add(key);
+    cleaned.push({
+      key,
+      id,
+      project_currency_code: raw.project_currency_code || undefined,
+    });
+  }
+  if (cleaned.length === 0) {
+    return {
+      price_basis: req.price_basis ?? 'effective_rate',
+      primary_id_for_tracking: '',
+      date_from: req.date_from ?? null,
+      date_to: req.date_to ?? null,
+      source_types: req.source_types ?? [],
+      results: {},
+    };
+  }
+
+  // Batch in chunks of MAX_BATCH (500) to match the BE cap.
+  const batches: CheapestByIdRequestItem[][] = [];
+  for (let i = 0; i < cleaned.length; i += MAX_BATCH) {
+    batches.push(cleaned.slice(i, i + MAX_BATCH));
+  }
+
+  const responses = await Promise.all(
+    batches.map((batch) =>
+      pricingRepoFetch<CheapestByIdResponse>(
+        '/pricing_repository/v2/cheapest-by-id/',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            items: batch,
+            source_types: req.source_types,
+            date_from: req.date_from,
+            date_to: req.date_to,
+            price_basis: req.price_basis,
+          }),
+        },
+      ),
+    ),
+  );
+
+  const merged: CheapestByIdResponse = {
+    price_basis:
+      responses[0]?.price_basis ?? req.price_basis ?? 'effective_rate',
+    primary_id_for_tracking: responses[0]?.primary_id_for_tracking ?? '',
+    date_from: responses[0]?.date_from ?? req.date_from ?? null,
+    date_to: responses[0]?.date_to ?? req.date_to ?? null,
+    source_types: responses[0]?.source_types ?? [],
+    results: {},
+  };
+  for (const r of responses) {
+    Object.assign(merged.results, r.results);
+  }
+  return merged;
+}
+
 /**
  * Fetch full pricing history for one MPN using the dedicated /v2/history/ endpoint.
  * Exact MPN match (not icontains), date-scoped to match cheapest-by-mpn window.

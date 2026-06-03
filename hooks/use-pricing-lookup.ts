@@ -15,12 +15,14 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  fetchCheapestById,
   fetchCheapestByItem,
   fetchCheapestByMpn,
   isExpiredContract,
   isZeroRateOrDraftQuote,
   type CheapestByItemPerSource,
   type CheapestByMpnPerSource,
+  type CheapestByMpnRecord,
   type CheapestOverall,
   type PriceBasis,
   type PricingRecord,
@@ -30,6 +32,10 @@ import {
   fetchAutofillSettings,
   type AutofillSettings,
 } from '@/lib/autofillSettings';
+import {
+  fetchPrimaryIdForTracking,
+  type PrimaryIdForTracking,
+} from '@/lib/primaryIdForTracking';
 
 // ----------------------------------------------------------------------------
 // Settings shape (mirrors the settings dialog)
@@ -119,6 +125,36 @@ export function extractMpn(item: any): string | null {
   return candidates[0].value;
 }
 
+/**
+ * Pull the identifier value to feed cheapest-by-id, based on the buyer's
+ * Primary ID for tracking setting. Returns null when the chosen
+ * identifier isn't populated on that line item — those rows get
+ * skipped server-side anyway.
+ *
+ * The MPN path uses extractMpn() so attribute-level MPNs (spec_MPN,
+ * customId_MPN, customId_MPN_Code, etc.) work the same way the legacy
+ * cheapest-by-mpn flow already does. Every other identifier only lives
+ * at the item-master level (one column per item), so this just reads
+ * the matching field.
+ */
+function extractIdForTracking(
+  item: any,
+  identifier: PrimaryIdForTracking,
+): string | null {
+  switch (identifier) {
+    case 'MPN':
+      return extractMpn(item);
+    case 'ERP':
+      return (item?.erp_item_code as string | null) ?? null;
+    case 'CPN':
+      return (item?.cpn || item?.CPN_item_code) ?? null;
+    case 'HSN':
+      return (item?.hsn || item?.HSN_item_code) ?? null;
+    default:
+      return null;
+  }
+}
+
 // ----------------------------------------------------------------------------
 // Cache — keyed by hash of (identifiers + settings)
 // ----------------------------------------------------------------------------
@@ -172,11 +208,19 @@ function applyClientFilters(
   if (!perSource) return null;
   const out: CheapestByMpnPerSource = {};
   for (const [src, rec] of Object.entries(perSource)) {
+    // `cheapest_overall` lives in the same dict but has a different
+    // shape (no mpn/manufacturer/etc.) — pass it through untouched
+    // rather than running source-record filters that don't apply.
+    if (src === 'cheapest_overall') {
+      out.cheapest_overall = rec as typeof out.cheapest_overall;
+      continue;
+    }
     const key = src as PricingSourceType;
-    if (!rec) { out[key] = null; continue; }
-    if (settings.excludeExpiredContracts && isExpiredContract(rec)) { out[key] = null; continue; }
-    if (settings.excludeZeroRateAndDraftQuotes && isZeroRateOrDraftQuote(rec, settings.priceBasis)) { out[key] = null; continue; }
-    out[key] = rec;
+    const sourceRec = rec as CheapestByMpnRecord | null;
+    if (!sourceRec) { out[key] = null; continue; }
+    if (settings.excludeExpiredContracts && isExpiredContract(sourceRec)) { out[key] = null; continue; }
+    if (settings.excludeZeroRateAndDraftQuotes && isZeroRateOrDraftQuote(sourceRec, settings.priceBasis)) { out[key] = null; continue; }
+    out[key] = sourceRec;
   }
   return out;
 }
@@ -228,6 +272,13 @@ export function usePricingLookup(
   // these are enterprise-wide, not session-local.
   const [autofillSettings, setAutofillSettings] =
     useState<AutofillSettings | null>(null);
+  // Primary ID for tracking — fetched once on mount alongside autofill.
+  // NULL means the admin hasn't picked, so the hook stays on the legacy
+  // cheapest-by-mpn + cheapest-by-item dual-call path. Any non-null value
+  // routes through the new cheapest-by-id endpoint.
+  const [primaryId, setPrimaryId] =
+    useState<PrimaryIdForTracking | null>(null);
+  const [primaryIdLoaded, setPrimaryIdLoaded] = useState<boolean>(false);
   const [refetchToken, setRefetchToken] = useState(0);
   const inFlight = useRef<AbortController | null>(null);
 
@@ -239,6 +290,18 @@ export function usePricingLookup(
       })
       .catch((err) => {
         console.error('[usePricingLookup] settings fetch failed', err);
+      });
+    fetchPrimaryIdForTracking()
+      .then((value) => {
+        if (cancelled) return;
+        setPrimaryId(value);
+        setPrimaryIdLoaded(true);
+      })
+      .catch((err) => {
+        console.error(
+          '[usePricingLookup] primary-id fetch failed', err,
+        );
+        if (!cancelled) setPrimaryIdLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -333,6 +396,12 @@ export function usePricingLookup(
       });
       return;
     }
+    // Wait for the Primary ID fetch to settle before deciding which
+    // endpoint to call — calling the wrong one now means a wasted
+    // refetch after the setting resolves and the FE flicker is jarring.
+    if (!primaryIdLoaded) {
+      return;
+    }
 
     inFlight.current?.abort();
     const controller = new AbortController();
@@ -343,6 +412,111 @@ export function usePricingLookup(
     const dateFrom = settings.daysBack !== null ? isoDaysAgo(settings.daysBack) : undefined;
     const dateTo   = settings.daysBack !== null ? todayIso()                     : undefined;
 
+    // ── Setting-driven path ────────────────────────────────────────
+    // When admin has picked a Primary ID, route every item (with a
+    // populated value on that identifier) through cheapest-by-id.
+    // Items missing the chosen id are simply not queryable — BE would
+    // 400 on an all-empty list, FE silently skips them and reports
+    // empty results for that lookupKey.
+    if (primaryId) {
+      // Build per-item request objects. Each line item gets:
+      //   key                   — lookupKey (FE's stable line-row id)
+      //   id                    — value of the chosen identifier
+      //   project_currency_code — that line item's own project currency
+      // Two line items sharing the same id but different currencies stay
+      // distinct in the request (different keys) so the BE returns each
+      // with its own per-currency conversion.
+      type RequestItem = {
+        key: string;
+        id: string;
+        project_currency_code?: string;
+      };
+      const requestItems: RequestItem[] = [];
+      for (const entry of itemEntries) {
+        const sourceItem = items.find(
+          (it: any) => (
+            it.enterprise_item_id || it.erp_item_code || it.itemId || it.item_code
+          ) === entry.lookupKey,
+        );
+        const value = sourceItem
+          ? extractIdForTracking(sourceItem, primaryId)
+          : null;
+        if (!value || !value.trim()) continue;
+        requestItems.push({
+          key: entry.lookupKey,
+          id: value.trim(),
+          project_currency_code: entry.project_currency_code || undefined,
+        });
+      }
+      const rankingBasis = toRankingBasis(settings.priceBasis);
+
+      const promise = requestItems.length > 0
+        ? fetchCheapestById({
+            items: requestItems,
+            source_types: settings.sourceTypes,
+            date_from: dateFrom,
+            date_to: dateTo,
+            price_basis: rankingBasis,
+          })
+        : Promise.resolve(null);
+
+      promise
+        .then((resp) => {
+          if (controller.signal.aborted) return;
+          const byItemId = new Map<
+            string, CheapestByItemPerSource | null
+          >();
+          const byMpn = new Map<string, CheapestByMpnPerSource | null>();
+          const byItemIdOverall = new Map<
+            string, CheapestOverall | null
+          >();
+          for (const entry of itemEntries) {
+            // Response keys are the lookupKey we sent — direct lookup.
+            const raw = resp?.results[entry.lookupKey] ?? null;
+            const filtered = applyClientFilters(raw, settings);
+            byItemId.set(entry.lookupKey, filtered);
+            // Populate byMpn for chart history when MPN mode is active
+            if (primaryId === 'MPN' && entry.mpn) {
+              byMpn.set(entry.mpn, filtered);
+            }
+            // cheapest-by-id doesn't synth a cheapest_overall (the
+            // dashboard cherry-picks across sources itself). Set null
+            // so the Autofill button falls back to FE-side cheapest.
+            byItemIdOverall.set(entry.lookupKey, null);
+          }
+          setState({
+            byItemId,
+            byMpn,
+            byItemIdOverall,
+            loading: false,
+            error: null,
+          });
+        })
+        .catch((err: any) => {
+          if (controller.signal.aborted) return;
+          console.error('[usePricingLookup] cheapest-by-id failed:', err);
+          // The setting-gate 400 from cheapest-by-id is operator-facing,
+          // not actionable for the buyer who's just trying to use the
+          // dashboard. Replace it with a softer message pointing at the
+          // admin. Any other error keeps its native text.
+          const rawMessage = String(err?.message ?? '');
+          const isUnconfigured =
+            /Primary ID for tracking is not configured/i.test(rawMessage);
+          setState({
+            byItemId: new Map(),
+            byMpn: new Map(),
+            byItemIdOverall: new Map(),
+            loading: false,
+            error: isUnconfigured
+              ? 'Pricing lookup is not configured. Please contact your admin.'
+              : rawMessage || 'Pricing lookup failed',
+          });
+        });
+
+      return () => controller.abort();
+    }
+
+    // ── Legacy path (Primary ID not configured) ────────────────────
     const withMpn    = itemEntries.filter(e => !!e.mpn);
     const withoutMpn = itemEntries.filter(e => !e.mpn);
 
@@ -469,6 +643,8 @@ export function usePricingLookup(
     settings.excludeExpiredContracts,
     settings.excludeZeroRateAndDraftQuotes,
     refetchToken,
+    primaryId,
+    primaryIdLoaded,
   ]);
 
   return {
