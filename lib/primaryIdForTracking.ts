@@ -59,9 +59,9 @@ const getApiBaseUrl = (): string => {
     if (apiEnv === 'prod')
       return 'https://qc9s5bz8d7.execute-api.us-east-1.amazonaws.com/prod';
     if (apiEnv === 'dev')
-      return 'https://6rnlqc78hb.execute-api.us-east-1.amazonaws.com/dev';
+      return 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
   }
-  return envUrl ?? 'http://localhost:3001';
+  return envUrl ?? 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
 };
 
 export async function fetchPrimaryIdForTracking():
