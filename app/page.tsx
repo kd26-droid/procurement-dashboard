@@ -332,11 +332,27 @@ function fxConvert(
 ): number | null {
   if (amount == null || isNaN(amount)) return null
   if (!fromCode || !toCode) return null
-  if (fromCode === toCode) return amount
-  const direct = exchangeRates[`${fromCode}_TO_${toCode}`]
+  const from = fromCode.toUpperCase()
+  const to = toCode.toUpperCase()
+  if (from === to) return amount
+  // Direct rate if BE happens to ship one.
+  const direct = exchangeRates[`${from}_TO_${to}`]
   if (typeof direct === 'number' && direct > 0) return amount * direct
-  const inverse = exchangeRates[`${toCode}_TO_${fromCode}`]
+  const inverse = exchangeRates[`${to}_TO_${from}`]
   if (typeof inverse === 'number' && inverse > 0) return amount / inverse
+  // BE only ships USD_TO_<X> for every currency, so for any non-USD pair
+  // we pivot through USD: amount in `from` → USD → `to`.
+  //   USD_TO_from  = how many `from` per 1 USD  → amount_in_USD = amount / USD_TO_from
+  //   USD_TO_to    = how many `to`   per 1 USD  → amount_in_to  = amount_in_USD * USD_TO_to
+  const usdToFrom = exchangeRates[`USD_TO_${from}`]
+  const usdToTo = exchangeRates[`USD_TO_${to}`]
+  if (
+    typeof usdToFrom === 'number' && usdToFrom > 0 &&
+    typeof usdToTo === 'number' && usdToTo > 0
+  ) {
+    return (amount / usdToFrom) * usdToTo
+  }
+  // One leg of the pivot is missing — caller decides how to display.
   return null
 }
 
@@ -685,6 +701,11 @@ export default function ProcurementDashboard() {
   const [analyticsHistoryLoading, setAnalyticsHistoryLoading] = useState(false)
   // Confirmation dialog: cell click → confirm before navigating to source doc
   const [pendingNavRecord, setPendingNavRecord] = useState<PricingRecord | null>(null)
+  // Opened when the buyer clicks a CONTRACT cell that came back with a
+  // blended-rate payload. Shows the qty walk + cursor + final math in a
+  // dialog so the cell tooltip can stay short. The "Open in Factwise"
+  // button inside hands off to the existing pendingNavRecord dialog.
+  const [blendedDetailRecord, setBlendedDetailRecord] = useState<PricingRecord | null>(null)
   const [showEditDialog, setShowEditDialog] = useState(false)
   const [editFormData, setEditFormData] = useState<any>({})
 
@@ -7049,33 +7070,42 @@ export default function ProcurementDashboard() {
                             }>
                           } | null | undefined
 
+                          // BE returns Decimals as strings with up to 10
+                          // trailing zeros (e.g. "100.0000000000"). Strip them
+                          // for the tooltip; keep cents-grade precision on
+                          // money fields.
+                          const fmtQty = (s: string | undefined) => {
+                            if (!s) return ''
+                            const n = Number(s)
+                            return Number.isFinite(n)
+                              ? n.toLocaleString(undefined, { maximumFractionDigits: 4 })
+                              : s
+                          }
+                          const fmtMoney = (s: string | undefined) => {
+                            if (!s) return ''
+                            const n = Number(s)
+                            return Number.isFinite(n)
+                              ? n.toLocaleString(undefined, {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })
+                              : s
+                          }
+
                           // Build FX info lines for tooltip — show conversion math when relevant
                           const titleLines: string[] = []
                           if (record.supplier_name) titleLines.push(record.supplier_name)
                           if (record.pricing_datetime) titleLines.push(record.pricing_datetime.slice(0, 10))
                           if (sourceType === 'CONTRACT' && blended) {
-                            titleLines.push(`Blended at qty ${blended.requested_qty_in_contract_uom}:`)
-                            for (const t of blended.tier_breakdown ?? []) {
-                              titleLines.push(
-                                `  ${t.qty_consumed_now} u @ ${t.rate} = ${t.subtotal}`
-                              )
-                            }
+                            const cur = blended.currency_code || ''
+                            // Tooltip stays short — just the headline.
+                            // Click opens the full breakdown dialog.
                             titleLines.push(
-                              `Total: ${blended.total_cost} → ${blended.blended_unit_rate}/u`
+                              `Blended ${cur} ${fmtMoney(blended.blended_unit_rate)}/u for ${fmtQty(blended.requested_qty_in_contract_uom)} u`
                             )
-                            if (blended.cursor && Number(blended.cursor) > 0) {
-                              titleLines.push(
-                                `Cursor: ${blended.cursor} u already ${blended.cursor_source}`
-                              )
-                            }
-                            if (blended.exceeds_contract) {
-                              titleLines.push(
-                                `⚠ Exceeds contract by ${blended.qty_exceeds_contract} u`
-                              )
-                            }
-                            if (blended.conversion_warning) {
-                              titleLines.push(`⚠ ${blended.conversion_warning}`)
-                            }
+                            // Cursor + exceedance + UOM warnings live in
+                            // the blended-detail dialog. Tooltip stays the
+                            // single headline line above.
                           }
                           if (fxMissing) {
                             titleLines.push('No FX rate — showing native')
@@ -7095,7 +7125,14 @@ export default function ProcurementDashboard() {
                               }
                             }
                           }
-                          titleLines.push('Click to open in Factwise')
+                          // Blended CONTRACT cells open the blended-detail
+                          // dialog. Other cells (or static CONTRACT cells)
+                          // open the existing "Open in Factwise" dialog.
+                          if (sourceType === 'CONTRACT' && blended) {
+                            titleLines.push('Click for blended breakdown')
+                          } else {
+                            titleLines.push('Click to open in Factwise')
+                          }
 
                           cellInner = (
                             <button
@@ -7104,7 +7141,13 @@ export default function ProcurementDashboard() {
                                 expired ? "text-red-600" : isCheapest ? "text-green-700" : "text-gray-900"
                               }`}
                               title={titleLines.join('\n')}
-                              onClick={() => setPendingNavRecord(record)}
+                              onClick={() => {
+                                if (sourceType === 'CONTRACT' && blended) {
+                                  setBlendedDetailRecord(record)
+                                } else {
+                                  setPendingNavRecord(record)
+                                }
+                              }}
                             >
                               {displaySym}
                               {displayPrice.toLocaleString(undefined, {
@@ -7617,6 +7660,182 @@ export default function ProcurementDashboard() {
               Open
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Blended-rate breakdown dialog — opens on click of a CONTRACT
+          cell that came back with a blended payload. Shows the per-tier
+          walk, cursor explanation, and an "Open in Factwise" button. */}
+      <Dialog
+        open={!!blendedDetailRecord}
+        onOpenChange={(o) => { if (!o) setBlendedDetailRecord(null) }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          {blendedDetailRecord && (() => {
+            const b = (blendedDetailRecord as any).blended as any
+            if (!b) return null
+            const cur = b.currency_code || ''
+            const fmtQty = (s: string | undefined) => {
+              if (!s) return '0'
+              const n = Number(s)
+              return Number.isFinite(n)
+                ? n.toLocaleString(undefined, { maximumFractionDigits: 4 })
+                : s
+            }
+            const fmtMoney = (s: string | undefined) => {
+              if (!s) return '0'
+              const n = Number(s)
+              return Number.isFinite(n)
+                ? n.toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })
+                : s
+            }
+            const totalQty = fmtQty(b.requested_qty_in_contract_uom)
+            const cursorN = Number(b.cursor || 0)
+            const navUrl = buildFactwiseUrl(blendedDetailRecord)
+            const vendor =
+              blendedDetailRecord.supplier_name ||
+              blendedDetailRecord.customer_name ||
+              ''
+            const isNoUomWarning =
+              !!b.conversion_warning &&
+              /no measurement unit/i.test(b.conversion_warning)
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Blended contract rate</DialogTitle>
+                  <DialogDescription className="text-gray-900 font-medium">
+                    {vendor ? `${vendor} · ` : ''}
+                    Your {totalQty} units across this contract's tiers.
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="space-y-4 text-sm">
+                  {/* Cursor line — makes it obvious WHERE the walk started */}
+                  <div className="rounded-md bg-gray-50 border border-gray-200 px-3 py-2 text-xs">
+                    <span className="font-medium text-gray-900">
+                      Already allocated to past POs:
+                    </span>{' '}
+                    <span className="text-gray-700">
+                      {fmtQty(b.cursor || '0')} units
+                      {cursorN > 0 && b.cursor_source ? ` (${b.cursor_source})` : ''}
+                    </span>
+                    <div className="mt-1 text-[11px] text-gray-500">
+                      The walk starts after this point. Tiers below it are
+                      no longer available.
+                    </div>
+                  </div>
+
+                  {/* Per-tier walk table */}
+                  <div className="overflow-hidden rounded-md border border-gray-200">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50 text-gray-700">
+                        <tr>
+                          <th className="px-2 py-1.5 text-left font-medium">Tier</th>
+                          <th className="px-2 py-1.5 text-right font-medium">Rate</th>
+                          <th className="px-2 py-1.5 text-right font-medium">Used</th>
+                          <th className="px-2 py-1.5 text-right font-medium">Subtotal</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {(b.tier_breakdown ?? []).map((t: any, idx: number) => {
+                          const took = Number(t.qty_consumed_now)
+                          const capacity =
+                            Number(t.max_quantity) - Number(t.min_quantity)
+                          const leftInTier = capacity - took
+                          const isFull = leftInTier <= 0
+                          return (
+                            <tr key={idx}>
+                              <td className="px-2 py-1.5 align-top">
+                                <div className="font-medium text-gray-900">
+                                  Tier {idx + 1}
+                                </div>
+                                <div className="text-[11px] text-gray-500">
+                                  {fmtQty(t.min_quantity)}–{fmtQty(t.max_quantity)} u
+                                </div>
+                              </td>
+                              <td className="px-2 py-1.5 align-top text-right">
+                                {cur} {fmtMoney(t.rate)}
+                              </td>
+                              <td className="px-2 py-1.5 align-top text-right">
+                                <div className="font-medium text-gray-900">
+                                  {fmtQty(t.qty_consumed_now)} of {fmtQty(String(capacity))} u
+                                </div>
+                                <div
+                                  className={`text-[11px] ${isFull ? 'text-amber-700' : 'text-gray-500'}`}
+                                >
+                                  {isFull ? 'tier full now' : `${fmtQty(String(leftInTier))} u left`}
+                                </div>
+                              </td>
+                              <td className="px-2 py-1.5 align-top text-right font-medium text-gray-900">
+                                {cur} {fmtMoney(t.subtotal)}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Final math */}
+                  <div className="rounded-md bg-blue-50 border border-blue-200 px-3 py-2">
+                    <div className="text-xs text-blue-900">
+                      <span className="font-medium">Total: </span>
+                      {cur} {fmtMoney(b.total_cost)} ÷ {totalQty} u =
+                      &nbsp;
+                      <span className="font-semibold">
+                        {cur} {fmtMoney(b.blended_unit_rate)}/unit
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Exceedance + UOM warnings */}
+                  {b.exceeds_contract && (
+                    <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-900">
+                      ⚠ Your request exceeds contract by{' '}
+                      <span className="font-semibold">
+                        {fmtQty(b.qty_exceeds_contract)} units
+                      </span>
+                      . Only the units within contract qty are blended.
+                    </div>
+                  )}
+                  {b.conversion_warning && (
+                    <div
+                      className={`rounded-md px-3 py-2 text-xs ${
+                        isNoUomWarning
+                          ? 'bg-gray-50 border border-gray-200 text-gray-700'
+                          : 'bg-amber-50 border border-amber-200 text-amber-900'
+                      }`}
+                    >
+                      {isNoUomWarning
+                        ? 'Note: this line has no unit of measurement set. We assumed the contract\'s UOM — set a unit on the line to be explicit.'
+                        : `⚠ ${b.conversion_warning}`}
+                    </div>
+                  )}
+                </div>
+
+                <DialogFooter className="gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => setBlendedDetailRecord(null)}
+                  >
+                    Close
+                  </Button>
+                  <Button
+                    disabled={!navUrl}
+                    onClick={() => {
+                      if (blendedDetailRecord) navigateInFactwise(blendedDetailRecord)
+                      setBlendedDetailRecord(null)
+                    }}
+                  >
+                    Open contract in Factwise
+                  </Button>
+                </DialogFooter>
+              </>
+            )
+          })()}
         </DialogContent>
       </Dialog>
 
