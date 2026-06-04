@@ -599,6 +599,16 @@ export interface CheapestByIdRequestItem {
   /** Currency this item ranks + converts into. Omit to skip conversion
    *  (response will carry native rate only). */
   project_currency_code?: string;
+  /** Buyer's target UOM. When sent, BE ranks on rate_per_base_uom
+   *  multiplied by the target's category multiplier so cross-UOM
+   *  candidates compare apples-to-apples. */
+  target_uom_id?: string;
+  /** Buyer's requested qty for THIS item. When sent alongside
+   *  requested_qty_uom_id, the CONTRACT pick is replaced with a
+   *  blended-rate payload that walks contract tiers from the current
+   *  cursor (already-allocated qty). Other sources are unaffected. */
+  requested_qty?: string;
+  requested_qty_uom_id?: string;
 }
 
 export interface CheapestByIdRequest {
@@ -638,6 +648,9 @@ export async function fetchCheapestById(
       key,
       id,
       project_currency_code: raw.project_currency_code || undefined,
+      target_uom_id: raw.target_uom_id || undefined,
+      requested_qty: raw.requested_qty || undefined,
+      requested_qty_uom_id: raw.requested_qty_uom_id || undefined,
     });
   }
   if (cleaned.length === 0) {

@@ -430,6 +430,9 @@ export function usePricingLookup(
         key: string;
         id: string;
         project_currency_code?: string;
+        target_uom_id?: string;
+        requested_qty?: string;
+        requested_qty_uom_id?: string;
       };
       const requestItems: RequestItem[] = [];
       for (const entry of itemEntries) {
@@ -442,10 +445,20 @@ export function usePricingLookup(
           ? extractIdForTracking(sourceItem, primaryId)
           : null;
         if (!value || !value.trim()) continue;
+        // target_uom_id + requested_qty/uom unlock two server-side
+        // overlays:
+        //   target_uom_id    → cross-UOM ranking on rate_per_base_uom
+        //   requested_qty    → CONTRACT blended-rate override (walks
+        //                      tiers from the contract's current cursor
+        //                      and replaces the static cheapest-tier-row
+        //                      with what THIS qty would actually pay)
         requestItems.push({
           key: entry.lookupKey,
           id: value.trim(),
           project_currency_code: entry.project_currency_code || undefined,
+          target_uom_id: entry.target_uom_id || undefined,
+          requested_qty: entry.requested_qty || undefined,
+          requested_qty_uom_id: entry.requested_qty_uom_id || undefined,
         });
       }
       const rankingBasis = toRankingBasis(settings.priceBasis);

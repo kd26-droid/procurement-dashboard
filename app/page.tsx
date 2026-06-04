@@ -6997,14 +6997,86 @@ export default function ProcurementDashboard() {
                               —
                             </span>
                           )
+                        } else if (sourceType === 'CONTRACT' && !(record as any).blended && !item.quantity) {
+                          // Contract has data but qty wasn't entered on this
+                          // row — BE returned the static "cheapest tier row"
+                          // instead of the qty-aware blended rate. Tell the
+                          // buyer so they know what they're looking at.
+                          const staticPrice = nativePrice
+                          const staticSym = record.currency_symbol || record.currency_code || ''
+                          cellInner = (
+                            <span
+                              className="text-xs text-gray-600 italic"
+                              title={
+                                'Static cheapest tier rate (qty not set on this row). ' +
+                                'Set a quantity to see the blended rate at that volume.'
+                              }
+                            >
+                              {staticSym}{staticPrice?.toFixed(5)}
+                              <span className="ml-1 text-[9px] uppercase text-gray-500">
+                                static
+                              </span>
+                            </span>
+                          )
                         } else {
                           const expired = isExpiredContract(record)
                           const isCheapest = cheapestSourceByItemKey.get(item.enterprise_item_id || item.erp_item_code || (item as any).itemId || '') === sourceType
+
+                          // CONTRACT-only: BE replaces the static "cheapest tier
+                          // row" with a qty-aware blended payload when the FE
+                          // sends requested_qty (which we always do). The
+                          // payload carries the tier breakdown, cursor, and
+                          // exceedance flag — render them so the buyer sees
+                          // WHY the number is what it is, not just the number.
+                          const blended = (record as any)?.blended as {
+                            blended_unit_rate: string
+                            total_cost: string
+                            qty_within_contract: string
+                            qty_exceeds_contract: string
+                            exceeds_contract: boolean
+                            cursor: string
+                            cursor_source: string
+                            currency_code: string | null
+                            requested_qty_in_contract_uom: string
+                            conversion_warning: string | null
+                            tier_breakdown: Array<{
+                              tier_id: string | null
+                              min_quantity: string
+                              max_quantity: string
+                              rate: string
+                              qty_consumed_now: string
+                              subtotal: string
+                            }>
+                          } | null | undefined
 
                           // Build FX info lines for tooltip — show conversion math when relevant
                           const titleLines: string[] = []
                           if (record.supplier_name) titleLines.push(record.supplier_name)
                           if (record.pricing_datetime) titleLines.push(record.pricing_datetime.slice(0, 10))
+                          if (sourceType === 'CONTRACT' && blended) {
+                            titleLines.push(`Blended at qty ${blended.requested_qty_in_contract_uom}:`)
+                            for (const t of blended.tier_breakdown ?? []) {
+                              titleLines.push(
+                                `  ${t.qty_consumed_now} u @ ${t.rate} = ${t.subtotal}`
+                              )
+                            }
+                            titleLines.push(
+                              `Total: ${blended.total_cost} → ${blended.blended_unit_rate}/u`
+                            )
+                            if (blended.cursor && Number(blended.cursor) > 0) {
+                              titleLines.push(
+                                `Cursor: ${blended.cursor} u already ${blended.cursor_source}`
+                              )
+                            }
+                            if (blended.exceeds_contract) {
+                              titleLines.push(
+                                `⚠ Exceeds contract by ${blended.qty_exceeds_contract} u`
+                              )
+                            }
+                            if (blended.conversion_warning) {
+                              titleLines.push(`⚠ ${blended.conversion_warning}`)
+                            }
+                          }
                           if (fxMissing) {
                             titleLines.push('No FX rate — showing native')
                           } else if (nativeCode && projectCode && nativeCode !== projectCode && nativePrice != null) {
@@ -7039,6 +7111,22 @@ export default function ProcurementDashboard() {
                                 minimumFractionDigits: 5,
                                 maximumFractionDigits: 5,
                               })}
+                              {sourceType === 'CONTRACT' && blended && (
+                                <span
+                                  className="ml-1 text-[9px] uppercase font-semibold text-blue-700"
+                                  title="Blended across contract tiers at this quantity"
+                                >
+                                  ≈
+                                </span>
+                              )}
+                              {sourceType === 'CONTRACT' && blended?.exceeds_contract && (
+                                <span
+                                  className="ml-1 text-[9px] uppercase font-semibold text-amber-700"
+                                  title={`Exceeds contract by ${blended.qty_exceeds_contract} units`}
+                                >
+                                  exc
+                                </span>
+                              )}
                               {fxMissing && (
                                 <span className="ml-1 text-[9px] uppercase text-amber-600">native</span>
                               )}
