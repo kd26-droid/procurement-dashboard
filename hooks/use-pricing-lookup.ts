@@ -179,7 +179,15 @@ function extractIdForTracking(
 ): string | null {
   switch (identifier) {
     case 'MPN':
-      return extractMpn(item);
+      // Prefer the direct item-master MPN now that the BE exposes it.
+      // Fall back to attribute-scan for shapes where mpn_item_code is
+      // empty but the buyer has MPN in spec_MPN / customId_MPN_Code.
+      return (
+        item?.mpn_item_code ||
+        item?.MPN_item_code ||
+        extractMpn(item) ||
+        null
+      );
     case 'ERP':
       // erp_item_code is on the project item shape directly.
       // Fall back to attributes for safety on shapes that omit it.
@@ -190,6 +198,9 @@ function extractIdForTracking(
       );
     case 'CPN':
       return (
+        // BE /strategy/items/ now exposes cpn_item_code top-level.
+        // Fall back to legacy field names + attribute walk for safety.
+        item?.cpn_item_code ||
         item?.cpn ||
         item?.CPN_item_code ||
         extractAttrValue(item, 'cpn') ||
@@ -197,6 +208,7 @@ function extractIdForTracking(
       );
     case 'HSN':
       return (
+        item?.hsn_item_code ||
         item?.hsn ||
         item?.HSN_item_code ||
         extractAttrValue(item, 'hsn') ||
