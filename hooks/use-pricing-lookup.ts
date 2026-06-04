@@ -131,12 +131,48 @@ export function extractMpn(item: any): string | null {
  * identifier isn't populated on that line item — those rows get
  * skipped server-side anyway.
  *
- * The MPN path uses extractMpn() so attribute-level MPNs (spec_MPN,
- * customId_MPN, customId_MPN_Code, etc.) work the same way the legacy
- * cheapest-by-mpn flow already does. Every other identifier only lives
- * at the item-master level (one column per item), so this just reads
- * the matching field.
+ * The /strategy/items/ response only exposes erp_item_code directly on
+ * the project item shape; MPN/CPN/HSN live in the item's attribute
+ * fields (spec_X / customId_X — same place extractMpn() scans). So we
+ * fall back to walking the attributes for any identifier the item
+ * shape doesn't expose as a top-level field.
  */
+
+/** Strip spaces, dashes, underscores, dots, slashes; lowercase.
+ *  Shared with isMpnField — duplicated here to keep the helper local. */
+function normalize(name: string): string {
+  return name.toLowerCase().replace(/[\s\-_./]/g, '');
+}
+
+/**
+ * Look through every spec_<name> / customId_<name> key on the item for
+ * an attribute name that contains `needle`. Returns the first non-empty
+ * value found, or null. `needle` is matched against the normalized
+ * attribute name (so spec_HSN_Code and customId_hsn-code both hit
+ * needle='hsn').
+ */
+function extractAttrValue(item: any, needle: string): string | null {
+  if (!item || typeof item !== 'object') return null;
+  const target = normalize(needle);
+  for (const key of Object.keys(item)) {
+    let rawName: string | null = null;
+    if (key.startsWith('customId_')) {
+      rawName = key.slice('customId_'.length).replace(/_/g, ' ');
+    } else if (key.startsWith('spec_')) {
+      rawName = key.slice('spec_'.length).replace(/_/g, ' ');
+    } else {
+      continue;
+    }
+    if (!normalize(rawName).includes(target)) continue;
+    const val = item[key];
+    if (val == null) continue;
+    const trimmed = String(val).trim();
+    if (!trimmed || trimmed === '-' || trimmed === '—') continue;
+    return trimmed;
+  }
+  return null;
+}
+
 function extractIdForTracking(
   item: any,
   identifier: PrimaryIdForTracking,
@@ -145,11 +181,27 @@ function extractIdForTracking(
     case 'MPN':
       return extractMpn(item);
     case 'ERP':
-      return (item?.erp_item_code as string | null) ?? null;
+      // erp_item_code is on the project item shape directly.
+      // Fall back to attributes for safety on shapes that omit it.
+      return (
+        (item?.erp_item_code as string | null) ??
+        extractAttrValue(item, 'erp') ??
+        null
+      );
     case 'CPN':
-      return (item?.cpn || item?.CPN_item_code) ?? null;
+      return (
+        item?.cpn ||
+        item?.CPN_item_code ||
+        extractAttrValue(item, 'cpn') ||
+        null
+      );
     case 'HSN':
-      return (item?.hsn || item?.HSN_item_code) ?? null;
+      return (
+        item?.hsn ||
+        item?.HSN_item_code ||
+        extractAttrValue(item, 'hsn') ||
+        null
+      );
     default:
       return null;
   }

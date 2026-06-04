@@ -71,6 +71,13 @@ export async function fetchPrimaryIdForTracking():
     console.warn('[primaryIdForTracking] no auth token');
     return null;
   }
+  // Hard 8-second timeout — usePricingLookup gates the entire pricing
+  // flow on this call resolving. If a misconfigured URL or a dropped
+  // packet keeps the request open, the dashboard's Load Pricing button
+  // silently does nothing. Better to give up and fall back to the legacy
+  // cheapest-by-mpn path than to hang forever.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
   try {
     const res = await fetch(`${getApiBaseUrl()}${ENDPOINT}`, {
       method: 'GET',
@@ -78,7 +85,9 @@ export async function fetchPrimaryIdForTracking():
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
     if (!res.ok) {
       console.warn(
         `[primaryIdForTracking] HTTP ${res.status} — treating as unset`
@@ -88,6 +97,7 @@ export async function fetchPrimaryIdForTracking():
     const data = (await res.json()) as PrimaryIdForTrackingResponse;
     return data.tracking_primary_identifier ?? null;
   } catch (err) {
+    clearTimeout(timeoutId);
     console.error('[primaryIdForTracking] fetch failed', err);
     return null;
   }
