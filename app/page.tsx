@@ -1105,6 +1105,13 @@ export default function ProcurementDashboard() {
       bom_slab_quantity: item.bom_slab_quantity || 0,
       enterprise_item_id: item.enterprise_item_id || null,
       erp_item_code: item.erp_item_code || null,
+      // Item-master identifier columns the BE now exposes on
+      // /strategy/items/. The cheapest-by-id extractor reads these
+      // directly so the buyer's "Primary ID for tracking" admin choice
+      // (MPN/ERP/CPN/HSN) actually surfaces in the request body.
+      mpn_item_code: (item as any).mpn_item_code || null,
+      cpn_item_code: (item as any).cpn_item_code || null,
+      hsn_item_code: (item as any).hsn_item_code || null,
       // RFQ/Quote Assignee are PROJECT-level (same for all items) — populated from column render using state
       rfqAssigneeName: '',  // filled from rfqAssignees state in column render
       quoteAssigneeName: '',  // filled from quoteAssignees state in column render
