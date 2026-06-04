@@ -410,7 +410,17 @@ export function usePricingLookup(
       const eid = it.enterprise_item_id || null;
       const erp = it.erp_item_code || null;
       const icode = it.itemId || it.item_code || null;
-      const key = eid || erp || icode;
+      // Two project items pointing at the same EnterpriseItem must stay
+      // distinct here so each gets its own blended walk (their qty is
+      // what differs). Project_item_id is the project row's PK — always
+      // unique per row. Fall through to the legacy chain only when the
+      // item shape doesn't expose it (event/req surfaces).
+      const key =
+        it.project_item_id ||
+        it.id ||
+        eid ||
+        erp ||
+        icode;
       if (!key || seen.has(key)) continue;
       seen.add(key);
       // Pull UOM + qty from whichever shape the page passes us. Project

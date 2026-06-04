@@ -2051,7 +2051,7 @@ export default function ProcurementDashboard() {
     }
 
     for (const item of lineItems) {
-      const lookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || null
+      const lookupKey = item.project_item_id || item.id || item.enterprise_item_id || item.erp_item_code || (item as any).itemId || null
       if (!lookupKey) continue
       const itemQty = parseFloat(String(item.quantity)) || 1
       const projectCode = (item as any).currency?.code || null
@@ -2571,7 +2571,7 @@ export default function ProcurementDashboard() {
       )
 
       // Real pricing-repo v2 prices (PO / Contract / Quote / RFQ)
-      const lookupKey = item.enterprise_item_id || item.erp_item_code || item.itemId || null
+      const lookupKey = item.project_item_id || item.id || item.enterprise_item_id || item.erp_item_code || item.itemId || null
       const perSource = lookupKey ? (pricingLookup.byItemId.get(lookupKey) ?? null) : null
       const colToSource: Record<string, PricingSourceType> = {
         pricePO: 'PO',
@@ -3642,7 +3642,7 @@ export default function ProcurementDashboard() {
       if (!itemsToUpdate.some((u: any) => u.id === item.id)) return item
 
       const itemQty = parseFloat(String(item.quantity)) || 1
-      const lookupKey = item.enterprise_item_id || item.erp_item_code || item.itemId || null
+      const lookupKey = item.project_item_id || item.id || item.enterprise_item_id || item.erp_item_code || item.itemId || null
 
       // Real pricing-repo candidates (PO / CONTRACT / QUOTE / RFQ) — always compared in PROJECT currency
       const projectCode = (item as any).currency?.code || null
@@ -6519,7 +6519,7 @@ export default function ProcurementDashboard() {
                           : (pricing?.project_currency_symbol || pricing?.currency_symbol || (item as any).currency?.symbol || getCurrencySymbol((item as any).currency?.code || '') || '')
 
                         // Cheapest highlight — use shared map (currency-aware, pricing-load-aware)
-                        const _dkLookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
+                        const _dkLookupKey = item.project_item_id || item.id || item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
                         const isDigikeyCheapest = cheapestSourceByItemKey.get(_dkLookupKey) === 'DIGIKEY'
 
                         // Render based on status
@@ -6680,7 +6680,7 @@ export default function ProcurementDashboard() {
                           : (pricing?.project_currency_symbol || pricing?.currency_symbol || (item as any).currency?.symbol || '')
 
                         // Cheapest highlight — use shared map (currency-aware, pricing-load-aware)
-                        const _msLookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
+                        const _msLookupKey = item.project_item_id || item.id || item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
                         const isMouserCheapest = cheapestSourceByItemKey.get(_msLookupKey) === 'MOUSER'
 
                         // Render based on status
@@ -6833,7 +6833,7 @@ export default function ProcurementDashboard() {
                           ? (pricing?.currency_symbol || getCurrencySymbol(pricing?.currency || '') || '')
                           : (pricing?.project_currency_symbol || pricing?.currency_symbol || (item as any).currency?.symbol || '')
 
-                        const _e14LookupKey = item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
+                        const _e14LookupKey = item.project_item_id || item.id || item.enterprise_item_id || item.erp_item_code || (item as any).itemId || ''
                         const isElement14Cheapest = cheapestSourceByItemKey.get(_e14LookupKey) === 'ELEMENT14'
 
                         const renderElement14Content = () => {
@@ -6969,7 +6969,7 @@ export default function ProcurementDashboard() {
                         const sourceType = colToSource[columnKey]
                         const mpn = pricingLookup.itemIdToMpn.get(item.id) ?? null
                         // Waterfall lookup key: enterprise_item_id || erp_item_code || item_code
-                        const lookupKey = item.enterprise_item_id || item.erp_item_code || item.itemId || null
+                        const lookupKey = item.project_item_id || item.id || item.enterprise_item_id || item.erp_item_code || item.itemId || null
                         const perSource = lookupKey
                           ? pricingLookup.byItemId.get(lookupKey) ?? null
                           : null
@@ -7048,7 +7048,7 @@ export default function ProcurementDashboard() {
                           )
                         } else {
                           const expired = isExpiredContract(record)
-                          const isCheapest = cheapestSourceByItemKey.get(item.enterprise_item_id || item.erp_item_code || (item as any).itemId || '') === sourceType
+                          const isCheapest = cheapestSourceByItemKey.get(item.project_item_id || item.id || item.enterprise_item_id || item.erp_item_code || (item as any).itemId || '') === sourceType
 
                           // CONTRACT-only: BE replaces the static "cheapest tier
                           // row" with a qty-aware blended payload when the FE
@@ -7187,7 +7187,7 @@ export default function ProcurementDashboard() {
                           )
                         }
 
-                        const isCheapestCell = cheapestSourceByItemKey.get(item.enterprise_item_id || item.erp_item_code || (item as any).itemId || '') === sourceType
+                        const isCheapestCell = cheapestSourceByItemKey.get(item.project_item_id || item.id || item.enterprise_item_id || item.erp_item_code || (item as any).itemId || '') === sourceType
                         return (
                           <td key={columnKey} className={`p-2 text-right ${isCheapestCell ? 'bg-green-50' : ''}`} style={stickyStyle}>
                             {cellInner}
