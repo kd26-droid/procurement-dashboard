@@ -450,7 +450,18 @@ export function usePricingLookup(
   );
 
   useEffect(() => {
+    console.log('[PRICE-DEBUG] effect fired', {
+      enabled,
+      itemEntriesCount: itemEntries.length,
+      primaryIdLoaded,
+      primaryId,
+      refetchToken,
+    });
     if (!enabled || itemEntries.length === 0) {
+      console.log('[PRICE-DEBUG] early-return: gate failed', {
+        enabled,
+        itemEntriesCount: itemEntries.length,
+      });
       setState({
         byItemId: new Map(),
         byMpn: new Map(),
@@ -464,6 +475,7 @@ export function usePricingLookup(
     // endpoint to call — calling the wrong one now means a wasted
     // refetch after the setting resolves and the FE flicker is jarring.
     if (!primaryIdLoaded) {
+      console.log('[PRICE-DEBUG] early-return: primaryIdLoaded=false (still fetching)');
       return;
     }
 
@@ -483,6 +495,7 @@ export function usePricingLookup(
     // 400 on an all-empty list, FE silently skips them and reports
     // empty results for that lookupKey.
     if (primaryId) {
+      console.log('[PRICE-DEBUG] taking new-endpoint path; primaryId=', primaryId);
       // Build per-item request objects. Each line item gets:
       //   key                   — lookupKey (FE's stable line-row id)
       //   id                    — value of the chosen identifier
@@ -499,6 +512,23 @@ export function usePricingLookup(
         requested_qty_uom_id?: string;
       };
       const requestItems: RequestItem[] = [];
+      let extractAttempts = 0;
+      const sampleItem = items[0];
+      if (sampleItem) {
+        console.log(
+          '[PRICE-DEBUG] sample item shape (keys):',
+          Object.keys(sampleItem),
+        );
+        console.log(
+          '[PRICE-DEBUG] sample identifier values:',
+          {
+            erp_item_code: sampleItem.erp_item_code,
+            mpn_item_code: sampleItem.mpn_item_code,
+            cpn_item_code: sampleItem.cpn_item_code,
+            hsn_item_code: sampleItem.hsn_item_code,
+          },
+        );
+      }
       for (const entry of itemEntries) {
         const sourceItem = items.find(
           (it: any) => (
@@ -508,7 +538,15 @@ export function usePricingLookup(
         const value = sourceItem
           ? extractIdForTracking(sourceItem, primaryId)
           : null;
-        if (!value || !value.trim()) continue;
+        extractAttempts++;
+        if (!value || !value.trim()) {
+          console.log('[PRICE-DEBUG] skipping item — extractor returned no value', {
+            lookupKey: entry.lookupKey,
+            primaryId,
+            sourceItemFound: !!sourceItem,
+          });
+          continue;
+        }
         // target_uom_id + requested_qty/uom unlock two server-side
         // overlays:
         //   target_uom_id    → cross-UOM ranking on rate_per_base_uom
@@ -527,6 +565,19 @@ export function usePricingLookup(
       }
       const rankingBasis = toRankingBasis(settings.priceBasis);
 
+      console.log('[PRICE-DEBUG] cheapest-by-id build done', {
+        extractAttempts,
+        requestItemsCount: requestItems.length,
+        firstRequestItem: requestItems[0],
+      });
+      if (requestItems.length === 0) {
+        console.warn(
+          '[PRICE-DEBUG] ⚠ NO API CALL will be made — every item failed extraction. ' +
+          'Check primaryId vs the identifier values on items above.',
+        );
+      } else {
+        console.log('[PRICE-DEBUG] firing POST /pricing-repository/v2/cheapest-by-id/');
+      }
       const promise = requestItems.length > 0
         ? fetchCheapestById({
             items: requestItems,
