@@ -540,9 +540,16 @@ export function usePricingLookup(
         );
       }
       for (const entry of itemEntries) {
+        // The lookupKey chain now starts with project_item_id; the find
+        // here must use the SAME chain or sourceItem never matches.
         const sourceItem = items.find(
           (it: any) => (
-            it.enterprise_item_id || it.erp_item_code || it.itemId || it.item_code
+            it.project_item_id ||
+            it.id ||
+            it.enterprise_item_id ||
+            it.erp_item_code ||
+            it.itemId ||
+            it.item_code
           ) === entry.lookupKey,
         );
         const value = sourceItem
