@@ -7107,8 +7107,14 @@ export default function ProcurementDashboard() {
                             const cur = blended.currency_code || ''
                             // Tooltip stays short — just the headline.
                             // Click opens the full breakdown dialog.
+                            // Headline rate uses the project-UOM number
+                            // when present so the buyer sees per-unit in
+                            // their own units, not per contract UOM.
+                            const headlineRate =
+                              (blended as any).blended_unit_rate_in_project_uom ??
+                              blended.blended_unit_rate
                             titleLines.push(
-                              `Blended ${cur} ${fmtMoney(blended.blended_unit_rate)}/u for ${fmtQty(blended.requested_qty_in_contract_uom)} u`
+                              `Blended ${cur} ${fmtMoney(headlineRate)}/u for ${fmtQty(blended.requested_qty_in_contract_uom)} u`
                             )
                             // Cursor + exceedance + UOM warnings live in
                             // the blended-detail dialog. Tooltip stays the
@@ -7802,14 +7808,25 @@ export default function ProcurementDashboard() {
                     </table>
                   </div>
 
-                  {/* Final math */}
+                  {/* Final math — prefer the per-project-UOM rate the
+                      BE now returns. blended_unit_rate is per CONTRACT
+                      UOM (e.g. per half-unit if the contract was authored
+                      that way). blended_unit_rate_in_project_uom is per
+                      whatever the buyer asked qty in, which is the right
+                      number to divide their total by. Falls back to the
+                      contract-UOM rate for older responses. */}
                   <div className="rounded-md bg-blue-50 border border-blue-200 px-3 py-2">
                     <div className="text-xs text-blue-900">
                       <span className="font-medium">Total: </span>
                       {cur} {fmtMoney(b.total_cost)} ÷ {totalQty} u =
                       &nbsp;
                       <span className="font-semibold">
-                        {cur} {fmtMoney(b.blended_unit_rate)}/unit
+                        {cur}{' '}
+                        {fmtMoney(
+                          b.blended_unit_rate_in_project_uom ??
+                            b.blended_unit_rate,
+                        )}
+                        /unit
                       </span>
                     </div>
                   </div>

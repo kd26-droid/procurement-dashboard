@@ -73,6 +73,22 @@ export interface PricingRecord {
   min_quantity: number | null;
   max_quantity: number | null;
 
+  // Rate expressed in the PROJECT's target UOM (sent via
+  // target_uom_id). Populated by the BE when the project row carries a
+  // UOM in the same category as the pricing entry's source UOM. NULL
+  // for legacy responses or when categories don't match. The FE prefers
+  // this field over `rate` for display so the per-unit number aligns
+  // with the project row's qty (which is in project UOM). Multi-UOM
+  // example: contract priced ₹4/half-unit, project in units →
+  //   rate                    = 4   (per half-unit, source UOM)
+  //   rate_in_project_uom     = 8   (per unit, project UOM)  ← display this
+  rate_in_project_uom: number | null;
+  effective_rate_in_project_uom: number | null;
+  quoted_rate_in_project_uom: number | null;
+  rate_in_project_uom_and_currency: number | null;
+  effective_rate_in_project_uom_and_currency: number | null;
+  quoted_rate_in_project_uom_and_currency: number | null;
+
   // Vendor / customer
   supplier_entity_id: string | null;
   supplier_name: string | null;
@@ -120,6 +136,19 @@ export interface BlendedTierRow {
  * when `requested_qty` is sent. Cursor-aware: respects the contract's
  * already-consumed quantity (accepted > issued > approval_pending).
  */
+/**
+ * Live-blended CONTRACT info — only present on CONTRACT-source records
+ * when `requested_qty` is sent. Cursor-aware: respects the contract's
+ * already-consumed quantity (accepted > issued > approval_pending).
+ *
+ * Multi-UOM note:
+ *   - `blended_unit_rate` is denominated in the CONTRACT's UOM.
+ *   - `blended_unit_rate_in_project_uom` is denominated in the project
+ *     row's UOM (i.e. whatever `requested_qty` was sent in). Buyer-
+ *     facing displays should prefer this so the rate × qty math is
+ *     internally consistent on the row.
+ *   - `*_in_project_uom_and_currency` adds FX on top.
+ */
 export interface BlendedContract {
   contract_item_id: string;
   contract_id: string;
@@ -137,6 +166,14 @@ export interface BlendedContract {
   tier_breakdown: BlendedTierRow[];
   currency_code: string | null;
   matched_identifier_tier: IdentifierType | null;
+  // Multi-UOM: rate denominated in the project row's UOM (whatever
+  // requested_qty was sent in). Derived as total_cost / requested_qty
+  // server-side. NULL on responses where no requested_qty was sent or
+  // the conversion failed.
+  blended_unit_rate_in_project_uom: string | null;
+  // Same as above but also FX-converted to project_currency. NULL if
+  // project_currency_code wasn't sent or the FX entry is missing.
+  blended_unit_rate_in_project_uom_and_currency: number | null;
 }
 
 export type IdentifierType = 'MPN' | 'ERP' | 'CODE' | 'CPN';
@@ -835,15 +872,20 @@ export function navigateInFactwise(record: PricingRecord): boolean {
 
 /** Picks the native (source currency) price value for the chosen basis. */
 export function getNativePrice(record: PricingRecord, basis: PriceBasis): number | null {
+  // Prefer the project-UOM-denominated rate when the BE supplied one.
+  // Without this, multi-UOM rows (e.g. contract authored per
+  // half-unit, project row in units) display rate × qty in
+  // mismatched units. The non-UOM fallbacks are kept for legacy
+  // responses + same-UOM cases where the new field is null.
   switch (basis) {
     case 'rate':
     case 'rate_in_admin_currency':
-      return record.rate;
+      return record.rate_in_project_uom ?? record.rate;
     case 'effective_rate':
     case 'effective_rate_in_admin_currency':
-      return record.effective_rate;
+      return record.effective_rate_in_project_uom ?? record.effective_rate;
     case 'quoted_rate':
-      return record.quoted_rate;
+      return record.quoted_rate_in_project_uom ?? record.quoted_rate;
     case 'landed_rate':
     case 'landed_rate_in_admin_currency':
       return record.landed_rate;
