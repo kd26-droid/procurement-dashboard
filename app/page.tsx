@@ -7749,9 +7749,20 @@ export default function ProcurementDashboard() {
                       <tbody className="divide-y divide-gray-100">
                         {(b.tier_breakdown ?? []).map((t: any, idx: number) => {
                           const took = Number(t.qty_consumed_now)
-                          const capacity =
-                            Number(t.max_quantity) - Number(t.min_quantity)
-                          const leftInTier = capacity - took
+                          const tierMin = Number(t.min_quantity)
+                          const tierMax = Number(t.max_quantity)
+                          const capacity = tierMax - tierMin
+                          // Cursor units that fall inside THIS tier's [min,max)
+                          // range. Those units were burned by past POs and are
+                          // no longer available — they must come out of "left".
+                          const cursorInThisTier = Math.max(
+                            0,
+                            Math.min(cursorN, tierMax) - tierMin,
+                          )
+                          const leftInTier = Math.max(
+                            0,
+                            capacity - took - cursorInThisTier,
+                          )
                           const isFull = leftInTier <= 0
                           return (
                             <tr key={idx}>
@@ -7770,6 +7781,11 @@ export default function ProcurementDashboard() {
                                 <div className="font-medium text-gray-900">
                                   {fmtQty(t.qty_consumed_now)} of {fmtQty(String(capacity))} u
                                 </div>
+                                {cursorInThisTier > 0 && (
+                                  <div className="text-[11px] text-gray-500">
+                                    {fmtQty(String(cursorInThisTier))} u already used by past POs
+                                  </div>
+                                )}
                                 <div
                                   className={`text-[11px] ${isFull ? 'text-amber-700' : 'text-gray-500'}`}
                                 >
