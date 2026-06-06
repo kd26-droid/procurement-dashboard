@@ -426,10 +426,21 @@ export function usePricingLookup(
       // Pull UOM + qty from whichever shape the page passes us. Project
       // items expose these as measurement_unit_id / quantity directly;
       // event/req items use slightly different keys.
+      //
+      // Fallback chain — last resort uses the item master's primary UOM.
+      // Without this, project rows with a null measurement_unit_id (the
+      // common "import didn't seed UOM" case) send no UOM to BE, which
+      // then walks contract tiers in raw qty and returns rate per
+      // CONTRACT UOM. The item master's primary UOM is what the buyer
+      // thinks the item is in, so it's the right fallback for the
+      // BE's UOM conversion + per-project-UOM rate.
       const uomId =
         it.measurement_unit_id ||
         it.measurementUnitId ||
         it.measurement_unit?.measurement_unit_id ||
+        it.measurement_unit?.id ||
+        it.item_primary_measurement_unit?.id ||
+        it.item_primary_measurement_unit?.measurement_unit_id ||
         null;
       const qty =
         it.quantity != null
