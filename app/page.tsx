@@ -1088,6 +1088,17 @@ export default function ProcurementDashboard() {
       description: item.item_name,
       quantity: item.quantity,
       unit: item.measurement_unit?.abbreviation || '',
+      // Propagate the UOM id so use-pricing-lookup can send target_uom_id
+      // / requested_qty_uom_id to BE. Without this, every cheapest-by-id
+      // request omits UOM info and BE returns rate per CONTRACT/source
+      // UOM instead of the project's UOM. The transform was dropping
+      // this before, even when BE returned it.
+      measurement_unit_id:
+        (item as any).measurement_unit_id ||
+        (item as any).measurement_unit?.id ||
+        (item as any).measurement_unit?.measurement_unit_id ||
+        null,
+      measurement_unit: (item as any).measurement_unit || null,
       category: (() => {
         const allTags = [...(item.tags || []), ...(item.custom_tags || [])];
         const uniqueTags = [...new Set(allTags)];
