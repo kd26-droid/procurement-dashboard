@@ -253,6 +253,9 @@ export interface ProjectItem {
     quantity: number;
     delivery_date: string | null;
   }>;
+  // Sum of project_pending across all the item's delivery_schedule_items.
+  // 0 (or negative) = nothing left to source → strategy FE disables the row.
+  pending_quantity?: number;
   rfq_events_count: number;
   item_valid: boolean;
   created_datetime: string;
@@ -1405,4 +1408,153 @@ export async function removeItemCustomVendor(
       skipSuccessCheck: true,
     }
   );
+}
+
+// ─── Entity Settings — used to read the admin's "Execute Action split" default ───
+
+export interface EntitySettingItem {
+  key: string;
+  selected?: boolean | null;
+  max_value?: number | null;
+  selected_option?: string | null;
+  time_unit?: string | null;
+}
+
+export interface EntitySettingsResponse {
+  settings: Array<{
+    module: string;
+    settings: EntitySettingItem[];
+  }>;
+}
+
+export async function getEntitySettings(
+  entityId: string
+): Promise<EntitySettingsResponse> {
+  return apiRequest<EntitySettingsResponse>(
+    `/organization/entity/${entityId}/settings/`,
+    { skipSuccessCheck: true }
+  );
+}
+
+// ─── Entities + Templates — used to populate the Execute Action picker ───
+// The strategy dashboard only needs to PICK an entity and a template per
+// action. Factwise does the actual create using its production saveEventDetailsApi
+// (Event) or its cost_calculator export endpoint (Quote). We don't build
+// payloads here — we send a thin selection over postMessage and Factwise
+// runs the proven flow.
+
+export interface EntityListItem {
+  entity_id: string;
+  entity_name: string;
+  buyer_status?: string;
+  seller_status?: string;
+}
+
+export async function listBuyerEntities(): Promise<EntityListItem[]> {
+  const response = await apiRequest<any>(`/organization/entity/`, {
+    skipSuccessCheck: true,
+  });
+  console.log('[listBuyerEntities] raw response:', response);
+  const raw: any[] = Array.isArray(response) ? response : (response?.data || []);
+  const out = raw
+    .filter((e) => e.buyer_status !== 'INACTIVE')
+    .map((e) => ({
+      entity_id: e.entity_id,
+      entity_name: e.entity_name,
+      buyer_status: e.buyer_status,
+      seller_status: e.seller_status,
+    }));
+  console.log('[listBuyerEntities] returning', out.length, 'entities');
+  return out;
+}
+
+export interface TemplateListItem {
+  template_id: string;
+  name: string;
+  status: string;
+  entity_id: string;
+  is_default?: boolean;
+}
+
+/**
+ * Fetch ONGOING templates of a given type, filtered to one entity.
+ * `RFQ` for Event-action items, `QUOTE_CALCULATOR` for Quote-action items.
+ */
+// ─── Duplicate analysis ───
+// Mirrors what the project Create Event popup does: fetch all duplicates
+// for the project, then before showing the template picker we check whether
+// the user's selection contains items where some-but-not-all occurrences
+// are picked. If yes, we show them a dialog to either add the rest or keep
+// the partial selection.
+
+export interface DuplicateOccurrence {
+  bom_item_id: string | null;
+  project_item_id: string;
+  bom_module_linkage_id: string | null;
+  bom_code: string;
+  bom_level: number;
+  bom_path: string;
+  quantity: number;
+  pending_quantity: number;
+}
+
+export interface DuplicateItem {
+  enterprise_item_id: string;
+  enterprise_item_code: string;
+  enterprise_item_name: string;
+  total_quantity: number;
+  total_pending_quantity: number;
+  occurrence_count: number;
+  occurrences: DuplicateOccurrence[];
+}
+
+export interface DuplicateAnalysisResponse {
+  duplicate_items: DuplicateItem[];
+}
+
+export async function getDuplicateItemsAnalysis(
+  projectId: string
+): Promise<DuplicateAnalysisResponse> {
+  const res = await apiRequest<any>(
+    `/organization/project/${projectId}/items/duplicate-analysis/`,
+    { skipSuccessCheck: true }
+  );
+  // BE may wrap in `{ data: { duplicate_items } }` or return the object directly.
+  if (res?.duplicate_items) return res as DuplicateAnalysisResponse;
+  if (res?.data?.duplicate_items) return res.data as DuplicateAnalysisResponse;
+  return { duplicate_items: [] };
+}
+
+export async function listTemplates(
+  templateType: 'RFQ' | 'QUOTE_CALCULATOR',
+  entityId: string
+): Promise<TemplateListItem[]> {
+  const res = await apiRequest<any>(
+    `/module_templates/?template_type=${templateType}`,
+    { skipSuccessCheck: true }
+  );
+  console.log('[listTemplates] raw response for', templateType, ':', res);
+
+  // BE returns one of these two shapes depending on endpoint wrapping:
+  //   1) array at root:  [ { entity_id, templates: [...] }, ... ]
+  //   2) wrapped:        { data: [ { entity_id, templates: [...] }, ... ] }
+  // We accept both so a wrapping change in one BE deploy doesn't break this.
+  const groups: any[] = Array.isArray(res)
+    ? res
+    : Array.isArray(res?.data)
+      ? res.data
+      : [];
+
+  const all: any[] = groups.flatMap((g) => g?.templates || []);
+  console.log('[listTemplates] total templates across groups:', all.length, 'filtering for entity', entityId);
+
+  return all
+    .filter((t) => t.status === 'ONGOING' && t.entity_id === entityId)
+    .map((t) => ({
+      template_id: t.template_id,
+      name: t.name,
+      status: t.status,
+      entity_id: t.entity_id,
+      is_default: !!t.is_default,
+    }));
 }

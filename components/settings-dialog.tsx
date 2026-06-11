@@ -73,6 +73,13 @@ export type ActionsSettings = {
   maxAgeDays: number
   criteria?: ActionCriterion[]
   criteriaAction?: 'Event' | 'Quote' | 'PO' | 'Contract'
+  // Execute Action behaviour. When undefined → fall back to the admin setting
+  // (STRATEGY_EXECUTE_ACTION_SPLIT_BY_ITEM) loaded from BE entity-settings.
+  // 'split'    = one event per selected item
+  // 'combine'  = one combined event for all selected items
+  // 'inherit'  = follow admin default (same as undefined; exposed in UI as a
+  //              radio option so users can clear an override)
+  executeActionSplit?: 'split' | 'combine' | 'inherit'
 }
 
 export type AppSettings = {
@@ -125,6 +132,7 @@ export const buildDefaultSettings = (name = 'Default'): AppSettings => ({
     maxAgeDays: 365,
     criteria: [],
     criteriaAction: 'Quote',
+    executeActionSplit: 'inherit',
   },
 })
 
@@ -156,8 +164,23 @@ type ActionFormula = {
 }
 
 // Criteria builder types
-type CriteriaField = 'Purpose' | 'Item ID Type' | 'Source' | 'Date' | 'Price' | 'Quantity' | 'Vendor' | 'Tag'
+type CriteriaField = 'Purpose' | 'Item ID Type' | 'Source' | 'Date' | 'Price' | 'Quantity' | 'Vendor' | 'Tag' | 'Pricing Available'
 type CriteriaOperator = 'is' | 'is not' | 'before' | 'after' | '=' | '>' | '<' | '>=' | '<='
+
+// Source identifiers for the "Pricing Available" criterion. These match the
+// internal source codes used by the cheapest-by-mpn lookup and the distributor
+// blocks on each item — NOT the free-form labels in DEFAULT_PRICE_SOURCES.
+export type PricingAvailabilitySource = 'PO' | 'CONTRACT' | 'QUOTE' | 'RFQ' | 'DIGIKEY' | 'MOUSER' | 'ELEMENT14'
+export const PRICING_AVAILABILITY_SOURCES: { value: PricingAvailabilitySource; label: string }[] = [
+  { value: 'PO', label: 'PO' },
+  { value: 'CONTRACT', label: 'Contract' },
+  { value: 'QUOTE', label: 'Quote' },
+  { value: 'RFQ', label: 'RFQ' },
+  { value: 'DIGIKEY', label: 'Digi-Key' },
+  { value: 'MOUSER', label: 'Mouser' },
+  { value: 'ELEMENT14', label: 'Element14' },
+]
+
 export type ActionCriterion = {
   id: string
   conjunction: 'WHERE' | 'AND' | 'OR'
@@ -165,6 +188,8 @@ export type ActionCriterion = {
   operator: CriteriaOperator
   value: string
   unit?: string
+  // Only used when field === 'Pricing Available'. Empty array = "any source".
+  sources?: PricingAvailabilitySource[]
 }
 
 // --- MAIN COMPONENT ---
@@ -1374,8 +1399,19 @@ export function SettingsPanel({
                     <CardDescription>These rules are configured by your admin and apply automatically. Local rules below take priority.</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-2">
-                    {adminActionRules.map((rule) => (
+                    {adminActionRules.length >= 2 && (
+                      <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 mb-2">
+                        <span className="font-semibold">ℹ️</span>
+                        <span>
+                          Evaluated <strong>top to bottom</strong>. First match wins — later rules are skipped. Order is set in <strong>Factwise Admin → Settings → Action Rules</strong>.
+                        </span>
+                      </div>
+                    )}
+                    {adminActionRules.map((rule, idx) => (
                       <div key={rule.rule_id} className="flex items-center gap-2 p-3 rounded-lg border border-orange-200 bg-white">
+                        <span className="flex-shrink-0 inline-flex items-center justify-center w-6 h-6 rounded-full bg-orange-100 text-orange-800 text-xs font-bold border border-orange-300">
+                          {idx + 1}
+                        </span>
                         <div className="flex-1 flex flex-wrap items-center gap-1.5 text-sm">
                           <span className="font-medium text-slate-700">{rule.name}:</span>
                           {rule.criteria.map((c, i) => (
@@ -1454,6 +1490,7 @@ export function SettingsPanel({
                             <SelectItem value="Price">Price</SelectItem>
                             <SelectItem value="Quantity">Quantity</SelectItem>
                             <SelectItem value="Vendor">Vendor</SelectItem>
+                            <SelectItem value="Pricing Available">Pricing Available</SelectItem>
                           </SelectContent>
                         </Select>
 
@@ -1467,7 +1504,7 @@ export function SettingsPanel({
                         >
                           <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
                           <SelectContent>
-                            {(['Purpose','Item ID Type','Source','Vendor','Tag'].includes(row.field) ? (
+                            {(['Purpose','Item ID Type','Source','Vendor','Tag','Pricing Available'].includes(row.field) ? (
                               <>
                                 <SelectItem value="is">is</SelectItem>
                                 <SelectItem value="is not">is not</SelectItem>
@@ -1530,6 +1567,54 @@ export function SettingsPanel({
                         {row.field === 'Date' && (
                           <Input type="date" className="w-40" value={row.value} onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))} />
                         )}
+                        {row.field === 'Pricing Available' && (
+                          <>
+                            <Select
+                              value={row.value || 'yes'}
+                              onValueChange={(v) => setLocal(prev => ({
+                                ...prev,
+                                actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: v } : r) }
+                              }))}
+                            >
+                              <SelectTrigger className="w-20"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="yes">Yes</SelectItem>
+                                <SelectItem value="no">No</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <span className="text-xs text-slate-500">from</span>
+                            <div className="flex flex-wrap gap-1.5 max-w-[420px]">
+                              {PRICING_AVAILABILITY_SOURCES.map(({ value, label }) => {
+                                const selected = (row.sources || []).includes(value)
+                                return (
+                                  <button
+                                    key={value}
+                                    type="button"
+                                    onClick={() => setLocal(prev => ({
+                                      ...prev,
+                                      actions: {
+                                        ...prev.actions,
+                                        criteria: (prev.actions.criteria || []).map(r => {
+                                          if (r.id !== row.id) return r
+                                          const current = r.sources || []
+                                          const next = selected ? current.filter(s => s !== value) : [...current, value]
+                                          return { ...r, sources: next }
+                                        }),
+                                      },
+                                    }))}
+                                    className={`text-xs px-2 py-1 rounded border transition-colors ${
+                                      selected
+                                        ? 'bg-blue-600 text-white border-blue-600'
+                                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    {label}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          </>
+                        )}
                         {(row.field === 'Price' || row.field === 'Quantity' || row.field === 'Vendor') && (
                           <>
                             <Input
@@ -1565,10 +1650,11 @@ export function SettingsPanel({
                   </div>
 
                   {/* Add criteria row */}
-                  <div className="mt-3">
+                  <div className="mt-3 flex items-center gap-2">
                     <button
                       type="button"
                       className="text-blue-600 text-sm font-medium hover:underline"
+                      title="Combine multiple conditions with AND/OR in a single rule rather than creating conflicting rules — keeps precedence clean."
                       onClick={() => setLocal(prev => ({
                         ...prev,
                         actions: {
@@ -1585,6 +1671,9 @@ export function SettingsPanel({
                     >
                       + Add Condition
                     </button>
+                    <span className="text-[11px] text-slate-500">
+                      Tip: combine in one rule with AND/OR instead of stacking conflicts.
+                    </span>
                   </div>
 
                   {/* THEN action selector */}
@@ -1602,6 +1691,33 @@ export function SettingsPanel({
                         <SelectItem value="Quote">Quote</SelectItem>
                         <SelectItem value="PO">PO</SelectItem>
                         <SelectItem value="Contract">Contract</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Execute Action behaviour — local override for the admin
+                      "STRATEGY_EXECUTE_ACTION_SPLIT_BY_ITEM" setting. */}
+                  <Separator className="my-4" />
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium text-slate-700">
+                      When executing on multiple selected items
+                    </div>
+                    <div className="text-xs text-slate-500 mb-2">
+                      "Inherit" uses your admin's global setting. Pick "Combined"
+                      or "Split" to override just for this project.
+                    </div>
+                    <Select
+                      value={local.actions.executeActionSplit || 'inherit'}
+                      onValueChange={(v) => setLocal(prev => ({
+                        ...prev,
+                        actions: { ...prev.actions, executeActionSplit: v as 'split' | 'combine' | 'inherit' },
+                      }))}
+                    >
+                      <SelectTrigger className="w-72"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="inherit">Use admin default</SelectItem>
+                        <SelectItem value="combine">One combined event for all selected items</SelectItem>
+                        <SelectItem value="split">One event per selected item (split)</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>

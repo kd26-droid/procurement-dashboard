@@ -13,8 +13,27 @@ import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel, LabelList } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
-import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getElement14JobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, searchVendors, getItemCustomVendors, addItemCustomVendors, removeItemCustomVendor, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion, type CustomVendor } from '@/lib/api'
+import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getElement14JobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, searchVendors, getItemCustomVendors, addItemCustomVendors, removeItemCustomVendor, getEntitySettings, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion, type CustomVendor } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
+import { StrategyTemplatePicker, type StrategyTemplatePickerSelection } from "@/components/strategy-template-picker"
+import { StrategyDuplicateReview, type StrategyDuplicateReviewSelection } from "@/components/strategy-duplicate-review"
+import { StrategyAlternateWarning, type AlternateWarning, type StrategyAlternateWarningSelection } from "@/components/strategy-alternate-warning"
+import { getDuplicateItemsAnalysis, type DuplicateItem } from "@/lib/api"
+
+// One entry per action type the user selected items for. The picker renders
+// queue[0]; on confirm we shift and render the next.
+interface PickerQueueEntry {
+  action: 'Event' | 'Quote'
+  projectId: string
+  /** Regular project items — not part of any BOM (item.bom_info.is_bom_item === false). */
+  items: { item_id: string }[]
+  /**
+   * BOM items grouped by their BOM module linkage. Matches the same shape
+   * the project page sends in saveEventDetailsApi (`projectBomsForExport`).
+   */
+  boms: { entry_id: string; bom_items: { bom_item_id: string }[] }[]
+  splitByItem: boolean
+}
 import { useToast } from "@/hooks/use-toast"
 import {
   usePricingLookup,
@@ -517,6 +536,11 @@ export default function ProcurementDashboard() {
     created: "",
     deadline: "",
     customer: "",
+    // Customer entity UUID — fed into cheapest-by-id requests as
+    // `customer_entity_id` so the BE filters customer-confidential
+    // CONTRACT entries (only the contracts marked for this customer
+    // + all non-confidential contracts surface as candidates).
+    customer_entity_id: null as string | null,
     buyer_entity_id: "",
     buyer_entity_name: "",
     template_id: "",
@@ -689,8 +713,39 @@ export default function ProcurementDashboard() {
   const [showAssignUsersPopup, setShowAssignUsersPopup] = useState(false)
   const [showFillPricesPopup, setShowFillPricesPopup] = useState(false)
   const [showAssignActionsPopup, setShowAssignActionsPopup] = useState(false)
-  const [showActionResultsPopup, setShowActionResultsPopup] = useState(false)
-  const [actionResultsLoading, setActionResultsLoading] = useState(false)
+  // Admin default for "Execute Action" split behaviour, sourced from BE entity-setting
+  // STRATEGY_EXECUTE_ACTION_SPLIT_BY_ITEM. Falls back to false (one combined event) until loaded.
+  const [adminExecuteActionSplit, setAdminExecuteActionSplit] = useState<boolean>(false)
+  // Execute Action picker queue — one entry per action type the user has
+  // selected items for (Event first, then Quote). When non-empty the picker
+  // dialog is showing queue[0]; on confirm we postMessage the selection to
+  // Factwise and shift the queue. Empty = no picker rendering.
+  const [pickerQueue, setPickerQueue] = useState<PickerQueueEntry[]>([])
+  // Duplicate-review state. When the user clicks Execute Action we fetch
+  // duplicate analysis for the project; if any selected items have unselected
+  // siblings, we show this dialog FIRST. On confirm/skip we then proceed
+  // with the picker queue.
+  const [duplicateReview, setDuplicateReview] = useState<{
+    duplicates: DuplicateItem[]
+    projectId: string
+    /** Original selection minus any added by the user in the dialog. */
+    initialSelectedItemIds: number[]
+    /** Final list of project_item_ids to use for the picker (set after confirm/skip). */
+  } | null>(null)
+  // Alternate-without-parent warning. Mirrors the project page's
+  // AlternateWithoutParentWarningPopup. Runs BEFORE duplicate analysis on
+  // Execute Action — if any selected item is a BOM alternate whose primary
+  // parent isn't in the selection, we warn and offer to auto-add parents.
+  const [alternateWarningState, setAlternateWarningState] = useState<{
+    warnings: AlternateWarning[]
+    projectId: string
+    initialSelectedItemIds: number[]
+  } | null>(null)
+  // Pending creates awaiting Factwise reply (postMessage round-trip). Each
+  // entry tracks one in-flight selection so we can match the reply back.
+  const [pendingCreates, setPendingCreates] = useState<
+    Record<string, { action: 'Event' | 'Quote'; itemCount: number }>
+  >({})
   const [showAnalyticsPopup, setShowAnalyticsPopup] = useState(false)
   const [selectedItemForAnalytics, setSelectedItemForAnalytics] = useState<any>(null)
   // MPN captured at popup-open time — stable, doesn't re-fire chart fetch as itemIdToMpn rebuilds
@@ -939,10 +994,36 @@ export default function ProcurementDashboard() {
           created: overviewResponse.project.validity_from || '',
           deadline: overviewResponse.project.deadline || '',
           customer: overviewResponse.project.customer_name || '',
+          customer_entity_id:
+            (overviewResponse.project as any).customer_entity_id || null,
           buyer_entity_id: overviewResponse.project.buyer_entity_id || '',
           buyer_entity_name: overviewResponse.project.buyer_entity_name || '',
           template_id: overviewResponse.project.template_id || '',
         })
+
+        // Read the admin's "Execute Action split" default for this entity.
+        // Fire-and-forget — Execute Action defaults to "combine" if this fails.
+        const _buyerEntityId = overviewResponse.project.buyer_entity_id || ''
+        if (_buyerEntityId) {
+          getEntitySettings(_buyerEntityId)
+            .then((res) => {
+              const modules = res?.settings ?? []
+              let found: boolean | null = null
+              for (const m of modules) {
+                for (const s of m.settings || []) {
+                  if (s.key === 'STRATEGY_EXECUTE_ACTION_SPLIT_BY_ITEM') {
+                    found = !!s.selected
+                    break
+                  }
+                }
+                if (found !== null) break
+              }
+              setAdminExecuteActionSplit(!!found)
+            })
+            .catch((err) => {
+              console.warn('[Dashboard] Could not load entity settings:', err)
+            })
+        }
 
         console.log('[Dashboard] Project:', overviewResponse.project.project_name)
 
@@ -1112,6 +1193,12 @@ export default function ProcurementDashboard() {
       unitPrice: item.rate || 0,
       totalPrice: item.amount || 0,
       currency: item.currency,
+      // Carry pending_quantity so we can disable rows with nothing left to
+      // source (matches the project-page "tab-visibility" gate).
+      pendingQuantity:
+        typeof (item as any).pending_quantity === 'number'
+          ? (item as any).pending_quantity
+          : null,
       event_quantity: item.event_quantity ?? null,
       bom_slab_quantity: item.bom_slab_quantity || 0,
       enterprise_item_id: item.enterprise_item_id || null,
@@ -2014,8 +2101,17 @@ export default function ProcurementDashboard() {
   }
 
   // ── Pricing repo v2 cheapest-by-MPN lookup ──
-  // Gated by pricingEnabled — only fires after the user clicks "Load Pricing"
-  const pricingLookup = usePricingLookup(lineItems, pricingSettings, pricingEnabled)
+  // Gated by pricingEnabled — only fires after the user clicks "Load Pricing".
+  // projectData.customer_entity_id is passed through so the BE filters out
+  // customer-confidential CONTRACT entries that aren't for this project's
+  // customer (non-confidential contracts + matching-customer-confidential
+  // ones both surface as candidates).
+  const pricingLookup = usePricingLookup(
+    lineItems,
+    pricingSettings,
+    pricingEnabled,
+    projectData.customer_entity_id,
+  )
 
   // If cheapest-by-mpn returns 403, the user lacks PRICING_REPOSITORY_VIEW on their
   // primary entity. Lock the button, surface a one-time toast, and stop further
@@ -2698,11 +2794,22 @@ export default function ProcurementDashboard() {
     })
   }
 
+  // Items with no remaining pending quantity can't be selected — same gate
+  // the per-row checkbox uses. Header "select all" skips them.
+  const isItemSelectable = (item: any): boolean => {
+    return !(typeof item.pendingQuantity === 'number' && item.pendingQuantity <= 0)
+  }
+
   const handleSelectAll = () => {
-    if (selectedItems.length === filteredAndSortedItems.length) {
+    const selectableItems = filteredAndSortedItems.filter(isItemSelectable)
+    if (
+      selectableItems.length > 0 &&
+      selectableItems.every((it) => selectedItems.includes(it.id))
+    ) {
+      // All selectable items are selected → clear
       setSelectedItems([])
     } else {
-      setSelectedItems(filteredAndSortedItems.map((item) => item.id))
+      setSelectedItems(selectableItems.map((item) => item.id))
     }
   }
 
@@ -3768,7 +3875,38 @@ export default function ProcurementDashboard() {
 
   // ── Criteria Evaluation Engine ──
   // Evaluates a single criterion against an item
-  const evaluateCriterion = (criterion: { field: string; operator: string; value: string; unit?: string }, item: any): boolean => {
+  /**
+   * Pricing-availability helper for the 'Pricing Available' criterion.
+   * Returns true if the item has at least one *valid* price from any of the
+   * requested sources. PO/Contract/Quote/RFQ come from the pricing-repo lookup
+   * (populated by Load Pricing). Digi-Key/Mouser/Element14 come from the
+   * distributor blocks on the item itself.
+   */
+  const hasPricingFromAnySource = (item: any, sources: string[] | undefined): boolean => {
+    // No source filter = "any source counts"
+    const effectiveSources = (sources && sources.length > 0)
+      ? sources
+      : ['PO', 'CONTRACT', 'QUOTE', 'RFQ', 'DIGIKEY', 'MOUSER', 'ELEMENT14']
+
+    for (const src of effectiveSources) {
+      // Pricing-repo internal sources
+      if (src === 'PO' || src === 'CONTRACT' || src === 'QUOTE' || src === 'RFQ') {
+        if (!pricingEnabled) continue
+        const lookupKey = item.project_item_id || item.id || item.enterprise_item_id || item.erp_item_code || item.itemId || null
+        if (!lookupKey) continue
+        const perSource = pricingLookup.byItemId.get(lookupKey) ?? null
+        const rec = perSource?.[src as 'PO' | 'CONTRACT' | 'QUOTE' | 'RFQ'] ?? null
+        if (rec && getNativePrice(rec, pricingSettings.priceBasis)) return true
+      }
+      // Distributor sources — read directly off the item
+      if (src === 'DIGIKEY' && (item as any).digikey_pricing?.status === 'available') return true
+      if (src === 'MOUSER' && (item as any).mouser_pricing?.status === 'available') return true
+      if (src === 'ELEMENT14' && (item as any).element14_pricing?.status === 'available') return true
+    }
+    return false
+  }
+
+  const evaluateCriterion = (criterion: { field: string; operator: string; value: string; unit?: string; sources?: string[] }, item: any): boolean => {
     const { field, operator, value } = criterion
     switch (field) {
       case 'Price': {
@@ -3832,13 +3970,21 @@ export default function ProcurementDashboard() {
           : true // CPN — assume true if neither MPN nor HSN
         return operator === 'is' ? hasType : !hasType
       }
+      case 'Pricing Available': {
+        // Check whether the item has loaded pricing from at least one of the
+        // selected sources. Empty sources list = any source counts.
+        const wantYes = (value || 'yes').toLowerCase() === 'yes'
+        const found = hasPricingFromAnySource(item, criterion.sources)
+        const match = wantYes ? found : !found
+        return operator === 'is' ? match : !match
+      }
       default:
         return false
     }
   }
 
   // Evaluate a full criteria set (WHERE + AND/OR chain) against an item
-  const evaluateCriteria = (criteria: { conjunction: string; field: string; operator: string; value: string; unit?: string }[], item: any): boolean => {
+  const evaluateCriteria = (criteria: { conjunction: string; field: string; operator: string; value: string; unit?: string; sources?: string[] }[], item: any): boolean => {
     if (!criteria || criteria.length === 0) return true // No criteria = match all
 
     let result = evaluateCriterion(criteria[0], item)
@@ -3856,6 +4002,411 @@ export default function ProcurementDashboard() {
   }
 
   // Assign Actions Handler
+  // Resolve the effective "Execute Action" split mode:
+  //   local 'split'/'combine' wins; 'inherit' (or missing) falls back to admin setting.
+  const getEffectiveExecuteSplit = (): boolean => {
+    const local = currentSettings.actions?.executeActionSplit
+    if (local === 'split') return true
+    if (local === 'combine') return false
+    return adminExecuteActionSplit
+  }
+
+  // Send a single "open create-event flow" message to the parent Factwise window.
+  // The listener on the parent side dispatches Redux + opens its native popup
+  // chain ONCE (alternate / duplicate / template) and uses its existing
+  // /events/rfq/create/ payload builder. The split flag rides along inside
+  // the message — user picks ONE template/entity/project regardless of
+  // split=true/false, then the save handler decides whether to fan out into
+  // multiple events or one combined event.
+  const dispatchToParent = (
+    projectItemIds: string[],
+    action: 'Event' | 'Quote' | 'PO' | 'Contract',
+    projectId: string,
+    splitByItem: boolean
+  ) => {
+    // 'Event' and 'Quote' both go through the RFQ flow on the project page.
+    // 'PO' goes through the PO_GROUP flow. 'Contract' isn't wired on project
+    // page today — fall back to RFQ flow for now and let users redirect.
+    const templateType: 'RFQ' | 'PO_GROUP' = action === 'PO' ? 'PO_GROUP' : 'RFQ'
+    const message = {
+      type: 'STRATEGY_EXECUTE_ACTION',
+      source: 'STRATEGY_DASHBOARD',
+      projectId,
+      projectItemIds,
+      action,
+      templateType,
+      // 'Quote' is a RFQ-flow distinction (the project page differentiates
+      // Create Event vs Create Quote via a flag on the popup container).
+      isQuote: action === 'Quote',
+      // When true the user will pick the template/entity once but the save
+      // handler should produce one event per item rather than one combined.
+      splitByItem,
+    }
+    try {
+      // Strategy dashboard is iframed inside Factwise. window.parent is the
+      // host frame; postMessage to '*' is OK because we don't ship secrets.
+      // The Factwise listener validates the origin against its allow-list.
+      window.parent?.postMessage(message, '*')
+    } catch (err) {
+      console.warn('[Execute Action] Could not post to parent:', err)
+    }
+  }
+
+  // Detect alternates without their parents in the current selection.
+  // Mirrors ProjectSelectionPopup.findAlternatesWithoutParents — for each
+  // selected item flagged is_alternate, check whether any selected item has
+  // its alternate_parent_id as their bom_item_module_linkage_id. If not,
+  // the parent is missing and we warn the user.
+  const findAlternatesWithoutParents = (
+    selectedRowIds: number[]
+  ): AlternateWarning[] => {
+    const selectedRowsSet = new Set(selectedRowIds)
+    const selectedBomItemModuleLinkageIds = new Set<string>()
+    for (const id of selectedRowIds) {
+      const li = (lineItems as any[]).find((x) => x.id === id)
+      const bomItemModuleLinkageId = li?.bom_info?.bom_item_module_linkage_id
+      if (bomItemModuleLinkageId) selectedBomItemModuleLinkageIds.add(bomItemModuleLinkageId)
+    }
+    // Index lineItems by their bom_item_module_linkage_id so we can find parents.
+    const liByBomItemLinkage = new Map<string, any>()
+    for (const li of lineItems as any[]) {
+      const id = li?.bom_info?.bom_item_module_linkage_id
+      if (id) liByBomItemLinkage.set(id, li)
+    }
+    const warnings: AlternateWarning[] = []
+    for (const id of selectedRowIds) {
+      const li = (lineItems as any[]).find((x) => x.id === id)
+      const alt = li?.alternate_info
+      if (!alt?.is_alternate || !alt?.alternate_parent_id) continue
+      // Parent in selection? OK.
+      if (selectedBomItemModuleLinkageIds.has(alt.alternate_parent_id)) continue
+      const parentLi = liByBomItemLinkage.get(alt.alternate_parent_id)
+      warnings.push({
+        alternateCode: li?.item_code || li?.item_name || 'Unknown',
+        alternateName: li?.item_name || '',
+        alternateRowId: li.id,
+        parentCode:
+          alt.alternate_parent_code ||
+          parentLi?.item_code ||
+          'Unknown',
+        parentName:
+          alt.alternate_parent_name || parentLi?.item_name || '',
+        parentRowId:
+          parentLi && !selectedRowsSet.has(parentLi.id)
+            ? parentLi.id
+            : null,
+        bomCode: li?.bom_info?.bom_code || 'Unknown',
+      })
+    }
+    return warnings
+  }
+
+  // Step 2: duplicate review (called from alternate-warning handlers).
+  const runDuplicateAnalysis = (projectId: string, itemIds: number[]) => {
+    const items = lineItems.filter((it: any) => itemIds.includes(it.id))
+    const selectedProjectItemIds: string[] = items
+      .map((it: any) => it.project_item_id)
+      .filter((x: any) => !!x)
+    getDuplicateItemsAnalysis(projectId)
+      .then((res) => {
+        const dups = res?.duplicate_items || []
+        const hasUnselectedSiblings = dups.some((dupItem) => {
+          const selected = dupItem.occurrences.filter((occ) =>
+            selectedProjectItemIds.includes(occ.project_item_id),
+          )
+          const unselected = dupItem.occurrences.filter(
+            (occ) =>
+              !selectedProjectItemIds.includes(occ.project_item_id) &&
+              occ.pending_quantity > 0,
+          )
+          return selected.length > 0 && unselected.length > 0
+        })
+        if (hasUnselectedSiblings) {
+          setDuplicateReview({
+            duplicates: dups,
+            projectId,
+            initialSelectedItemIds: itemIds,
+          })
+        } else {
+          startPickerQueueForItems(projectId, itemIds)
+        }
+      })
+      .catch((err) => {
+        console.warn('[Execute Action] duplicate analysis failed, proceeding anyway:', err)
+        startPickerQueueForItems(projectId, itemIds)
+      })
+  }
+
+  // Alternate dialog handlers
+  const handleAlternateConfirm = (sel: StrategyAlternateWarningSelection) => {
+    if (!alternateWarningState) return
+    const finalIds = Array.from(
+      new Set([
+        ...alternateWarningState.initialSelectedItemIds,
+        ...sel.parentRowIds,
+      ]),
+    )
+    const projectId = alternateWarningState.projectId
+    setAlternateWarningState(null)
+    runDuplicateAnalysis(projectId, finalIds)
+  }
+
+  const handleAlternateCancel = () => {
+    setAlternateWarningState(null)
+  }
+
+  // Build the picker queue from a final list of item IDs (after the user has
+  // accepted / skipped the duplicate-review step). Extracted so the duplicate
+  // dialog can call into it on confirm/skip without duplicating logic.
+  const startPickerQueueForItems = (projectId: string, itemIds: number[]) => {
+    const items = lineItems.filter((it: any) => itemIds.includes(it.id))
+    const NORMALIZED_ACTIONS: Record<string, 'Event' | 'Quote' | 'PO' | 'Contract'> = {
+      RFQ: 'Event',
+      Event: 'Event',
+      Quote: 'Quote',
+      PO: 'PO',
+      Contract: 'Contract',
+    }
+    const groups: Record<'Event' | 'Quote' | 'PO' | 'Contract', any[]> = {
+      Event: [], Quote: [], PO: [], Contract: [],
+    }
+    for (const it of items) {
+      const key = NORMALIZED_ACTIONS[(it.action || '').trim()]
+      if (key) groups[key].push(it)
+    }
+    const split = getEffectiveExecuteSplit()
+    const queue: PickerQueueEntry[] = []
+    ;(['Event', 'Quote'] as const).forEach((action) => {
+      const groupItems = groups[action]
+      if (groupItems.length === 0) return
+
+      // Split into regular items vs BOM items. The project page sends BOMs
+      // via the `boms[]` array grouped by `bom_module_linkage_id` so the BE
+      // can reconstruct the BOM hierarchy on the new event. Regular project
+      // items (no BOM) go in `items[]`. We mirror that here so the strategy
+      // dashboard's create produces the exact same BOM dropdown the
+      // project Create Event page does.
+      const regularItems: { item_id: string }[] = []
+      const bomGroups = new Map<string, { bom_item_id: string }[]>()
+      for (const it of groupItems as any[]) {
+        const bom = it.bom_info
+        // CRITICAL naming: the strategy items endpoint exposes TWO different
+        // bom IDs. `bom_item_id` is the BOMItem model PK (NOT what create_rfq
+        // wants). `bom_item_module_linkage_id` is the BOMItemModuleLinkage
+        // entry_id — exactly what the BE's `boms[].bom_items[].bom_item_id`
+        // field accepts. Picking the wrong one makes the BE silently find 0
+        // items and crash later in event-item permission building.
+        const bomItemModuleLinkageId =
+          bom?.bom_item_module_linkage_id || bom?.bom_item_id  // fallback for backwards-compat
+        if (bom?.is_bom_item && bom?.bom_module_linkage_id && bomItemModuleLinkageId) {
+          const arr = bomGroups.get(bom.bom_module_linkage_id) || []
+          arr.push({ bom_item_id: bomItemModuleLinkageId })
+          bomGroups.set(bom.bom_module_linkage_id, arr)
+        } else if (it.project_item_id) {
+          regularItems.push({ item_id: it.project_item_id })
+        }
+      }
+      const boms = Array.from(bomGroups.entries()).map(([entry_id, bom_items]) => ({
+        entry_id,
+        bom_items,
+      }))
+
+      queue.push({
+        action,
+        projectId,
+        items: regularItems,
+        boms,
+        splitByItem: split,
+      })
+    })
+    ;(['PO', 'Contract'] as const).forEach((action) => {
+      const groupItems = groups[action]
+      if (groupItems.length === 0) return
+      dispatchToParent(
+        groupItems.map((it: any) => it.project_item_id),
+        action,
+        projectId,
+        split,
+      )
+    })
+    if (queue.length === 0) {
+      toast({ title: 'Opening Factwise', description: 'PO / Contract still uses the legacy popup chain.' })
+      return
+    }
+    setPickerQueue(queue)
+  }
+
+  // Duplicate-review handlers — close the dialog, then proceed with the
+  // (possibly augmented) selection to the picker queue.
+  const handleDuplicateConfirm = (sel: StrategyDuplicateReviewSelection) => {
+    if (!duplicateReview) return
+    const projectId = duplicateReview.projectId
+    // Translate project_item_ids returned by the duplicate dialog back to
+    // table-row ids (numeric) so we can re-group by action.
+    const idByProjectItemId = new Map<string, number>()
+    for (const li of lineItems as any[]) {
+      if (li.project_item_id) idByProjectItemId.set(li.project_item_id, li.id)
+    }
+    const addedRowIds: number[] = sel.additionalItemIds
+      .map((pid) => idByProjectItemId.get(pid))
+      .filter((x): x is number => typeof x === 'number')
+    const finalIds = Array.from(new Set([...duplicateReview.initialSelectedItemIds, ...addedRowIds]))
+    setDuplicateReview(null)
+    startPickerQueueForItems(projectId, finalIds)
+  }
+
+  const handleDuplicateSkip = () => {
+    if (!duplicateReview) return
+    const { projectId, initialSelectedItemIds } = duplicateReview
+    setDuplicateReview(null)
+    startPickerQueueForItems(projectId, initialSelectedItemIds)
+  }
+
+  const handleExecuteAction = () => {
+    if (selectedItems.length === 0) {
+      toast({
+        title: 'Select items first',
+        description: 'Pick one or more items, then click Execute Action.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    const projectId = getProjectId() || ''
+    if (!projectId) {
+      toast({
+        title: 'Project missing',
+        description: 'Could not determine the current project. Reload and try again.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    // Pull the selected line items and validate every one has an action assigned.
+    const items = lineItems.filter((it: any) => selectedItems.includes(it.id))
+    const NORMALIZED_ACTIONS: Record<string, 'Event' | 'Quote' | 'PO' | 'Contract'> = {
+      RFQ: 'Event',
+      Event: 'Event',
+      Quote: 'Quote',
+      PO: 'PO',
+      Contract: 'Contract',
+    }
+    const missingAction = items.filter((it: any) => !it.action || !NORMALIZED_ACTIONS[it.action.trim()])
+    if (missingAction.length > 0) {
+      toast({
+        title: 'Some items have no action',
+        description: `${missingAction.length} selected item(s) have no action assigned. Run Assign Actions first.`,
+        variant: 'destructive',
+      })
+      return
+    }
+
+    // Order matches the project page exactly:
+    //   1. Alternate-without-parent warning (uses lineItems data we already have).
+    //   2. Duplicate analysis (server-side endpoint, may augment selection).
+    //   3. Template picker queue (Event then Quote).
+    const altWarnings = findAlternatesWithoutParents(selectedItems)
+    if (altWarnings.length > 0) {
+      setAlternateWarningState({
+        warnings: altWarnings,
+        projectId,
+        initialSelectedItemIds: [...selectedItems],
+      })
+      return
+    }
+    runDuplicateAnalysis(projectId, [...selectedItems])
+  }
+
+  // Picker dialog confirm — postMessage selection to Factwise, shift queue.
+  const handlePickerConfirm = (selection: StrategyTemplatePickerSelection) => {
+    const current = pickerQueue[0]
+    if (!current) return
+    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    setPendingCreates((prev) => ({
+      ...prev,
+      [requestId]: { action: selection.action, itemCount: selection.itemCount },
+    }))
+    const msg = {
+      type: 'STRATEGY_CREATE_SELECTION',
+      source: 'STRATEGY_DASHBOARD',
+      requestId,
+      projectId: current.projectId,
+      action: selection.action,
+      entityId: selection.entityId,
+      templateId: selection.templateId,
+      splitByItem: selection.splitByItem,
+      // Two arrays so Factwise can route BOM items through `boms[]` and
+      // regular items through `items[]` — same as the project page does
+      // for saveEventDetailsApi. Without this BOM linkage is lost and the
+      // BOM dropdown doesn't appear on the created event.
+      items: current.items,
+      boms: current.boms,
+    }
+    console.log('[Strategy] sending STRATEGY_CREATE_SELECTION → parent', msg, 'parent=', !!window.parent, 'sameWindow=', window.parent === window)
+    try {
+      window.parent?.postMessage(msg, '*')
+    } catch (err) {
+      console.warn('[Execute Action] postMessage failed:', err)
+    }
+    toast({
+      title: `${selection.action} creating…`,
+      description: `${selection.itemCount} item${selection.itemCount === 1 ? '' : 's'} — Factwise is running the standard ${selection.action.toLowerCase()} flow.`,
+    })
+    // Shift queue to the next picker (or empty).
+    setPickerQueue((prev) => prev.slice(1))
+  }
+
+  const handlePickerCancel = () => {
+    // User backed out of this action; drop ALL remaining pickers so we don't
+    // surprise them with another dialog. If they want to retry, they can hit
+    // Execute Action again.
+    setPickerQueue([])
+  }
+
+  // Listen for Factwise replies to STRATEGY_CREATE_SELECTION so we can toast
+  // the result back to the user without making them switch tabs.
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      const data = event.data
+      if (!data || data.type !== 'STRATEGY_CREATE_SELECTION_RESULT') return
+      if (data.source !== 'FACTWISE') return
+      const requestId: string | undefined = data.requestId
+      if (!requestId) return
+      const pending = pendingCreates[requestId]
+      if (!pending) return
+      // Clear the tracker.
+      setPendingCreates((prev) => {
+        const next = { ...prev }
+        delete next[requestId]
+        return next
+      })
+      if (data.ok) {
+        if (data.pending) {
+          // Async path — sheet/event will be created by Celery; user will
+          // see a notification in Factwise's bell when it's ready.
+          toast({
+            title: `${pending.action} queued`,
+            description: `${pending.itemCount} item${pending.itemCount === 1 ? '' : 's'} — Factwise is creating it in the background. You'll see a notification when it's ready.`,
+          })
+        } else {
+          const n = typeof data.createdCount === 'number' ? data.createdCount : pending.itemCount
+          toast({
+            title: `${pending.action} created`,
+            description: `${n} record${n === 1 ? '' : 's'} created. Factwise has them in the project.`,
+          })
+        }
+      } else {
+        toast({
+          title: `${pending.action} create failed`,
+          description: typeof data.error === 'string' ? data.error : 'Unknown error from Factwise.',
+          variant: 'destructive',
+        })
+      }
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
+  }, [pendingCreates, toast])
+
   const handleAssignActions = async (scope: 'all' | 'unassigned' | 'selected') => {
     let idsToUpdate: Set<number>
     if (scope === 'unassigned') {
@@ -3870,6 +4421,30 @@ export default function ProcurementDashboard() {
     const localCriteria = currentSettings.actions?.criteria || []
     const localAction = currentSettings.actions?.criteriaAction || 'Quote'
     const hasLocalCriteria = localCriteria.length > 0
+
+    // Pricing-availability dependency check.
+    // If any rule (local or admin) references the 'Pricing Available' field AND
+    // Load Pricing hasn't been run, we cannot fairly evaluate it. Bail explicitly
+    // rather than silently treating everything as "no pricing available", which
+    // would mis-assign every item to whatever the fallback action is.
+    const allCriteriaFlat = [
+      ...localCriteria,
+      ...adminActionRules.flatMap(r => r.criteria || []),
+    ]
+    const usesPricingAvailable = allCriteriaFlat.some((c: any) => c.field === 'Pricing Available')
+    const requiresPricingRepoSource = allCriteriaFlat.some((c: any) =>
+      c.field === 'Pricing Available' &&
+      (!c.sources || c.sources.length === 0 ||
+        c.sources.some((s: string) => ['PO', 'CONTRACT', 'QUOTE', 'RFQ'].includes(s)))
+    )
+    if (usesPricingAvailable && requiresPricingRepoSource && !pricingEnabled) {
+      toast({
+        title: 'Run Load Pricing first',
+        description: 'One of the action rules depends on PO/Contract/Quote/RFQ pricing availability. Click Load Pricing, then Assign Actions again.',
+        variant: 'destructive',
+      })
+      return
+    }
 
     // Evaluate rules and collect items that changed
     const changedItems: { project_item_id: string; action: string }[] = []
@@ -6116,9 +6691,16 @@ export default function ProcurementDashboard() {
                   <th className="pin p-2 text-left font-medium text-gray-700 text-xs bg-gray-50 z-40 border-b border-gray-200" style={{ width: 40, minWidth: 40, maxWidth: 40, left: 0 }}>
                     <input
                       type="checkbox"
-                      checked={
-                        selectedItems.length === filteredAndSortedItems.length && filteredAndSortedItems.length > 0
-                      }
+                      // Checked = every *selectable* row (pending qty > 0) is selected.
+                      // Items with no remaining qty are excluded from the header gate
+                      // the same way they're excluded from selection.
+                      checked={(() => {
+                        const selectable = filteredAndSortedItems.filter(isItemSelectable)
+                        return (
+                          selectable.length > 0 &&
+                          selectable.every((it) => selectedItems.includes(it.id))
+                        )
+                      })()}
                       onChange={handleSelectAll}
                       className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                     />
@@ -6181,15 +6763,50 @@ export default function ProcurementDashboard() {
         </tr>
       </thead>
       <tbody className="bg-white divide-y divide-gray-100">
-        {paginatedItems.map((item: any) => (
-          <tr key={item.id} className="hover:bg-gray-50 transition-colors group/row">
-                    <td className="pin p-2 z-10 bg-white group-hover/row:bg-gray-50" style={{ width: 40, minWidth: 40, maxWidth: 40, left: 0 }}>
-                      <input
-                        type="checkbox"
-                        checked={selectedItems.includes(item.id)}
-                        onChange={() => handleSelectItem(item.id)}
-                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                      />
+        {paginatedItems.map((item: any) => {
+          // Disable selection when nothing is left to source. Matches the
+          // project page's tab-visibility gate (project_pending ≤ 0). null
+          // means BE didn't report a value — don't gate in that case.
+          const noPendingQty =
+            typeof item.pendingQuantity === 'number' && item.pendingQuantity <= 0
+          return (
+          <tr
+            key={item.id}
+            className={`group/row transition-colors ${
+              noPendingQty
+                ? 'bg-gray-50 opacity-60'
+                : 'hover:bg-gray-50 bg-white'
+            }`}
+          >
+                    <td className={`pin p-2 z-10 group-hover/row:bg-gray-50 ${noPendingQty ? 'bg-gray-50' : 'bg-white'}`} style={{ width: 40, minWidth: 40, maxWidth: 40, left: 0 }}>
+                      {noPendingQty ? (
+                        // Disabled checkboxes don't fire hover events on the
+                        // input itself, so wrap in a span the Tooltip can
+                        // anchor to. Shows immediately on hover (no 700ms
+                        // native-title delay).
+                        <UiTooltip>
+                          <UiTooltipTrigger asChild>
+                            <span className="inline-block cursor-not-allowed">
+                              <input
+                                type="checkbox"
+                                checked={false}
+                                disabled
+                                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-40 pointer-events-none"
+                              />
+                            </span>
+                          </UiTooltipTrigger>
+                          <UiTooltipContent side="right" className="text-xs">
+                            No pending quantity left to source for this item
+                          </UiTooltipContent>
+                        </UiTooltip>
+                      ) : (
+                        <input
+                          type="checkbox"
+                          checked={selectedItems.includes(item.id)}
+                          onChange={() => handleSelectItem(item.id)}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                      )}
                     </td>
                     {visibleColumns.map((columnKey, colIndex) => {
                       const value = item[columnKey as keyof typeof item]
@@ -7311,7 +7928,8 @@ export default function ProcurementDashboard() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -7418,25 +8036,11 @@ export default function ProcurementDashboard() {
                 <Button
                   size="sm"
                   className="bg-blue-600 hover:bg-blue-700 text-white h-8"
-                  disabled={actionResultsLoading}
-                  onClick={() => {
-                    console.log('Execute action clicked, selected items:', selectedItems)
-                    setActionResultsLoading(true)
-                    setShowActionResultsPopup(true)
-                    setTimeout(() => {
-                      setActionResultsLoading(false)
-                    }, 3000)
-                  }}
+                  disabled={selectedItems.length === 0}
+                  onClick={handleExecuteAction}
                   title="Execute Action"
                 >
-                  {actionResultsLoading ? (
-                    <span className="flex items-center gap-2">
-                      <span className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></span>
-                      Executing...
-                    </span>
-                  ) : (
-                    'Execute Action'
-                  )}
+                  Execute Action
                 </Button>
               </div>
             </div>
@@ -7483,101 +8087,6 @@ export default function ProcurementDashboard() {
           setSettingsOpen(true)
         }}
       />
-
-      {/* Action Results Popup */}
-      <Dialog open={showActionResultsPopup} onOpenChange={(open) => {
-        if (!open && !actionResultsLoading) setShowActionResultsPopup(false)
-      }}>
-        <DialogContent className="w-[480px] max-w-[90vw]">
-          {actionResultsLoading ? (
-            <>
-              <DialogHeader>
-                <DialogTitle className="flex items-center gap-3">
-                  <div className="animate-spin rounded-full h-6 w-6 border-2 border-blue-500 border-t-transparent"></div>
-                  Executing Actions...
-                </DialogTitle>
-                <DialogDescription>
-                  Creating events and quotes based on your rules. Please wait.
-                </DialogDescription>
-              </DialogHeader>
-              <div className="flex flex-col items-center justify-center py-10 space-y-4">
-                <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
-                <p className="text-sm text-gray-500">Processing items...</p>
-              </div>
-            </>
-          ) : (
-            <>
-              <DialogHeader>
-                <DialogTitle className="flex items-center gap-3">
-                  <div className="p-2 bg-green-100 rounded-lg">
-                    <CheckSquare className="h-5 w-5 text-green-600" />
-                  </div>
-                  Actions Executed Successfully
-                </DialogTitle>
-                <DialogDescription>
-                  The following actions have been created based on your rules.
-                </DialogDescription>
-              </DialogHeader>
-
-              <div className="space-y-4 mt-2">
-                {/* Event for Mechanical */}
-                <div className="flex items-center justify-between p-4 rounded-lg border border-gray-200 bg-blue-50">
-                  <div>
-                    <div className="font-medium text-gray-900">1 Event created</div>
-                    <div className="text-sm text-gray-600">Tag: <span className="font-medium">Mechanical</span></div>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="text-blue-600 border-blue-300 hover:bg-blue-100"
-                    onClick={() => window.open('#', '_blank')}
-                  >
-                    Go to Event
-                  </Button>
-                </div>
-
-                {/* Event for Electrical */}
-                <div className="flex items-center justify-between p-4 rounded-lg border border-gray-200 bg-blue-50">
-                  <div>
-                    <div className="font-medium text-gray-900">1 Event created</div>
-                    <div className="text-sm text-gray-600">Tag: <span className="font-medium">Electrical</span></div>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="text-blue-600 border-blue-300 hover:bg-blue-100"
-                    onClick={() => window.open('#', '_blank')}
-                  >
-                    Go to Event
-                  </Button>
-                </div>
-
-                {/* Quote for OEM Controlled Items */}
-                <div className="flex items-center justify-between p-4 rounded-lg border border-gray-200 bg-purple-50">
-                  <div>
-                    <div className="font-medium text-gray-900">1 Quote created</div>
-                    <div className="text-sm text-gray-600">Tag: <span className="font-medium">OEM Controlled Items</span></div>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="text-purple-600 border-purple-300 hover:bg-purple-100"
-                    onClick={() => window.open('#', '_blank')}
-                  >
-                    Go to Quote
-                  </Button>
-                </div>
-              </div>
-
-              <div className="flex justify-end mt-4">
-                <Button onClick={() => setShowActionResultsPopup(false)}>
-                  Done
-                </Button>
-              </div>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
 
       {/* Analytics Popup */}
       {showAnalyticsPopup && selectedItemForAnalytics && (
@@ -8334,6 +8843,48 @@ export default function ProcurementDashboard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Alternate-without-parent warning — runs FIRST in the Execute Action
+          chain (mirrors project Create Event flow). */}
+      <StrategyAlternateWarning
+        open={!!alternateWarningState}
+        warnings={alternateWarningState?.warnings ?? []}
+        onConfirm={handleAlternateConfirm}
+        onCancel={handleAlternateCancel}
+      />
+
+      {/* Duplicate review — shown before the template picker when the user's
+          selection has unselected siblings (same item under another BOM). */}
+      <StrategyDuplicateReview
+        open={!!duplicateReview}
+        duplicateItems={duplicateReview?.duplicates ?? []}
+        selectedProjectItemIds={
+          duplicateReview
+            ? lineItems
+                .filter((li: any) =>
+                  duplicateReview.initialSelectedItemIds.includes(li.id)
+                )
+                .map((li: any) => li.project_item_id)
+            : []
+        }
+        onConfirm={handleDuplicateConfirm}
+        onSkip={handleDuplicateSkip}
+      />
+
+      {/* Execute Action template picker — shows queue[0] when non-empty.
+          Picks entity + template per action; on confirm postMessages to
+          Factwise which does the actual create using its production code. */}
+      <StrategyTemplatePicker
+        open={pickerQueue.length > 0}
+        action={pickerQueue[0]?.action ?? 'Event'}
+        itemCount={
+          (pickerQueue[0]?.items.length ?? 0) +
+          (pickerQueue[0]?.boms.reduce((n, b) => n + b.bom_items.length, 0) ?? 0)
+        }
+        defaultSplit={pickerQueue[0]?.splitByItem ?? false}
+        onConfirm={handlePickerConfirm}
+        onCancel={handlePickerCancel}
+      />
     </div>
   )
 }
