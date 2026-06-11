@@ -317,6 +317,13 @@ export function usePricingLookup(
   items: any[],
   settings: PricingLookupSettings,
   enabled: boolean = true,
+  /** Customer entity the project is for. Sent verbatim as
+   *  cheapest-by-id `customer_entity_id`; the BE uses it to filter
+   *  customer-confidential CONTRACT entries (a contract flagged
+   *  is_customer_confidential only surfaces if its customer matches).
+   *  Pass null for projects with no customer set — only non-
+   *  confidential rates will be considered (safe default). */
+  customerEntityId: string | null = null,
 ): PricingLookupState {
   const [state, setState] = useState<{
     byItemId: Map<string, CheapestByItemPerSource | null>;
@@ -605,6 +612,7 @@ export function usePricingLookup(
             date_from: dateFrom,
             date_to: dateTo,
             price_basis: rankingBasis,
+            customer_entity_id: customerEntityId,
           })
         : Promise.resolve(null);
 

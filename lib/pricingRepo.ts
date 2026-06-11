@@ -654,6 +654,14 @@ export interface CheapestByIdRequest {
   date_from?: string;
   date_to?: string;
   price_basis?: PriceBasis;
+  /** Customer entity the requesting project is for. The BE filters
+   *  customer-confidential CONTRACT entries: when a contract is flagged
+   *  is_customer_confidential, it only surfaces if its own
+   *  customer_entity_id matches this value. Pass the project's
+   *  customer_entity (Project.customer_entity_id). Omit / null when no
+   *  customer context, and only non-confidential rates will be considered
+   *  — safe default. */
+  customer_entity_id?: string | null;
 }
 
 export type CheapestByIdPerSource = CheapestByMpnPerSource;
@@ -719,6 +727,7 @@ export async function fetchCheapestById(
             date_from: req.date_from,
             date_to: req.date_to,
             price_basis: req.price_basis,
+            customer_entity_id: req.customer_entity_id ?? null,
           }),
         },
       ),
