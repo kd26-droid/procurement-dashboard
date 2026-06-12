@@ -8885,6 +8885,42 @@ export default function ProcurementDashboard() {
         onConfirm={handlePickerConfirm}
         onCancel={handlePickerCancel}
       />
+
+      {/* Full-screen "Creating in Factwise…" lock while any create is in
+          flight. Prevents the user from clicking around / refreshing the
+          page mid-create (which caused duplicate/orphan events earlier). */}
+      {Object.keys(pendingCreates).length > 0 && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          // Block all interaction with the dashboard until the reply arrives.
+          aria-busy
+          aria-live="polite"
+        >
+          <div className="rounded-lg bg-white px-6 py-5 shadow-xl max-w-md mx-4">
+            <div className="flex items-start gap-3">
+              <div className="size-6 mt-0.5 shrink-0 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+              <div className="flex-1">
+                <div className="font-semibold text-gray-900">
+                  Creating in Factwise…
+                </div>
+                <div className="mt-1 text-sm text-gray-600">
+                  {Object.values(pendingCreates)
+                    .map(
+                      (p) =>
+                        `${p.action}: ${p.itemCount} item${p.itemCount === 1 ? '' : 's'}`,
+                    )
+                    .join(' · ')}
+                </div>
+                <div className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                  <strong>Don't refresh the page.</strong> Split mode can take
+                  20-60 seconds — Factwise is creating one event per item in a
+                  single atomic transaction.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
