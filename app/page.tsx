@@ -6772,13 +6772,12 @@ export default function ProcurementDashboard() {
           return (
           <tr
             key={item.id}
-            className={`group/row transition-colors ${
-              noPendingQty
-                ? 'bg-gray-50 opacity-60'
-                : 'hover:bg-gray-50 bg-white'
-            }`}
+            // Row stays interactive even when no pending qty — only the
+            // selection checkbox below is disabled. The user can still
+            // hover other columns, click cells, read the data, etc.
+            className="group/row transition-colors hover:bg-gray-50 bg-white"
           >
-                    <td className={`pin p-2 z-10 group-hover/row:bg-gray-50 ${noPendingQty ? 'bg-gray-50' : 'bg-white'}`} style={{ width: 40, minWidth: 40, maxWidth: 40, left: 0 }}>
+                    <td className="pin p-2 z-10 group-hover/row:bg-gray-50 bg-white" style={{ width: 40, minWidth: 40, maxWidth: 40, left: 0 }}>
                       {noPendingQty ? (
                         // Disabled checkboxes don't fire hover events on the
                         // input itself, so wrap in a span the Tooltip can
