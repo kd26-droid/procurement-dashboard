@@ -631,8 +631,11 @@ export interface CheapestByIdRequestItem {
   /** FE-chosen response key. Typically lineItem.enterprise_item_id or
    *  whatever uniquely identifies the row on the FE. */
   key: string;
-  /** Identifier value to match against (MPN / ERP / CPN / HSN). */
-  id: string;
+  /** Identifier value(s) to match against. String for single-value
+   *  modes (MPN / ERP / CPN / HSN / FACTWISE_CODE). Array for MPN_SPEC —
+   *  one item can carry multiple spec-attribute MPNs, all of which are
+   *  valid match keys against pricing_repository_entry.all_mpns. */
+  id: string | string[];
   /** Currency this item ranks + converts into. Omit to skip conversion
    *  (response will carry native rate only). */
   project_currency_code?: string;
@@ -684,9 +687,26 @@ export async function fetchCheapestById(
   const cleaned: CheapestByIdRequestItem[] = [];
   for (const raw of req.items ?? []) {
     if (!raw) continue;
-    const id = String(raw.id ?? '').trim();
-    if (!id) continue;
-    const key = String(raw.key ?? id).trim();
+    // id can be string (single-value mode) or string[] (MPN_SPEC).
+    // Preserve the array shape — BE compute accepts list and matches
+    // any value against all_mpns. Coercing to a comma-joined string
+    // would silently break MPN_SPEC.
+    let id: string | string[] | null = null;
+    if (Array.isArray(raw.id)) {
+      const arr = raw.id
+        .map((v) => (typeof v === 'string' ? v.trim() : ''))
+        .filter((v) => !!v);
+      if (arr.length === 0) continue;
+      id = arr.length === 1 ? arr[0] : arr;
+    } else if (raw.id != null) {
+      const s = String(raw.id).trim();
+      if (!s) continue;
+      id = s;
+    } else {
+      continue;
+    }
+    const keySource = Array.isArray(id) ? id.join('|') : id;
+    const key = String(raw.key ?? keySource).trim();
     if (!key || seenKey.has(key)) continue;
     seenKey.add(key);
     cleaned.push({

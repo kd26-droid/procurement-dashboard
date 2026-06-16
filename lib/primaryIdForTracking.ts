@@ -18,7 +18,13 @@
  */
 import { getAuthToken } from './api';
 
-export type PrimaryIdForTracking = 'MPN' | 'ERP' | 'CPN' | 'HSN';
+export type PrimaryIdForTracking =
+  | 'MPN'
+  | 'MPN_SPEC'
+  | 'FACTWISE_CODE'
+  | 'ERP'
+  | 'CPN'
+  | 'HSN';
 
 export interface PrimaryIdForTrackingResponse {
   tracking_primary_identifier: PrimaryIdForTracking | null;

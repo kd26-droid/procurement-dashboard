@@ -173,19 +173,65 @@ function extractAttrValue(item: any, needle: string): string | null {
   return null;
 }
 
+/** Walk every spec_<name> / customId_<name> key and return ALL values
+ *  whose attribute name contains the needle. Used by MPN_SPEC where an
+ *  item can legitimately carry several MPN-named attributes (Mfg MPN,
+ *  Alt MPN, Old MPN). */
+function extractAllAttrValues(item: any, needle: string): string[] {
+  if (!item || typeof item !== 'object') return [];
+  const target = normalize(needle);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const key of Object.keys(item)) {
+    let rawName: string | null = null;
+    if (key.startsWith('customId_')) {
+      rawName = key.slice('customId_'.length).replace(/_/g, ' ');
+    } else if (key.startsWith('spec_')) {
+      rawName = key.slice('spec_'.length).replace(/_/g, ' ');
+    } else {
+      continue;
+    }
+    if (!normalize(rawName).includes(target)) continue;
+    const val = item[key];
+    if (val == null) continue;
+    const trimmed = String(val).trim();
+    if (!trimmed || trimmed === '-' || trimmed === '—') continue;
+    if (seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
 function extractIdForTracking(
   item: any,
   identifier: PrimaryIdForTracking,
-): string | null {
+): string | string[] | null {
   switch (identifier) {
     case 'MPN':
-      // Prefer the direct item-master MPN now that the BE exposes it.
-      // Fall back to attribute-scan for shapes where mpn_item_code is
-      // empty but the buyer has MPN in spec_MPN / customId_MPN_Code.
+      // Strict on the direct item-master MPN. The old "loose match"
+      // mode that also walked spec attributes is now a separate option
+      // (MPN_SPEC).
       return (
         item?.mpn_item_code ||
         item?.MPN_item_code ||
-        extractMpn(item) ||
+        null
+      );
+    case 'MPN_SPEC': {
+      // Return EVERY MPN-named spec attribute value the item carries.
+      // BE compute accepts array id for MPN_SPEC and matches any of
+      // them against pricing_repository_entry.all_mpns.
+      const values = extractAllAttrValues(item, 'mpn');
+      if (values.length === 0) return null;
+      return values.length === 1 ? values[0] : values;
+    }
+    case 'FACTWISE_CODE':
+      // Factwise item code — the unique buyer-facing item code shown
+      // in the items directory.
+      return (
+        item?.item_code ||
+        item?.itemId ||
+        item?.factwise_item_code ||
         null
       );
     case 'ERP':
@@ -566,7 +612,22 @@ export function usePricingLookup(
           ? extractIdForTracking(sourceItem, primaryId)
           : null;
         extractAttempts++;
-        if (!value || !value.trim()) {
+        // MPN_SPEC can return an array; every other mode returns a
+        // string. Normalize for the empty-skip check + push.
+        let normalizedId: string | string[] | null = null;
+        if (Array.isArray(value)) {
+          const cleaned = value
+            .map((v) => (typeof v === 'string' ? v.trim() : ''))
+            .filter((v) => !!v);
+          normalizedId = cleaned.length === 0
+            ? null
+            : cleaned.length === 1
+              ? cleaned[0]
+              : cleaned;
+        } else if (typeof value === 'string' && value.trim()) {
+          normalizedId = value.trim();
+        }
+        if (!normalizedId) {
           console.log('[PRICE-DEBUG] skipping item — extractor returned no value', {
             lookupKey: entry.lookupKey,
             primaryId,
@@ -583,7 +644,7 @@ export function usePricingLookup(
         //                      with what THIS qty would actually pay)
         requestItems.push({
           key: entry.lookupKey,
-          id: value.trim(),
+          id: normalizedId,
           project_currency_code: entry.project_currency_code || undefined,
           target_uom_id: entry.target_uom_id || undefined,
           requested_qty: entry.requested_qty || undefined,
