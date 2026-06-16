@@ -571,7 +571,11 @@ export function usePricingLookup(
       // with its own per-currency conversion.
       type RequestItem = {
         key: string;
-        id: string;
+        // id accepts string for single-value modes (MPN / ERP / CPN /
+        // HSN / FACTWISE_CODE) and string[] for MPN_SPEC where an item
+        // can carry multiple spec MPNs. Matches CheapestByIdRequestItem
+        // in lib/pricingRepo.ts.
+        id: string | string[];
         project_currency_code?: string;
         target_uom_id?: string;
         requested_qty?: string;
