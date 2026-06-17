@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel, LabelList } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
-import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getElement14JobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, searchVendors, getItemCustomVendors, addItemCustomVendors, removeItemCustomVendor, getEntitySettings, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion, type CustomVendor } from '@/lib/api'
+import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getElement14JobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, searchVendors, getItemCustomVendors, addItemCustomVendors, removeItemCustomVendor, getEntitySettings, getAddresses, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion, type CustomVendor, type AddressOption } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
 import { StrategyTemplatePicker, type StrategyTemplatePickerSelection } from "@/components/strategy-template-picker"
 import { StrategyDuplicateReview, type StrategyDuplicateReviewSelection } from "@/components/strategy-duplicate-review"
@@ -575,6 +575,13 @@ export default function ProcurementDashboard() {
   // True once the user has added or removed any custom vendor in this edit session — enables the Save button
   const [editVendorDirty, setEditVendorDirty] = useState(false)
   const [userSearchTerm, setUserSearchTerm] = useState("")
+  // Enterprise address book — fetched once when first opening the Bulk
+  // Edit dialog and reused while the page is mounted. Surfaced as a
+  // dropdown in the Bulk Edit modal so buyers can set Shipping Address
+  // across all selected strategy items in one go.
+  const [shippingAddresses, setShippingAddresses] = useState<AddressOption[]>([])
+  const [shippingAddressLoading, setShippingAddressLoading] = useState(false)
+  const [shippingAddressSearchTerm, setShippingAddressSearchTerm] = useState("")
   const [selectedItems, setSelectedItems] = useState<number[]>([])
   const [editingItem, setEditingItem] = useState<any | null>(null)
   const [editingUsers, setEditingUsers] = useState<string[]>([])
@@ -625,6 +632,7 @@ export default function ProcurementDashboard() {
     "assignedTo",
     "dueDate",
     "vendor",
+    "shippingAddress",
     "unitPrice",
     "source",
     "pricePO",
@@ -693,6 +701,7 @@ export default function ProcurementDashboard() {
     assignedTo: 144,
     dueDate: 100,
     vendor: 200,
+    shippingAddress: 220,
     unitPrice: 100,
     source: 96,
     pricePO: 88,
@@ -945,6 +954,19 @@ export default function ProcurementDashboard() {
     window.addEventListener('beforeunload', handleBeforeUnload)
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
   }, [bulkUpdateInProgress])
+
+  // Preload the enterprise address book on mount so the Shipping Address
+  // column can resolve UUIDs to nicknames immediately, without waiting
+  // for the user to open Bulk Edit.
+  useEffect(() => {
+    if (shippingAddresses.length > 0 || shippingAddressLoading) return
+    setShippingAddressLoading(true)
+    getAddresses()
+      .then((rows) => setShippingAddresses(rows))
+      .catch((err) => console.error('[Strategy] Failed to preload addresses', err))
+      .finally(() => setShippingAddressLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Load project data from API
   useEffect(() => {
@@ -1226,6 +1248,11 @@ export default function ProcurementDashboard() {
       vendor: '',
       custom_vendors: Array.isArray(item.custom_vendors) ? item.custom_vendors : [] as CustomVendor[],
       action: item.action || '',
+      // Per-item shipping override (null when buyer hasn't picked one).
+      // The Shipping Address column falls back to default_shipping_address
+      // when this is null so every row shows a meaningful value.
+      shipping_address: item.shipping_address ?? null,
+      default_shipping_address: (item as any).default_shipping_address ?? null,
       dueDate: '',
       source: (item as any).source || 'Project',
       pricePO: 0,
@@ -2545,6 +2572,7 @@ export default function ProcurementDashboard() {
       'Assigned To',
       'Due Date',
       'Vendor',
+      'Shipping Address',
       'Currency',
       'Unit Price',
       'Total Price',
@@ -2671,6 +2699,21 @@ export default function ProcurementDashboard() {
             ? item.custom_vendors.map((v: CustomVendor) => v.vendor_name).join('; ')
             : (item.vendor || '')
         ),
+        // Shipping Address: override (item.shipping_address) wins; else
+        // fall back to the item's default_shipping_address from Item
+        // Directory. Resolve UUID -> "[nickname] full address" using the
+        // preloaded address book. Append "(default)" so a downstream
+        // reader can tell at a glance whether the buyer overrode it.
+        escapeCSV((() => {
+          const overrideId = item.shipping_address as string | null
+          const defaultId = item.default_shipping_address as string | null
+          const effectiveId = overrideId ?? defaultId
+          if (!effectiveId) return ''
+          const resolved = shippingAddresses.find((a) => a.address_id === effectiveId)
+          if (!resolved) return effectiveId
+          const label = `[${resolved.address_nickname}] ${resolved.full_address}`
+          return overrideId ? label : `${label} (default)`
+        })()),
         escapeCSV(item.currency?.code || ''),
         formatPrice(item.unitPrice, itemCurrencySymbol),
         formatPrice(item.totalPrice, itemCurrencySymbol),
@@ -2865,6 +2908,7 @@ export default function ProcurementDashboard() {
         "assignedTo",
         "dueDate",
         "vendor",
+        "shippingAddress",
         "unitPrice",
         "totalPrice",
       ])
@@ -3540,6 +3584,19 @@ export default function ProcurementDashboard() {
         console.log('[Edit] Action changed from', originalItem.action, 'to', editFormData.action)
       }
 
+      // Check if shipping_address changed. The form stores the picked
+      // address UUID under `shipping_address`; the original lives on the
+      // item under the same key (mirrored from the GET response).
+      if (editFormData.shipping_address !== undefined) {
+        const original = (originalItem as any)?.shipping_address ?? null
+        const next = editFormData.shipping_address || null
+        if (next !== original) {
+          updatePayload.shipping_address = next
+          hasChanges = true
+          console.log('[Edit] Shipping address changed from', original, 'to', next)
+        }
+      }
+
       // Check if category/tags changed
       let tagsChanged = false
       let newTags: string[] = []
@@ -4028,6 +4085,22 @@ export default function ProcurementDashboard() {
     // 'PO' goes through the PO_GROUP flow. 'Contract' isn't wired on project
     // page today — fall back to RFQ flow for now and let users redirect.
     const templateType: 'RFQ' | 'PO_GROUP' = action === 'PO' ? 'PO_GROUP' : 'RFQ'
+
+    // Map each project_item_id -> the effective shipping address UUID
+    // (per-item override if the buyer set one in Bulk Edit, else the
+    // item's default_shipping_address from Item Directory). The parent
+    // (Factwise project page) uses this to pre-fill each newly-created
+    // event item when the target template has SHIPPING_ADDRESS.fieldLevel
+    // === 'ITEM'. Items with no effective address are omitted so the
+    // event's own autofill chain runs untouched.
+    const itemShippingAddresses: Record<string, string> = {}
+    for (const li of lineItems as any[]) {
+      const pid = li?.project_item_id
+      if (!pid || !projectItemIds.includes(pid)) continue
+      const effective = li.shipping_address ?? li.default_shipping_address
+      if (effective) itemShippingAddresses[pid] = effective
+    }
+
     const message = {
       type: 'STRATEGY_EXECUTE_ACTION',
       source: 'STRATEGY_DASHBOARD',
@@ -4041,6 +4114,9 @@ export default function ProcurementDashboard() {
       // When true the user will pick the template/entity once but the save
       // handler should produce one event per item rather than one combined.
       splitByItem,
+      // Per-item shipping address pre-fill (project_item_id -> address UUID).
+      // Empty object when nothing to pre-fill.
+      itemShippingAddresses,
     }
     try {
       // Strategy dashboard is iframed inside Factwise. window.parent is the
@@ -4580,7 +4656,12 @@ export default function ProcurementDashboard() {
         currency: item.currency,
         unit: item.unit,
         itemId: item.itemId,
-        project_item_id: item.project_item_id
+        project_item_id: item.project_item_id,
+        // Pre-fill the picker with the item's currently saved
+        // shipping_address (may be null) so the user can see what
+        // they're editing and only the actual diff sends.
+        shipping_address: item.shipping_address ?? null,
+        originalShippingAddress: item.shipping_address ?? null,
       })
     } else {
       // Bulk edit - show common tags across all selected items
@@ -4634,11 +4715,25 @@ export default function ProcurementDashboard() {
         action: '',
         unitPrice: 0,
         rate: 0,
-        quantity: 0
+        quantity: 0,
+        // Bulk edit: no shared "original" to diff against — leave blank
+        // so the chip placeholder reads "Leave blank to keep each item's
+        // current address" and Save activates only when the user picks.
+        shipping_address: undefined,
+        originalShippingAddress: undefined,
       })
     }
 
     setShowEditDialog(true)
+    // Lazy-load the enterprise address book the first time Bulk Edit
+    // opens. Cheap GET, results cached for the session.
+    if (shippingAddresses.length === 0 && !shippingAddressLoading) {
+      setShippingAddressLoading(true)
+      getAddresses()
+        .then((rows) => setShippingAddresses(rows))
+        .catch((err) => console.error('[Edit] Failed to load addresses', err))
+        .finally(() => setShippingAddressLoading(false))
+    }
   }
 
   // Debounced server-side vendor search (edit popup only)
@@ -4890,8 +4985,18 @@ export default function ProcurementDashboard() {
     // Check if category changed - compare with original for both single and bulk
     const categoryChanged = editFormData.category !== editFormData.originalCategory
 
+    // Check if Shipping Address was picked in the modal. For bulk edits
+    // there is no per-item "original" to diff against — any non-undefined
+    // value here means "apply this address to every selected item."
+    const shippingAddressChanged =
+      editFormData.shipping_address !== undefined &&
+      editFormData.shipping_address !== null
+    const newShippingAddress: string | null = shippingAddressChanged
+      ? (editFormData.shipping_address as string)
+      : null
+
     // If no other changes, close — custom vendor mutations are already committed.
-    if (!assignedToChanged && !categoryChanged) {
+    if (!assignedToChanged && !categoryChanged && !shippingAddressChanged) {
       if (editVendorDirty) {
         toast({
           title: "Saved",
@@ -4912,8 +5017,8 @@ export default function ProcurementDashboard() {
     console.log('[Edit] Saving changes for', selectedItems.length, 'items')
     console.log('[Edit] Form data:', editFormData)
 
-    // If either users or tags changed, update via API
-    if (assignedToChanged || categoryChanged) {
+    // If any of users / tags / shipping address changed, update via API
+    if (assignedToChanged || categoryChanged || shippingAddressChanged) {
       // Close dialog immediately and show progress
       setShowEditDialog(false)
       setEditFormData({})
@@ -5004,6 +5109,14 @@ export default function ProcurementDashboard() {
                 await updateItemTags(projectId, item.project_item_id, tagsToKeep, newCustomTags)
               }
 
+              // Apply shipping address to every selected item — same
+              // value, sent via the standard strategy PATCH endpoint.
+              if (shippingAddressChanged) {
+                await updateProjectItem(projectId, item.project_item_id, {
+                  shipping_address: newShippingAddress,
+                })
+              }
+
               return { success: true, itemId: item.itemId }
             } catch (error: any) {
               console.error(`[Edit] Attempt ${attempt}/${maxRetries} failed for item:`, item.itemId, error?.message || error)
@@ -5083,6 +5196,10 @@ export default function ProcurementDashboard() {
             updates.original_custom_tags = finalTags.filter((t: string) => !originalTagsArr.includes(t))
           }
 
+          if (shippingAddressChanged) {
+            updates.shipping_address = newShippingAddress
+          }
+
           updates.manuallyEdited = true
           return updates
         })
@@ -5100,6 +5217,15 @@ export default function ProcurementDashboard() {
             project_item_ids: updatedItemIds,
             project_id: projectId,
             updated_fields: ['tags'],
+            timestamp: new Date().toISOString()
+          }, '*')
+        }
+        if (shippingAddressChanged) {
+          window.parent.postMessage({
+            type: 'PROJECT_ITEM_UPDATED',
+            project_item_ids: updatedItemIds,
+            project_id: projectId,
+            updated_fields: ['shipping_address'],
             timestamp: new Date().toISOString()
           }, '*')
         }
@@ -5126,7 +5252,13 @@ export default function ProcurementDashboard() {
     if (!editFormData || Object.keys(editFormData).length === 0) return false
     const assignedToChanged = editFormData.assignedTo !== editFormData.originalAssignedTo
     const categoryChanged = editFormData.category !== editFormData.originalCategory
-    return assignedToChanged || categoryChanged || editVendorDirty
+    // Shipping address — any non-undefined value enables Save (bulk has
+    // no per-item original to diff; single edits compare against
+    // originalShippingAddress when present).
+    const shippingChanged =
+      editFormData.shipping_address !== undefined &&
+      editFormData.shipping_address !== editFormData.originalShippingAddress
+    return assignedToChanged || categoryChanged || editVendorDirty || shippingChanged
   }, [editFormData, editVendorDirty])
 
   const handleColumnDrag = (draggedCol: string, targetCol: string) => {
@@ -5167,6 +5299,7 @@ export default function ProcurementDashboard() {
     assignedTo: "Assigned",
     dueDate: "Due Date",
     vendor: "Vendor",
+    shippingAddress: "Shipping Address",
     pricePO: "PO Price",
     priceContract: "Contract",
     priceQuote: "Quote",
@@ -7085,6 +7218,68 @@ export default function ProcurementDashboard() {
                         )
                       }
 
+                      if (columnKey === "shippingAddress") {
+                        // Per-item override wins; else fall back to the
+                        // EnterpriseItem's default_shipping_address from
+                        // Item Directory. Resolve UUID -> nickname via
+                        // the address book loaded for the Bulk Edit modal.
+                        const overrideId = item.shipping_address as string | null
+                        const defaultId = item.default_shipping_address as string | null
+                        const effectiveId = overrideId ?? defaultId
+                        const isOverride = Boolean(overrideId)
+                        const resolved = effectiveId
+                          ? shippingAddresses.find((a) => a.address_id === effectiveId)
+                          : null
+                        const displayLabel = resolved
+                          ? `[${resolved.address_nickname}] ${resolved.full_address}`
+                          : null
+                        return (
+                          <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
+                            {!effectiveId ? (
+                              <span className="text-gray-400 text-xs">-</span>
+                            ) : !resolved ? (
+                              // Address list hasn't loaded yet (or address
+                              // not in the active list). Show the raw id
+                              // truncated so the row isn't blank.
+                              <span className="text-xs text-gray-500" title={effectiveId}>
+                                {effectiveId.slice(0, 8)}…
+                              </span>
+                            ) : (
+                              <UiTooltip>
+                                <UiTooltipTrigger asChild>
+                                  <span className="flex items-center gap-1 cursor-default overflow-hidden w-full">
+                                    <span
+                                      className={`text-xs truncate ${
+                                        isOverride ? 'text-gray-800 font-medium' : 'text-gray-600 italic'
+                                      }`}
+                                    >
+                                      {resolved.address_nickname}
+                                    </span>
+                                    {!isOverride && (
+                                      <span className="text-[10px] text-gray-400 whitespace-nowrap flex-shrink-0">
+                                        (default)
+                                      </span>
+                                    )}
+                                  </span>
+                                </UiTooltipTrigger>
+                                <UiTooltipContent side="bottom" align="start">
+                                  <div className="text-xs max-w-[400px]">
+                                    <div className="font-medium">{displayLabel}</div>
+                                    {!isOverride && (
+                                      <div className="text-gray-400 mt-1">
+                                        From the item's default shipping address —
+                                        bulk-edit Shipping Address to override per
+                                        strategy.
+                                      </div>
+                                    )}
+                                  </div>
+                                </UiTooltipContent>
+                              </UiTooltip>
+                            )}
+                          </td>
+                        )
+                      }
+
                       if (columnKey === "assignedTo") {
                         const assignedUsersList = item.assignedTo
                           ? String(item.assignedTo).split(',').map((u: string) => u.trim()).filter(Boolean)
@@ -8686,6 +8881,110 @@ export default function ProcurementDashboard() {
             </div>
           </div>
           {/* End Two Column Layout */}
+
+          {/* Shipping Address — full-width searchable picker. When set
+              the chosen address UUID is applied to every selected item
+              via the strategy items PATCH endpoint. */}
+          <div className="space-y-1.5">
+            <Label className="text-gray-900 font-medium">Shipping Address</Label>
+            {/* Currently picked chip */}
+            <div className="flex flex-wrap items-center gap-2 min-h-[36px] p-2 bg-white border border-gray-300 rounded-md">
+              {(() => {
+                const selectedId = editFormData.shipping_address as string | null | undefined
+                const selected = selectedId
+                  ? shippingAddresses.find((a) => a.address_id === selectedId)
+                  : null
+                if (!selected) {
+                  return (
+                    <span className="text-gray-500 text-sm">
+                      {editFormData.isBulk
+                        ? 'Leave blank to keep each item\'s current address'
+                        : 'No shipping address selected'}
+                    </span>
+                  )
+                }
+                return (
+                  <Badge
+                    variant="outline"
+                    className="flex items-center gap-2 pl-3 pr-2 py-1 bg-blue-50 border-blue-300 text-blue-900 max-w-full"
+                  >
+                    <span className="font-medium truncate">
+                      [{selected.address_nickname}] {selected.full_address}
+                    </span>
+                    <button
+                      onClick={() =>
+                        setEditFormData({ ...editFormData, shipping_address: null })
+                      }
+                      className="rounded-full hover:bg-blue-200 p-0.5 shrink-0"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
+                )
+              })()}
+            </div>
+
+            {/* Searchable picker */}
+            <div className="relative">
+              <Input
+                placeholder={
+                  shippingAddressLoading
+                    ? 'Loading addresses…'
+                    : 'Type to search shipping addresses…'
+                }
+                value={shippingAddressSearchTerm}
+                onChange={(e) => setShippingAddressSearchTerm(e.target.value)}
+                onBlur={() => setTimeout(() => setShippingAddressSearchTerm(''), 200)}
+                className="border-gray-400 bg-white pr-10"
+                disabled={shippingAddressLoading}
+              />
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+
+              {shippingAddressSearchTerm.length > 0 && (
+                <div className="absolute z-50 w-full mt-1 border-2 border-gray-300 rounded-md bg-white max-h-[180px] overflow-y-auto shadow-lg">
+                  {(() => {
+                    const term = shippingAddressSearchTerm.toLowerCase()
+                    const filtered = shippingAddresses.filter(
+                      (a) =>
+                        a.address_nickname.toLowerCase().includes(term) ||
+                        a.full_address.toLowerCase().includes(term)
+                    )
+                    return filtered.length === 0 ? (
+                      <div className="p-2 text-sm text-gray-500 text-center">
+                        No addresses match "{shippingAddressSearchTerm}"
+                      </div>
+                    ) : (
+                      <div className="py-1">
+                        {filtered.map((a) => (
+                          <button
+                            key={a.address_id}
+                            type="button"
+                            onClick={() => {
+                              setEditFormData({
+                                ...editFormData,
+                                shipping_address: a.address_id,
+                              })
+                              setShippingAddressSearchTerm('')
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 focus:bg-blue-100 focus:outline-none"
+                          >
+                            <span className="font-medium">[{a.address_nickname}]</span>{' '}
+                            <span className="text-gray-600">{a.full_address}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )
+                  })()}
+                </div>
+              )}
+            </div>
+
+            <p className="text-xs text-gray-500">
+              {editFormData.isBulk
+                ? `Applied to all ${editFormData.itemCount || 'selected'} items when you save.`
+                : 'Pick from the enterprise address book.'}
+            </p>
+          </div>
         </div>
         <DialogFooter>
           <Button onClick={() => setShowEditDialog(false)} variant="outline">

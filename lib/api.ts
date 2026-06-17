@@ -263,6 +263,14 @@ export interface ProjectItem {
   created_by_user_id: string | null;
   modified_by_user_id: string | null;
   action: string;
+  // UUID of the enterprise Address row picked for this strategy item.
+  // null when no value has been set. Surfaced in Bulk Edit.
+  shipping_address: string | null;
+  // Read-only — the underlying EnterpriseItem's `default_shipping_address`
+  // from Item Directory. The strategy table column falls back to this
+  // when `shipping_address` (the buyer's per-item override) is null, so
+  // every row shows a meaningful value out of the box.
+  default_shipping_address: string | null;
   project_id: string;
   enterprise_item_id: string | null;
   bom_info: {
@@ -603,6 +611,32 @@ export interface UpdateItemRequest {
   source_meta?: Record<string, string | null>;
   custom_fields?: Record<string, any>;
   assigned_user_ids?: string[];
+  // UUID of an enterprise Address. Pass null/"" to clear.
+  shipping_address?: string | null;
+}
+
+// Shipping address option surfaced in the Bulk Edit modal. Sourced from
+// the enterprise's address book (/organization/address/).
+export interface AddressOption {
+  address_id: string;
+  address_nickname: string;
+  full_address: string;
+  status: string;
+}
+
+export interface AddressListResponse {
+  data: Array<{
+    address_id: string;
+    address_nickname: string;
+    address1?: string | null;
+    address2?: string | null;
+    address3?: string | null;
+    city?: string | null;
+    state_or_territory?: string | null;
+    postal_code?: string | null;
+    country_name?: string | null;
+    status: string;
+  }>;
 }
 
 export interface UpdateItemResponse {
@@ -774,6 +808,44 @@ export async function getCategories(projectId: string): Promise<CategoriesRespon
   return apiRequest<CategoriesResponse>(
     `/organization/project/${projectId}/strategy/categories/`
   );
+}
+
+/**
+ * Get the enterprise's address book (active addresses only).
+ * Sourced from /organization/address/ — same endpoint the main Factwise
+ * app uses for its CLM / PO / RFQ shipping-address pickers.
+ * Returned options carry both the nickname and a flattened full-address
+ * string for display in the Bulk Edit dropdown.
+ */
+export async function getAddresses(): Promise<AddressOption[]> {
+  // /organization/address/ returns a bare array (not wrapped in
+  // {success, data}), so opt out of the standard `.success` check
+  // and treat the response as the array directly.
+  const raw = (await apiRequest<any>(
+    '/organization/address/',
+    { skipSuccessCheck: true }
+  )) as any;
+  const rows: AddressListResponse['data'] = Array.isArray(raw)
+    ? raw
+    : (raw?.data ?? []);
+  return rows
+    .filter((a) => a.status === 'ACTIVE')
+    .map((a) => {
+      const parts = [a.address1, a.address2, a.address3, a.city,
+        a.state_or_territory, a.postal_code, a.country_name]
+        .filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+      return {
+        address_id: a.address_id,
+        address_nickname: a.address_nickname,
+        full_address: parts.join(', '),
+        status: a.status,
+      };
+    })
+    .sort((a, b) =>
+      a.address_nickname.toLowerCase().localeCompare(
+        b.address_nickname.toLowerCase()
+      )
+    );
 }
 
 // ============================================================================
