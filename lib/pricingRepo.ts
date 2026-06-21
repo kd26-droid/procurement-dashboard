@@ -796,6 +796,66 @@ export async function fetchMpnHistory(
   return res.results ?? res.items ?? res.data ?? [];
 }
 
+/**
+ * Fetch full pricing history for ONE item via the unified list endpoint,
+ * broadened by the buyer's "Primary ID for tracking" setting.
+ *
+ * Why this exists alongside fetchMpnHistory:
+ *   - fetchMpnHistory hits /v2/history/?mpn= — EXACT mpn match. Items
+ *     with no mpn (or a sibling record under a different factwise id but
+ *     the same MPN/ERP/CPN value) get an empty graph.
+ *   - This hits /v2/list/?match_item_id=<enterprise_item_id>. The BE
+ *     walks the enterprise's Primary-ID setting (MPN / MPN_SPEC /
+ *     FACTWISE_CODE / ERP / CPN / HSN, or NULL = strict) and returns
+ *     every entry it considers the same item — exactly what the IA
+ *     Dynamic Analytics popup uses. When no setting is configured it
+ *     falls back to strict enterprise_item_id match (still works as long
+ *     as the row has an enterprise_item_id, which every project item does).
+ *
+ * Passing project_currency_code / target_uom_id makes the BE attach the
+ * normalised overlay fields (rate_in_project_currency / _uom /
+ * _uom_and_currency) so the chart can show the item's project
+ * denomination. Returns oldest-first is NOT guaranteed here (list sorts
+ * by -pricing_datetime), but the chart sorts client-side anyway.
+ */
+export async function fetchItemPricingHistory(
+  enterpriseItemId: string,
+  options?: {
+    dateFrom?: string;
+    dateTo?: string;
+    projectCurrencyCode?: string;
+    targetUomId?: string;
+    sources?: PricingSourceType[];
+    pageSize?: number;
+  },
+): Promise<PricingRecord[]> {
+  const id = (enterpriseItemId ?? '').trim();
+  if (!id) return [];
+
+  const sources = options?.sources ?? ['CONTRACT', 'PO', 'RFQ', 'QUOTE'];
+  const params = new URLSearchParams({
+    match_item_id: id,
+    source: sources.join(','),
+    page_size: String(options?.pageSize ?? 200),
+    sort_by: '-pricing_datetime',
+  });
+  if (options?.projectCurrencyCode)
+    params.set('project_currency_code', options.projectCurrencyCode);
+  if (options?.targetUomId) params.set('target_uom_id', options.targetUomId);
+  if (options?.dateFrom) params.set('date_from', options.dateFrom);
+  if (options?.dateTo) params.set('date_to', options.dateTo);
+
+  const url = `/pricing_repository/v2/list/?${params.toString()}`;
+  const res = await pricingRepoFetch<{
+    results?: PricingRecord[];
+    items?: PricingRecord[];
+    data?: PricingRecord[];
+    count?: number;
+  }>(url);
+
+  return res.results ?? res.items ?? res.data ?? [];
+}
+
 // ----------------------------------------------------------------------------
 // Deep-link URL builder — assembles a Factwise route from the record's IDs.
 // Ported verbatim from pricing-dashboard/app/page.tsx#handleRowClick so the

@@ -168,9 +168,12 @@ interface SourceChartProps {
   useAdminCurrency: boolean
   color: string
   priceBasis?: RateType
+  /** When provided, clicking a bar/point calls this with the record so
+   *  the parent can set the item's rate from the picked history entry. */
+  onPick?: (record: PricingRecord) => void
 }
 
-export function SourceChart({ entries, sourceType, useAdminCurrency, color, priceBasis }: SourceChartProps) {
+export function SourceChart({ entries, sourceType, useAdminCurrency, color, priceBasis, onPick }: SourceChartProps) {
   const [rateType, setRateType] = useState<RateType>(priceBasis ?? 'effective_rate')
 
   useEffect(() => {
@@ -329,7 +332,18 @@ export function SourceChart({ entries, sourceType, useAdminCurrency, color, pric
           <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden" style={{ minHeight: '250px' }}>
             <div style={{ width: typeof chartWidth === 'number' ? `${chartWidth}px` : chartWidth, height: '100%', minHeight: '250px' }}>
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={chartData} margin={{ top: 16, right: 16, bottom: 8, left: 16 }}>
+                <ComposedChart
+                  data={chartData}
+                  margin={{ top: 16, right: 16, bottom: 8, left: 16 }}
+                  style={onPick ? { cursor: 'pointer' } : undefined}
+                  onClick={(state: any) => {
+                    if (!onPick) return
+                    const rec = state?.activePayload?.[0]?.payload?.entry as
+                      | PricingRecord
+                      | undefined
+                    if (rec) onPick(rec)
+                  }}
+                >
                   <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                   <XAxis
                     dataKey="xKey"
@@ -410,9 +424,12 @@ export interface PricingChartsProps {
   useAdminCurrency: boolean
   onToggleAdminCurrency: (val: boolean) => void
   priceBasis?: RateType
+  /** When provided, clicking a bar/point in any source chart calls this
+   *  with the picked record so the parent can set the item's rate. */
+  onPick?: (record: PricingRecord) => void
 }
 
-export function PricingCharts({ records, loading, useAdminCurrency, onToggleAdminCurrency, priceBasis }: PricingChartsProps) {
+export function PricingCharts({ records, loading, useAdminCurrency, onToggleAdminCurrency, priceBasis, onPick }: PricingChartsProps) {
   const bySource = useMemo(() => {
     const map: Record<string, PricingRecord[]> = { PO: [], CONTRACT: [], QUOTE: [], RFQ: [] }
     if (records) {
@@ -476,6 +493,7 @@ export function PricingCharts({ records, loading, useAdminCurrency, onToggleAdmi
                 useAdminCurrency={useAdminCurrency}
                 color={SOURCE_COLORS[source] || '#6b7280'}
                 priceBasis={priceBasis}
+                onPick={onPick}
               />
             </div>
           </div>
