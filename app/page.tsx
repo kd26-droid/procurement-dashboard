@@ -8750,7 +8750,7 @@ export default function ProcurementDashboard() {
                 entityId={projectData.buyer_entity_id}
                 allTags={allTags}
                 allCustomers={projectData.customer ? [projectData.customer] : []}
-                availableUsers={eligibleUsers}
+                availableUsers={[...eligibleUsers, ...availableUsers.filter(au => !eligibleUsers.some(eu => eu.user_id === au.user_id))]}
                 rfqResponsibleUsers={rfqResponsibleUsers}
                 quoteResponsibleUsers={quoteResponsibleUsers}
                 current={currentSettings}
