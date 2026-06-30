@@ -1268,7 +1268,7 @@ export function SettingsPanel({
                                   <Badge variant="outline" className="text-xs">{tag}</Badge>
                                   <span className="text-xs text-muted-foreground">→</span>
                                   {userIds.map(uid => {
-                                    const u = availableUsers.find(au => au.user_id === uid)
+                                    const u = [...availableUsers, ...rfqResponsibleUsers, ...quoteResponsibleUsers].find(au => au.user_id === uid)
                                     return <Badge key={uid} variant="secondary" className="text-xs">{u?.name || uid.slice(0, 8)}</Badge>
                                   })}
                                 </div>
@@ -1289,7 +1289,7 @@ export function SettingsPanel({
                                 <Badge variant="outline" className="text-xs border-blue-200 text-blue-700">{tag}</Badge>
                                 <span className="text-xs text-muted-foreground">→</span>
                                 {userIds.map(uid => {
-                                  const u = availableUsers.find(au => au.user_id === uid)
+                                  const u = [...availableUsers, ...rfqResponsibleUsers, ...quoteResponsibleUsers].find(au => au.user_id === uid)
                                   return <Badge key={uid} className="text-xs bg-blue-50 text-blue-700 border border-blue-200">{u?.name || uid.slice(0, 8)}</Badge>
                                 })}
                               </div>
