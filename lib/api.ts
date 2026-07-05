@@ -33,19 +33,26 @@ const getApiBaseUrl = (): string => {
     return envUrl;
   }
 
-  // Check query param (only in browser)
+  // Check query param (only in browser). Factwise passes ?api_env=prod
+  // (from .env.newdbtest1 / production builds) or ?api_env=dev (from
+  // .env.newdbtest). URLs must match Factwise's own REACT_APP_API_URL
+  // for the same env so cookies / auth / CORS all line up.
+  //   dev  → https://factwiserestapi.azure-api.net     (matches .env.newdbtest)
+  //   prod → https://factwise-prod-apim-new.azure-api.net/ (matches .env.newdbtest1)
+  // Previous values were AWS API Gateway URLs from before the Azure APIM
+  // migration; those endpoints are now dead.
   if (typeof window !== 'undefined') {
     const urlParams = new URLSearchParams(window.location.search);
     const apiEnv = urlParams.get('api_env');
     if (apiEnv === 'prod') {
-      return 'https://qc9s5bz8d7.execute-api.us-east-1.amazonaws.com/prod';
+      return 'https://factwise-prod-apim-new.azure-api.net/';
     }
     if (apiEnv === 'dev') {
-      return 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
+      return 'https://factwiserestapi.azure-api.net';
     }
   }
-  // Fall back to env var or default
-  return envUrl || 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
+  // Fall back to env var or default (dev Azure).
+  return envUrl || 'https://factwiserestapi.azure-api.net';
 };
 
 /**

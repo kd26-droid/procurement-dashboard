@@ -40,12 +40,13 @@ const getApiBaseUrl = (): string => {
   if (typeof window !== 'undefined') {
     const params = new URLSearchParams(window.location.search);
     const apiEnv = params.get('api_env');
+    // Azure APIM URLs — match Factwise's REACT_APP_API_URL per env.
     if (apiEnv === 'prod')
-      return 'https://qc9s5bz8d7.execute-api.us-east-1.amazonaws.com/prod';
+      return 'https://factwise-prod-apim-new.azure-api.net/';
     if (apiEnv === 'dev')
-      return 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
+      return 'https://factwiserestapi.azure-api.net';
   }
-  return envUrl || 'https://poiigw0go0.execute-api.us-east-1.amazonaws.com/dev';
+  return envUrl || 'https://factwiserestapi.azure-api.net';
 };
 
 export type IdentifierType = 'MPN' | 'ERP' | 'CODE' | 'CPN';
