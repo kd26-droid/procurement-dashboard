@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel, LabelList } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
 import { SettingsDialog, SettingsPanel, AppSettings, buildDefaultSettings, MappingId, PriceSource } from "@/components/settings-dialog"
-import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getElement14JobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, searchVendors, getItemCustomVendors, addItemCustomVendors, removeItemCustomVendor, getEntitySettings, getAddresses, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion, type CustomVendor, type AddressOption } from '@/lib/api'
+import { getProjectId, getProjectItems, getProjectOverview, getProjectDetail, getProjectUsers, updateProjectItem, bulkAssignUsers, bulkAssignUsersWithRoles, notifyItemsAssigned, notifyItemUpdated, getProjectTags, updateItemTags, getDigikeyJobStatus, getMouserJobStatus, getElement14JobStatus, getAssignmentRules, getRuleFieldOptions, getActionRules, searchVendors, getItemCustomVendors, addItemCustomVendors, removeItemCustomVendor, getEntitySettings, getAddresses, resetProjectPricing, type ProjectItem, type AssignmentRule, type AssignmentRuleCondition, type FieldOptionsResponse, type ProjectOverview, type TagUserMapping, type ProjectCustomSection, type ActionRule, type ActionRuleCriterion, type CustomVendor, type AddressOption } from '@/lib/api'
 import { AutoAssignUsersPopover, AutoFillPricesPopover, AutoAssignActionsPopover } from "@/components/autoassign-popovers"
 import { StrategyTemplatePicker, type StrategyTemplatePickerSelection } from "@/components/strategy-template-picker"
 import { StrategyDuplicateReview, type StrategyDuplicateReviewSelection } from "@/components/strategy-duplicate-review"
@@ -681,6 +681,8 @@ export default function ProcurementDashboard() {
   const [mouserJob, setMouserJob] = useState<any>(null)
   const [element14Job, setElement14Job] = useState<any>(null)
   const [element14Enabled, setElement14Enabled] = useState<boolean>(false)
+  // Retry Pricing button state (disabled while a reset+refresh is in flight)
+  const [isResettingPricing, setIsResettingPricing] = useState<boolean>(false)
   // Exchange rates for currency conversion (USD_TO_XXX format)
   const [exchangeRates, setExchangeRates] = useState<Record<string, number>>({})
 
@@ -1480,6 +1482,60 @@ export default function ProcurementDashboard() {
       triggerPricingJobs(projectId)
     }
     setIsLoadingAllItems(false)
+  }
+
+  // Manual retry — clears BE rate_limited / not_found sentinels and
+  // ages out recent terminal-state jobs, then re-triggers pricing so
+  // fresh jobs spawn (and fresh worker logs stream) without waiting
+  // for the 60min cooldown / 6h sentinel TTL to expire.
+  const handleResetPricing = async () => {
+    const projectId = getProjectId()
+    if (!projectId || isResettingPricing) return
+    setIsResettingPricing(true)
+    try {
+      console.log('[Pricing Reset] Clearing sentinels + aging jobs…')
+      const resp = await resetProjectPricing(projectId)
+      if (!resp?.success) {
+        toast({
+          title: 'Retry Failed',
+          description: resp?.error || 'Backend rejected the reset request.',
+          variant: 'destructive',
+        })
+        return
+      }
+      const summary = Object.entries(resp.details || {})
+        .map(([k, v]) => `${k}: ${v.sentinels_cleared} cleared, ${v.jobs_aged} aged`)
+        .join(' • ')
+      console.log('[Pricing Reset] Success:', summary)
+      toast({
+        title: 'Retry Started',
+        description: 'Cleared quota/not-found cache. Fetching fresh pricing…',
+      })
+      // Clear any locally-cached "rate_limited" per-item statuses so cells
+      // stop lying about the old state while the new fetch runs.
+      setLineItems((prev: any[]) => prev.map((li: any) => {
+        const next: any = { ...li }
+        for (const key of ['digikey_pricing', 'mouser_pricing', 'element14_pricing']) {
+          const p = li[key]
+          if (p && (p.status === 'rate_limited' || p.status === 'not_found')) {
+            next[key] = { ...p, status: 'fetching', status_message: 'Retrying…' }
+          }
+        }
+        return next
+      }))
+      // Re-trigger pricing — the standard flow will create new jobs
+      // now that sentinels are cleared and cooldowns are aged out.
+      await triggerPricingJobs(projectId)
+    } catch (err) {
+      console.error('[Pricing Reset] Error:', err)
+      toast({
+        title: 'Retry Failed',
+        description: 'Something went wrong. Check console for details.',
+        variant: 'destructive',
+      })
+    } finally {
+      setIsResettingPricing(false)
+    }
   }
 
   // Trigger pricing jobs for all loaded items
@@ -6820,6 +6876,32 @@ export default function ProcurementDashboard() {
                   />
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Retry Pricing — visible only when no distributor job is
+              actively running. Clears rate-limited / not-found sentinels
+              on the BE and re-triggers a fresh fetch so users don't
+              have to wait for the 60min cooldown / 6h TTL after a
+              quota reset or credentials rotation. */}
+          {!isLoadingAllItems &&
+           !(digikeyJob && (digikeyJob.status === 'processing' || digikeyJob.status === 'pending')) &&
+           !(mouserJob && (mouserJob.status === 'processing' || mouserJob.status === 'pending')) &&
+           !(element14Job && (element14Job.status === 'processing' || element14Job.status === 'pending')) && (
+            <div className="mb-4 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={handleResetPricing}
+                disabled={isResettingPricing}
+                title="Clears the rate-limited / not-found cache and re-runs pricing for this project. Use after a distributor quota resets or API credentials are updated."
+                className={`text-xs px-3 py-1.5 rounded border transition-colors ${
+                  isResettingPricing
+                    ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50 hover:border-gray-400'
+                }`}
+              >
+                {isResettingPricing ? 'Retrying…' : '↻ Retry Pricing'}
+              </button>
             </div>
           )}
 
