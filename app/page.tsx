@@ -1636,7 +1636,7 @@ export default function ProcurementDashboard() {
               setDigikeyJob(null)
               console.warn('[Digikey Poll] Job stalled — no progress in', STALL_POLLS * 3, 's. Giving up.')
               toast({
-                title: "Digikey Pricing Stalled",
+                title: "Digikey Pricing Rate Limited",
                 description: "The backend fetch didn't progress. Please retry from the pricing menu.",
                 variant: "destructive"
               })
@@ -1740,7 +1740,7 @@ export default function ProcurementDashboard() {
               setMouserJob(null)
               console.warn('[Mouser Poll] Job stalled — no progress in', STALL_POLLS * 3, 's. Giving up.')
               toast({
-                title: "Mouser Pricing Stalled",
+                title: "Mouser Pricing Rate Limited",
                 description: "The backend fetch didn't progress. Please retry from the pricing menu.",
                 variant: "destructive"
               })
@@ -1836,7 +1836,7 @@ export default function ProcurementDashboard() {
               setElement14Job(null)
               console.warn('[Element14 Poll] Job stalled — no progress in', STALL_POLLS * 3, 's. Giving up.')
               toast({
-                title: "Element14 Pricing Stalled",
+                title: "Element14 Pricing Rate Limited",
                 description: "The backend fetch didn't progress. Please retry from the pricing menu.",
                 variant: "destructive"
               })
