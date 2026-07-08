@@ -1635,6 +1635,15 @@ export default function ProcurementDashboard() {
               clearInterval(pollInterval)
               setDigikeyJob(null)
               console.warn('[Digikey Poll] Job stalled — no progress in', STALL_POLLS * 3, 's. Giving up.')
+              // Flip any per-item cells still spinning "Fetching..." to
+              // rate_limited so rows stop lying about ongoing work.
+              setLineItems((prev: any[]) => prev.map((li: any) => {
+                const dk = li.digikey_pricing
+                if (dk && (dk.status === 'fetching' || dk.status === 'pending')) {
+                  return { ...li, digikey_pricing: { ...dk, status: 'rate_limited' } }
+                }
+                return li
+              }))
               toast({
                 title: "Digikey Pricing Rate Limited",
                 description: "The backend fetch didn't progress. Please retry from the pricing menu.",
@@ -1739,6 +1748,13 @@ export default function ProcurementDashboard() {
               clearInterval(pollInterval)
               setMouserJob(null)
               console.warn('[Mouser Poll] Job stalled — no progress in', STALL_POLLS * 3, 's. Giving up.')
+              setLineItems((prev: any[]) => prev.map((li: any) => {
+                const ms = li.mouser_pricing
+                if (ms && (ms.status === 'fetching' || ms.status === 'pending')) {
+                  return { ...li, mouser_pricing: { ...ms, status: 'rate_limited' } }
+                }
+                return li
+              }))
               toast({
                 title: "Mouser Pricing Rate Limited",
                 description: "The backend fetch didn't progress. Please retry from the pricing menu.",
@@ -1835,6 +1851,13 @@ export default function ProcurementDashboard() {
               clearInterval(pollInterval)
               setElement14Job(null)
               console.warn('[Element14 Poll] Job stalled — no progress in', STALL_POLLS * 3, 's. Giving up.')
+              setLineItems((prev: any[]) => prev.map((li: any) => {
+                const e = li.element14_pricing
+                if (e && (e.status === 'fetching' || e.status === 'pending')) {
+                  return { ...li, element14_pricing: { ...e, status: 'rate_limited' } }
+                }
+                return li
+              }))
               toast({
                 title: "Element14 Pricing Rate Limited",
                 description: "The backend fetch didn't progress. Please retry from the pricing menu.",
