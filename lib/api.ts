@@ -1134,6 +1134,33 @@ export async function triggerElement14Pricing(
   );
 }
 
+/**
+ * Manual retry — clears rate_limited/not_found sentinel cache rows and
+ * ages out recent terminal-state jobs so the smart_pricing cooldown
+ * doesn't block fresh fetches. Call this before triggering pricing when
+ * the user hits "Retry Pricing" after a quota reset / creds rotation.
+ *
+ * BE: POST /organization/project/{projectId}/strategy/pricing/reset/
+ */
+export async function resetProjectPricing(
+  projectId: string,
+  distributors?: Array<'digikey' | 'mouser' | 'element14'>
+): Promise<{
+  success: boolean;
+  message?: string;
+  details?: Record<string, { sentinels_cleared: number; jobs_aged: number; mpns_affected: number }>;
+  error?: string;
+}> {
+  return apiRequest(
+    `/organization/project/${projectId}/strategy/pricing/reset/`,
+    {
+      method: 'POST',
+      body: JSON.stringify(distributors ? { distributors } : {}),
+      skipSuccessCheck: true,
+    }
+  );
+}
+
 // ============================================================================
 // Assignment Rules Engine — Types & API Functions
 // ============================================================================
