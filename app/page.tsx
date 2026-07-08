@@ -1615,6 +1615,10 @@ export default function ProcurementDashboard() {
     const STALL_POLLS = 20
 
     const pollInterval = setInterval(async () => {
+      // Pause polling while the tab/iframe is backgrounded (Page Visibility API).
+      // A strategy tab left open in the background used to poll every 3s for the
+      // entire job — hammering the backend for hours. Resumes when visible again.
+      if (typeof document !== 'undefined' && document.hidden) return
       try {
         const data = await getDigikeyJobStatus(projectId, jobId)
         console.log('[Digikey Poll] Job status response:', JSON.stringify(data, null, 2))
@@ -1729,6 +1733,8 @@ export default function ProcurementDashboard() {
     const STALL_POLLS = 20
 
     const pollInterval = setInterval(async () => {
+      // Pause polling while the tab/iframe is backgrounded (Page Visibility API).
+      if (typeof document !== 'undefined' && document.hidden) return
       try {
         const data = await getMouserJobStatus(projectId, jobId)
 
@@ -1833,6 +1839,8 @@ export default function ProcurementDashboard() {
     const STALL_POLLS = 20
 
     const pollInterval = setInterval(async () => {
+      // Pause polling while the tab/iframe is backgrounded (Page Visibility API).
+      if (typeof document !== 'undefined' && document.hidden) return
       try {
         const data = await getElement14JobStatus(projectId, jobId)
 
