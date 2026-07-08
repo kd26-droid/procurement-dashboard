@@ -1607,6 +1607,13 @@ export default function ProcurementDashboard() {
     const projectId = getProjectId()
     if (!projectId) return
 
+    // Stall detection: if processed_items doesn't increment for STALL_POLLS
+    // consecutive polls (~60s at 3s interval), assume the Celery worker
+    // died mid-job and stop polling so the UI doesn't hang forever.
+    let lastProcessed = -1
+    let stallPolls = 0
+    const STALL_POLLS = 20
+
     const pollInterval = setInterval(async () => {
       try {
         const data = await getDigikeyJobStatus(projectId, jobId)
@@ -1617,6 +1624,24 @@ export default function ProcurementDashboard() {
 
           // Update progress
           if (data.job.status === 'processing') {
+            const processed = data.job.processed_items ?? 0
+            if (processed === lastProcessed) {
+              stallPolls++
+            } else {
+              stallPolls = 0
+              lastProcessed = processed
+            }
+            if (stallPolls >= STALL_POLLS) {
+              clearInterval(pollInterval)
+              setDigikeyJob(null)
+              console.warn('[Digikey Poll] Job stalled — no progress in', STALL_POLLS * 3, 's. Giving up.')
+              toast({
+                title: "Digikey Pricing Stalled",
+                description: "The backend fetch didn't progress. Please retry from the pricing menu.",
+                variant: "destructive"
+              })
+              return
+            }
             console.log(`Digikey pricing: ${data.job.progress_percentage.toFixed(1)}%`)
           }
           else if (data.job.status === 'completed' || data.job.status === 'partial') {
@@ -1690,6 +1715,10 @@ export default function ProcurementDashboard() {
     const projectId = getProjectId()
     if (!projectId) return
 
+    let lastProcessed = -1
+    let stallPolls = 0
+    const STALL_POLLS = 20
+
     const pollInterval = setInterval(async () => {
       try {
         const data = await getMouserJobStatus(projectId, jobId)
@@ -1699,6 +1728,24 @@ export default function ProcurementDashboard() {
 
           // Update progress
           if (data.job.status === 'processing') {
+            const processed = data.job.processed_items ?? 0
+            if (processed === lastProcessed) {
+              stallPolls++
+            } else {
+              stallPolls = 0
+              lastProcessed = processed
+            }
+            if (stallPolls >= STALL_POLLS) {
+              clearInterval(pollInterval)
+              setMouserJob(null)
+              console.warn('[Mouser Poll] Job stalled — no progress in', STALL_POLLS * 3, 's. Giving up.')
+              toast({
+                title: "Mouser Pricing Stalled",
+                description: "The backend fetch didn't progress. Please retry from the pricing menu.",
+                variant: "destructive"
+              })
+              return
+            }
             console.log(`Mouser pricing: ${data.job.progress_percentage.toFixed(1)}%`)
           }
           else if (data.job.status === 'completed' || data.job.status === 'partial') {
@@ -1765,6 +1812,10 @@ export default function ProcurementDashboard() {
     const projectId = getProjectId()
     if (!projectId) return
 
+    let lastProcessed = -1
+    let stallPolls = 0
+    const STALL_POLLS = 20
+
     const pollInterval = setInterval(async () => {
       try {
         const data = await getElement14JobStatus(projectId, jobId)
@@ -1773,6 +1824,24 @@ export default function ProcurementDashboard() {
           setElement14Job(data.job)
 
           if (data.job.status === 'processing') {
+            const processed = data.job.processed_items ?? 0
+            if (processed === lastProcessed) {
+              stallPolls++
+            } else {
+              stallPolls = 0
+              lastProcessed = processed
+            }
+            if (stallPolls >= STALL_POLLS) {
+              clearInterval(pollInterval)
+              setElement14Job(null)
+              console.warn('[Element14 Poll] Job stalled — no progress in', STALL_POLLS * 3, 's. Giving up.')
+              toast({
+                title: "Element14 Pricing Stalled",
+                description: "The backend fetch didn't progress. Please retry from the pricing menu.",
+                variant: "destructive"
+              })
+              return
+            }
             console.log(`Element14 pricing: ${data.job.progress_percentage.toFixed(1)}%`)
           }
           else if (data.job.status === 'completed' || data.job.status === 'partial') {
