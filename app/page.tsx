@@ -1734,6 +1734,20 @@ export default function ProcurementDashboard() {
             // Refresh pricing data using chunked loading (avoids timeout)
             await refreshPricingDataInChunks(projectId, 'digikey')
 
+            // Post-refresh cleanup: any cell still showing "Fetching…"
+            // means the item didn't get a real cache entry from the
+            // just-finished job (skipped MPN, worker crashed on that
+            // one, or BE returned status='fetching' for a stray
+            // uncached MPN). Flip those to 'error' so the row stops
+            // lying about ongoing work.
+            setLineItems((prev: any[]) => prev.map((li: any) => {
+              const dk = li.digikey_pricing
+              if (dk && (dk.status === 'fetching' || dk.status === 'pending')) {
+                return { ...li, digikey_pricing: { ...dk, status: 'error', status_message: 'Digikey job finished but this MPN was not fetched. Click Load Pricing to retry.' } }
+              }
+              return li
+            }))
+
             setDigikeyJob(null)
             console.log('[Digikey Poll] Pricing refresh complete')
           }
@@ -1840,6 +1854,16 @@ export default function ProcurementDashboard() {
             // Refresh pricing data using chunked loading (avoids timeout)
             await refreshPricingDataInChunks(projectId, 'mouser')
 
+            // Post-refresh cleanup — stragglers still showing "Fetching…"
+            // never got a real cache entry from the finished job.
+            setLineItems((prev: any[]) => prev.map((li: any) => {
+              const ms = li.mouser_pricing
+              if (ms && (ms.status === 'fetching' || ms.status === 'pending')) {
+                return { ...li, mouser_pricing: { ...ms, status: 'error', status_message: 'Mouser job finished but this MPN was not fetched. Click Load Pricing to retry.' } }
+              }
+              return li
+            }))
+
             setMouserJob(null)
             console.log('[Mouser Poll] Pricing refresh complete')
           }
@@ -1941,6 +1965,14 @@ export default function ProcurementDashboard() {
 
             await new Promise(resolve => setTimeout(resolve, 1000))
             await refreshPricingDataInChunks(projectId, 'element14')
+
+            setLineItems((prev: any[]) => prev.map((li: any) => {
+              const e = li.element14_pricing
+              if (e && (e.status === 'fetching' || e.status === 'pending')) {
+                return { ...li, element14_pricing: { ...e, status: 'error', status_message: 'Element14 job finished but this MPN was not fetched. Click Load Pricing to retry.' } }
+              }
+              return li
+            }))
 
             setElement14Job(null)
             console.log('[Element14 Poll] Pricing refresh complete')
