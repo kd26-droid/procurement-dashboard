@@ -7533,6 +7533,15 @@ export default function ProcurementDashboard() {
                               return <span className="text-xs text-gray-400">Not Listed</span>
                             case 'rate_limited':
                               return <span className="text-xs text-amber-500" title="Daily API quota reached — will retry automatically on next load">Quota Reached</span>
+                            case 'region_restricted':
+                              return (
+                                <span
+                                  className="text-xs text-purple-500 cursor-help underline decoration-dotted underline-offset-2"
+                                  title={pricing.status_message || "Distributor found the MPN but doesn't sell it in your region."}
+                                >
+                                  Not in Region
+                                </span>
+                              )
                             case 'error':
                               return (
                                 <span
@@ -7694,6 +7703,15 @@ export default function ProcurementDashboard() {
                               return <span className="text-xs text-gray-400">Not Listed</span>
                             case 'rate_limited':
                               return <span className="text-xs text-amber-500" title="Daily API quota reached — will retry automatically on next load">Quota Reached</span>
+                            case 'region_restricted':
+                              return (
+                                <span
+                                  className="text-xs text-purple-500 cursor-help underline decoration-dotted underline-offset-2"
+                                  title={pricing.status_message || "Distributor found the MPN but doesn't sell it in your region."}
+                                >
+                                  Not in Region
+                                </span>
+                              )
                             case 'error':
                               return (
                                 <span
@@ -7846,6 +7864,15 @@ export default function ProcurementDashboard() {
                               return <span className="text-xs text-gray-400">Not Listed</span>
                             case 'rate_limited':
                               return <span className="text-xs text-amber-500" title="Daily API quota reached — will retry automatically on next load">Quota Reached</span>
+                            case 'region_restricted':
+                              return (
+                                <span
+                                  className="text-xs text-purple-500 cursor-help underline decoration-dotted underline-offset-2"
+                                  title={pricing.status_message || "Distributor found the MPN but doesn't sell it in your region."}
+                                >
+                                  Not in Region
+                                </span>
+                              )
                             case 'error':
                               return (
                                 <span
