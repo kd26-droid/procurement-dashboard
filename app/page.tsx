@@ -1504,7 +1504,7 @@ export default function ProcurementDashboard() {
         return
       }
       const summary = Object.entries(resp.details || {})
-        .map(([k, v]) => `${k}: ${v.sentinels_cleared} cleared, ${v.jobs_aged} aged`)
+        .map(([k, v]) => `${k}: ${v.sentinels_cleared} cleared, ${v.jobs_cleared} jobs deleted`)
         .join(' • ')
       console.log('[Pricing Reset] Success:', summary)
       toast({

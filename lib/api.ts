@@ -1148,7 +1148,7 @@ export async function resetProjectPricing(
 ): Promise<{
   success: boolean;
   message?: string;
-  details?: Record<string, { sentinels_cleared: number; jobs_aged: number; mpns_affected: number }>;
+  details?: Record<string, { sentinels_cleared: number; jobs_cleared: number; mpns_affected: number }>;
   error?: string;
 }> {
   return apiRequest(
