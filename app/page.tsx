@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useMemo, useEffect, useRef } from "react"
+import { useState, useMemo, useEffect, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -46,6 +46,7 @@ import { PricingLookupSettingsButton } from "@/components/pricing-lookup-setting
 import { PricingCharts } from "@/components/pricing-charts"
 import {
   fetchMpnHistory,
+  fetchItemPricingHistory,
   getAdminPrice,
   getNativePrice,
   isExpiredContract,
@@ -2407,17 +2408,25 @@ export default function ProcurementDashboard() {
   }, [lineItems, pricingLookup.byItemId, pricingEnabled, pricingSettings.priceBasis, exchangeRates])
 
   // Load full pricing-repo history for the currently-selected analytics item.
-  // MPN is captured at popup-open time (analyticsItemMpn) so this doesn't re-fire
-  // as itemIdToMpn rebuilds while items load in chunks.
+  //
+  // Primary path: /v2/list/?match_item_id=<enterprise_item_id> — broadened
+  // by the buyer's "Primary ID for tracking" setting (MPN / MPN_SPEC /
+  // FACTWISE_CODE / ERP / CPN / HSN, or strict). Same source the IA
+  // Dynamic Analytics popup uses, so the graph shows every record the
+  // autofill considers the same item — and items WITHOUT an mpn still
+  // get a graph (the old /v2/history/?mpn= path returned empty for them).
+  //
+  // Fallback: when the row has no enterprise_item_id (rare), drop to the
+  // exact-mpn /v2/history/ endpoint so behaviour degrades gracefully.
   useEffect(() => {
     if (!showAnalyticsPopup || !selectedItemForAnalytics) {
       setAnalyticsMpnHistory(null)
       return
     }
-    // Only MPN supported by /v2/history/ — no fallback to item_code since the
-    // new endpoint requires exact MPN. Items without MPN show empty chart.
+    const enterpriseItemId = selectedItemForAnalytics?.enterprise_item_id || undefined
     const mpn = analyticsItemMpn
-    if (!mpn) {
+    // Nothing to look up by.
+    if (!enterpriseItemId && !mpn) {
       setAnalyticsMpnHistory([])
       return
     }
@@ -2429,8 +2438,17 @@ export default function ProcurementDashboard() {
     const dateTo = pricingSettings.daysBack !== null
       ? new Date().toISOString().slice(0, 10)
       : undefined
-    const enterpriseItemId = selectedItemForAnalytics?.enterprise_item_id || undefined
-    fetchMpnHistory(mpn, { dateFrom, dateTo, enterpriseItemId })
+    const targetUomId = selectedItemForAnalytics?.measurement_unit_id || undefined
+
+    const loader = enterpriseItemId
+      ? fetchItemPricingHistory(enterpriseItemId, {
+          dateFrom,
+          dateTo,
+          targetUomId,
+        })
+      : fetchMpnHistory(mpn as string, { dateFrom, dateTo })
+
+    loader
       .then((rows) => {
         if (cancelled) return
         setAnalyticsMpnHistory(rows)
@@ -2445,6 +2463,54 @@ export default function ProcurementDashboard() {
       cancelled = true
     }
   }, [showAnalyticsPopup, selectedItemForAnalytics, analyticsItemMpn, pricingSettings.daysBack])
+
+  // Click a bar/point in the analytics graph → set that item's unit rate
+  // from the picked history record. Mirrors the Edit Rate path
+  // (updateProjectItem({ rate }) + local unitPrice update) so the picked
+  // rate persists and the table reflects it without a full refetch.
+  // Uses getNativePrice so the value is the project-UOM per-unit rate
+  // when the BE supplied one (matches what the row's qty is in).
+  const handleGraphPickRate = useCallback(
+    async (record: PricingRecord) => {
+      const item = selectedItemForAnalytics
+      if (!item?.project_item_id) {
+        toast({ title: 'Cannot set rate', description: 'No item selected.' })
+        return
+      }
+      const picked = getNativePrice(record, pricingSettings.priceBasis)
+      if (picked == null || !Number.isFinite(Number(picked)) || Number(picked) <= 0) {
+        toast({ title: 'No usable rate', description: 'That record has no rate for the selected basis.' })
+        return
+      }
+      const rate = Number(picked)
+      const projectId = getProjectId()
+      if (!projectId) {
+        toast({ title: 'Cannot set rate', description: 'No project context.' })
+        return
+      }
+      try {
+        const result = await updateProjectItem(projectId, item.project_item_id, { rate })
+        if (!result.success) throw new Error('update failed')
+        // Reflect the new rate in the table without a full refetch.
+        setLineItems((prevItems: any[]) =>
+          prevItems.map((li: any) =>
+            li.project_item_id === item.project_item_id
+              ? { ...li, unitPrice: rate, manuallyEdited: true }
+              : li,
+          ),
+        )
+        toast({
+          title: 'Rate updated',
+          description: `Set from ${record.source}${record.supplier_name ? ` · ${record.supplier_name}` : ''} — ${rate.toLocaleString(undefined, { maximumFractionDigits: 5 })}`,
+        })
+        setShowAnalyticsPopup(false)
+      } catch (err) {
+        console.error('[Graph pick] Failed to set rate:', err)
+        toast({ title: 'Failed to set rate', description: 'Please try again.' })
+      }
+    },
+    [selectedItemForAnalytics, pricingSettings.priceBasis, toast],
+  )
 
   const filteredAndSortedItems = useMemo(() => {
     let filtered = lineItems.filter((item: any) => {
@@ -8554,6 +8620,7 @@ export default function ProcurementDashboard() {
               useAdminCurrency={analyticsUseAdminCurrency}
               onToggleAdminCurrency={setAnalyticsUseAdminCurrency}
               priceBasis={(['rate', 'effective_rate', 'quoted_rate'].includes(pricingSettings.priceBasis) ? pricingSettings.priceBasis : 'effective_rate') as 'rate' | 'effective_rate' | 'quoted_rate'}
+              onPick={handleGraphPickRate}
             />
 
             {/* Online Pricing (Digikey/Mouser) — hidden for now */}
