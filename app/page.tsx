@@ -618,6 +618,7 @@ export default function ProcurementDashboard() {
   const [columnOrder, setColumnOrder] = useState([
     "itemId",
     "description",
+    "mpn",
     "internalNotes",
     "bom",
     "quantity",
@@ -3089,6 +3090,7 @@ export default function ProcurementDashboard() {
         "customer",
         "itemId",
         "description",
+        "mpn",
         "quantity",
         "unit",
         "category",
@@ -5473,6 +5475,7 @@ export default function ProcurementDashboard() {
     customer: "Customer",
     itemId: "Item ID",
     description: "Description",
+    mpn: "MPN Code",
     internalNotes: internalNotesLabel,
     bom: "BOM",
     quantity: "Qty",
@@ -7267,6 +7270,26 @@ export default function ProcurementDashboard() {
                                 </UiTooltip>
                               )}
                             </div>
+                          </td>
+                        )
+                      }
+
+                      if (columnKey === "mpn") {
+                        // Show the item master's MPN Item Code — same field the BE now
+                        // falls back to for Digi-Key / Mouser / Element14 lookups.
+                        const mpn = (item as any).mpn_item_code || ''
+                        return (
+                          <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
+                            {mpn ? (
+                              <span
+                                className="font-mono text-xs text-gray-800 bg-blue-50 px-1.5 py-0.5 rounded"
+                                title={mpn}
+                              >
+                                {mpn}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-gray-400">—</span>
+                            )}
                           </td>
                         )
                       }
