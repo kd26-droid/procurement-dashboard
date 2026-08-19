@@ -5464,7 +5464,25 @@ export default function ProcurementDashboard() {
 
   // Add spec columns to column order dynamically (after "bom" column)
   const specColumnKeys = specColumns.map(specName => `spec_${specName.replace(/\s+/g, '_')}`)
-  const allColumns = [...columnOrder.slice(0, 3), ...specColumnKeys, ...columnOrder.slice(3)] // Insert specs after itemId, description, bom
+
+  // One column per tag position — Tag 1, Tag 2, … Tag N. Replaces the old
+  // combined "category" column that stacked all tags with a "+N" indicator.
+  // maxTagCount is derived from the full filtered list so every possible
+  // tag slot gets its own column regardless of which page you're on.
+  const maxTagCount = useMemo(() => {
+    let max = 0
+    for (const it of filteredAndSortedItems as any[]) {
+      const cat = it?.category
+      if (!cat || cat === 'Uncategorized') continue
+      const count = String(cat).split(',').map((t: string) => t.trim()).filter(Boolean).length
+      if (count > max) max = count
+    }
+    return max
+  }, [filteredAndSortedItems])
+  const tagColumnKeys = Array.from({ length: maxTagCount }, (_, i) => `tag_${i + 1}`)
+
+  const allColumns = [...columnOrder.slice(0, 3), ...specColumnKeys, ...columnOrder.slice(3)]
+    .flatMap((col) => (col === 'category' ? tagColumnKeys : [col])) // fan out category → tag_1..tag_N
 
   // Always show Digikey/Mouser columns regardless of API key configuration
   const distributorHiddenCols: string[] = []
@@ -5508,6 +5526,12 @@ export default function ProcurementDashboard() {
     const key = `spec_${specName.replace(/\s+/g, '_')}`
     columnLabels[key] = specName
     if (!columnWidths[key]) columnWidths[key] = 120
+  })
+
+  // Dynamic Tag N column labels + default widths.
+  tagColumnKeys.forEach((key, idx) => {
+    columnLabels[key] = `Tag ${idx + 1}`
+    if (!columnWidths[key]) columnWidths[key] = 130
   })
 
   // Add dynamic custom ID column default widths
@@ -7334,6 +7358,36 @@ export default function ProcurementDashboard() {
                         )
                       }
 
+                      if (columnKey.startsWith("tag_")) {
+                        // Per-tag column. tag_1 → first tag, tag_2 → second, etc.
+                        // Replaces the old combined "category" column so users
+                        // can sort / filter / hide individual tag slots.
+                        const idx = parseInt(columnKey.slice(4), 10) - 1
+                        const rawCategories = (item.category || '')
+                          .split(',')
+                          .map((c: string) => c.trim())
+                          .filter(Boolean)
+                        const tagValue = Number.isFinite(idx) && idx >= 0 ? rawCategories[idx] : undefined
+                        return (
+                          <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
+                            {tagValue ? (
+                              <Badge
+                                variant="outline"
+                                className="border-gray-200 text-gray-700 text-xs truncate max-w-[180px]"
+                                title={tagValue}
+                              >
+                                {tagValue}
+                              </Badge>
+                            ) : (
+                              <span className="text-gray-400 text-xs">-</span>
+                            )}
+                          </td>
+                        )
+                      }
+
+                      // Legacy combined "category" column — kept for backward
+                      // compatibility with saved views. New default view uses
+                      // tag_1, tag_2, … columns via the tagColumnKeys fan-out.
                       if (columnKey === "category") {
                         const categories = (item.category || '').split(',').filter((c: string) => c.trim())
                         const isMissing = categories.length === 0
