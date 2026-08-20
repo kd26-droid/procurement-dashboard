@@ -4548,8 +4548,10 @@ export default function ProcurementDashboard() {
       return
     }
 
-    // Pull the selected line items and validate every one has an action assigned.
-    const items = lineItems.filter((it: any) => selectedItems.includes(it.id))
+    // Pull the selected line items, split out any without an action so they
+    // can be silently skipped (user's intent when they select-all: execute
+    // whichever have an action, ignore the rest — don't fail the whole batch).
+    const allSelected = lineItems.filter((it: any) => selectedItems.includes(it.id))
     const NORMALIZED_ACTIONS: Record<string, 'Event' | 'Quote' | 'PO' | 'Contract'> = {
       RFQ: 'Event',
       Event: 'Event',
@@ -4557,30 +4559,46 @@ export default function ProcurementDashboard() {
       PO: 'PO',
       Contract: 'Contract',
     }
-    const missingAction = items.filter((it: any) => !it.action || !NORMALIZED_ACTIONS[it.action.trim()])
-    if (missingAction.length > 0) {
+    const items = allSelected.filter(
+      (it: any) => it.action && NORMALIZED_ACTIONS[it.action.trim()]
+    )
+    const skippedCount = allSelected.length - items.length
+
+    if (items.length === 0) {
       toast({
-        title: 'Some items have no action',
-        description: `${missingAction.length} selected item(s) have no action assigned. Run Assign Actions first.`,
+        title: 'No actionable items',
+        description: 'None of the selected items have an action assigned. Run Assign Actions first.',
         variant: 'destructive',
       })
       return
     }
 
+    if (skippedCount > 0) {
+      toast({
+        title: `Skipped ${skippedCount} item${skippedCount === 1 ? '' : 's'} without an action`,
+        description: `Continuing with ${items.length} actionable item${items.length === 1 ? '' : 's'}.`,
+      })
+    }
+
+    // Everything downstream (alternate check, duplicate analysis, template
+    // picker) must operate ONLY on the actionable subset — otherwise the
+    // skipped items would sneak back in via selectedItems.
+    const actionableIds = items.map((it: any) => it.id)
+
     // Order matches the project page exactly:
     //   1. Alternate-without-parent warning (uses lineItems data we already have).
     //   2. Duplicate analysis (server-side endpoint, may augment selection).
     //   3. Template picker queue (Event then Quote).
-    const altWarnings = findAlternatesWithoutParents(selectedItems)
+    const altWarnings = findAlternatesWithoutParents(actionableIds)
     if (altWarnings.length > 0) {
       setAlternateWarningState({
         warnings: altWarnings,
         projectId,
-        initialSelectedItemIds: [...selectedItems],
+        initialSelectedItemIds: actionableIds,
       })
       return
     }
-    runDuplicateAnalysis(projectId, [...selectedItems])
+    runDuplicateAnalysis(projectId, actionableIds)
   }
 
   // Picker dialog confirm — postMessage selection to Factwise, shift queue.
