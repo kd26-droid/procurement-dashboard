@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useMemo, useEffect, useRef, useCallback } from "react"
+import { useState, useMemo, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -3032,56 +3032,8 @@ export default function ProcurementDashboard() {
     return !(typeof item.pendingQuantity === 'number' && item.pendingQuantity <= 0)
   }
 
-  // Current user id — decoded once from the JWT the parent passes in the
-  // iframe URL. `oid` / `sub` are the Azure B2C user id claim; we don't
-  // verify the signature (client-side attribution only).
-  const currentUserId = useMemo<string | null>(() => {
-    try {
-      const token = new URLSearchParams(window.location.search).get('token')
-      if (!token) return null
-      const parts = token.split('.')
-      if (parts.length !== 3) return null
-      const raw = parts[1].replace(/-/g, '+').replace(/_/g, '/')
-      const padded = raw + '='.repeat((4 - (raw.length % 4)) % 4)
-      const payload = JSON.parse(atob(padded)) as any
-      return payload?.oid || payload?.sub || null
-    } catch {
-      return null
-    }
-  }, [])
-
-  // "Project-level user" = the current user is one of the project's PMs,
-  // RFQ assignees, or Quote assignees. Those users can act on every item.
-  // Anyone NOT in those three lists is item-level — the strategy dashboard
-  // shows them all items in the project but they should only be able to
-  // execute actions on the items where they're personally responsible.
-  const isProjectLevelUser = useMemo(() => {
-    if (!currentUserId) return true // unknown identity → don't filter (safe default)
-    const inRfq = (rfqResponsibleUsers as any[]).some((u) => u.user_id === currentUserId)
-    const inQuote = (quoteResponsibleUsers as any[]).some((u) => u.user_id === currentUserId)
-    return inRfq || inQuote
-  }, [currentUserId, rfqResponsibleUsers, quoteResponsibleUsers])
-
-  // Does this specific item list the current user as a per-item responsible?
-  // Checked against every item-level responsibility field the strategy API
-  // exposes (item may return objects or bare id strings).
-  const isItemAssignedToCurrentUser = useCallback((item: any): boolean => {
-    if (!currentUserId) return true
-    const check = (arr: any[] | undefined) =>
-      Array.isArray(arr) && arr.some((u) => (typeof u === 'string' ? u === currentUserId : u?.user_id === currentUserId))
-    return (
-      check(item?.rfq_responsible_users) ||
-      check(item?.quote_responsible_users) ||
-      check(item?.assigned_users)
-    )
-  }, [currentUserId])
-
   const handleSelectAll = () => {
-    let selectableItems = filteredAndSortedItems.filter(isItemSelectable)
-    if (!isProjectLevelUser) {
-      // Item-level user: restrict select-all to items they can actually act on.
-      selectableItems = selectableItems.filter(isItemAssignedToCurrentUser)
-    }
+    const selectableItems = filteredAndSortedItems.filter(isItemSelectable)
     if (
       selectableItems.length > 0 &&
       selectableItems.every((it) => selectedItems.includes(it.id))
@@ -7218,59 +7170,34 @@ export default function ProcurementDashboard() {
             className="group/row transition-colors hover:bg-gray-50 bg-white"
           >
                     <td className="pin p-2 z-10 group-hover/row:bg-gray-50 bg-white" style={{ width: 40, minWidth: 40, maxWidth: 40, left: 0 }}>
-                      {(() => {
-                        // Same visibility rule select-all uses: item-level
-                        // users can only tick items where they're assigned.
-                        // Kept as a defence-in-depth alongside the header
-                        // select-all filter above.
-                        const notAssigned = !isProjectLevelUser && !isItemAssignedToCurrentUser(item)
-                        if (noPendingQty) {
-                          return (
-                            <UiTooltip>
-                              <UiTooltipTrigger asChild>
-                                <span className="inline-block cursor-not-allowed">
-                                  <input
-                                    type="checkbox"
-                                    checked={false}
-                                    disabled
-                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-40 pointer-events-none"
-                                  />
-                                </span>
-                              </UiTooltipTrigger>
-                              <UiTooltipContent side="right" className="text-xs">
-                                No pending quantity left to source for this item
-                              </UiTooltipContent>
-                            </UiTooltip>
-                          )
-                        }
-                        if (notAssigned) {
-                          return (
-                            <UiTooltip>
-                              <UiTooltipTrigger asChild>
-                                <span className="inline-block cursor-not-allowed">
-                                  <input
-                                    type="checkbox"
-                                    checked={false}
-                                    disabled
-                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-40 pointer-events-none"
-                                  />
-                                </span>
-                              </UiTooltipTrigger>
-                              <UiTooltipContent side="right" className="text-xs">
-                                You aren't assigned to this item — only the assigned users can execute actions on it.
-                              </UiTooltipContent>
-                            </UiTooltip>
-                          )
-                        }
-                        return (
-                          <input
-                            type="checkbox"
-                            checked={selectedItems.includes(item.id)}
-                            onChange={() => handleSelectItem(item.id)}
-                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          />
-                        )
-                      })()}
+                      {noPendingQty ? (
+                        // Disabled checkboxes don't fire hover events on the
+                        // input itself, so wrap in a span the Tooltip can
+                        // anchor to. Shows immediately on hover (no 700ms
+                        // native-title delay).
+                        <UiTooltip>
+                          <UiTooltipTrigger asChild>
+                            <span className="inline-block cursor-not-allowed">
+                              <input
+                                type="checkbox"
+                                checked={false}
+                                disabled
+                                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-40 pointer-events-none"
+                              />
+                            </span>
+                          </UiTooltipTrigger>
+                          <UiTooltipContent side="right" className="text-xs">
+                            No pending quantity left to source for this item
+                          </UiTooltipContent>
+                        </UiTooltip>
+                      ) : (
+                        <input
+                          type="checkbox"
+                          checked={selectedItems.includes(item.id)}
+                          onChange={() => handleSelectItem(item.id)}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                      )}
                     </td>
                     {visibleColumns.map((columnKey, colIndex) => {
                       const value = item[columnKey as keyof typeof item]
