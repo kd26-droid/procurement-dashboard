@@ -3050,21 +3050,17 @@ export default function ProcurementDashboard() {
     }
   }, [])
 
-  // "Project-level user" = the current user has broad authority over every
-  // item in the project. Any of the following qualifies:
-  //   - Admin role on the enterprise (projectUsers[].role === 'ADMIN')
-  //   - Listed in the project's RFQ or Quote responsible users
-  // Everyone else is item-level — the strategy dashboard shows them all items
-  // in the project but they should only be able to execute actions on the
-  // items where they're personally responsible.
+  // "Project-level user" = the current user is one of the project's PMs,
+  // RFQ assignees, or Quote assignees. Those users can act on every item.
+  // Anyone NOT in those three lists is item-level — the strategy dashboard
+  // shows them all items in the project but they should only be able to
+  // execute actions on the items where they're personally responsible.
   const isProjectLevelUser = useMemo(() => {
     if (!currentUserId) return true // unknown identity → don't filter (safe default)
-    const me = (projectUsers as any[]).find((u) => u.user_id === currentUserId)
-    if (me && String(me.role || '').toUpperCase() === 'ADMIN') return true
     const inRfq = (rfqResponsibleUsers as any[]).some((u) => u.user_id === currentUserId)
     const inQuote = (quoteResponsibleUsers as any[]).some((u) => u.user_id === currentUserId)
     return inRfq || inQuote
-  }, [currentUserId, projectUsers, rfqResponsibleUsers, quoteResponsibleUsers])
+  }, [currentUserId, rfqResponsibleUsers, quoteResponsibleUsers])
 
   // Does this specific item list the current user as a per-item responsible?
   // Checked against every item-level responsibility field the strategy API
