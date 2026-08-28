@@ -4155,16 +4155,55 @@ export default function ProcurementDashboard() {
 
   const evaluateCriterion = (criterion: { field: string; operator: string; value: string; unit?: string; sources?: string[] }, item: any): boolean => {
     const { field, operator, value } = criterion
+    const monetaryTargetInItemCurrency = (): number | null => {
+      const targetAmount = parseFloat(value)
+      if (!Number.isFinite(targetAmount)) return null
+
+      const itemCurrencyCode = item.currency?.code
+      if (!itemCurrencyCode) return null
+
+      // Monetary rule values are entered in the selected criterion currency,
+      // while item.unitPrice is stored in the project's/item's currency.
+      return fxConvert(
+        targetAmount,
+        criterion.unit || 'USD',
+        itemCurrencyCode,
+        exchangeRates,
+      )
+    }
     switch (field) {
       case 'Price': {
         const itemPrice = parseFloat(item.unitPrice) || 0
-        const targetPrice = parseFloat(value) || 0
+        const targetPrice = monetaryTargetInItemCurrency()
+        if (targetPrice === null) return false
         switch (operator) {
           case '>=': return itemPrice >= targetPrice
           case '<=': return itemPrice <= targetPrice
           case '>': return itemPrice > targetPrice
           case '<': return itemPrice < targetPrice
           case '=': return itemPrice === targetPrice
+          default: return false
+        }
+      }
+      case 'Per BOM Unit Amount': {
+        // For BOM rows, quantity is the component quantity required for the
+        // whole slab. Dividing its line amount by the finished-goods slab
+        // quantity normalizes the comparison to one BOM output unit.
+        const quantity = parseFloat(item.quantity) || 0
+        const unitRate = parseFloat(item.unitPrice) || 0
+        const slabQuantity = parseFloat(item.bom_slab_quantity)
+        const lineAmount = quantity * unitRate
+        const perBomUnitAmount = Number.isFinite(slabQuantity) && slabQuantity > 0
+          ? lineAmount / slabQuantity
+          : lineAmount
+        const targetAmount = monetaryTargetInItemCurrency()
+        if (targetAmount === null) return false
+        switch (operator) {
+          case '>=': return perBomUnitAmount >= targetAmount
+          case '<=': return perBomUnitAmount <= targetAmount
+          case '>': return perBomUnitAmount > targetAmount
+          case '<': return perBomUnitAmount < targetAmount
+          case '=': return perBomUnitAmount === targetAmount
           default: return false
         }
       }
@@ -4548,10 +4587,10 @@ export default function ProcurementDashboard() {
       return
     }
 
-    // Pull the selected line items, split out any without an action so they
-    // can be silently skipped (user's intent when they select-all: execute
-    // whichever have an action, ignore the rest — don't fail the whole batch).
-    const allSelected = lineItems.filter((it: any) => selectedItems.includes(it.id))
+    // Preserve main's select-all behavior while treating "No Action" as an
+    // intentional terminal assignment. Neither No Action nor an item without
+    // a valid action should enter a creation flow.
+    const items = lineItems.filter((it: any) => selectedItems.includes(it.id))
     const NORMALIZED_ACTIONS: Record<string, 'Event' | 'Quote' | 'PO' | 'Contract'> = {
       RFQ: 'Event',
       Event: 'Event',
@@ -4559,31 +4598,40 @@ export default function ProcurementDashboard() {
       PO: 'PO',
       Contract: 'Contract',
     }
-    const items = allSelected.filter(
-      (it: any) => it.action && NORMALIZED_ACTIONS[it.action.trim()]
+    const noActionItems = items.filter(
+      (it: any) => String(it.action || '').trim().toLowerCase() === 'no action'
     )
-    const skippedCount = allSelected.length - items.length
+    const actionableItems = items.filter(
+      (it: any) => !!NORMALIZED_ACTIONS[String(it.action || '').trim()]
+    )
+    const missingActionItems = items.filter((it: any) => {
+      const action = String(it.action || '').trim()
+      return action.toLowerCase() !== 'no action' && !NORMALIZED_ACTIONS[action]
+    })
 
-    if (items.length === 0) {
+    if (actionableItems.length === 0) {
+      const onlyNoAction = noActionItems.length === items.length
       toast({
-        title: 'No actionable items',
-        description: 'None of the selected items have an action assigned. Run Assign Actions first.',
-        variant: 'destructive',
+        title: onlyNoAction ? 'No actions to execute' : 'No actionable items',
+        description: onlyNoAction
+          ? `${noActionItems.length} selected item(s) are assigned No Action. Nothing was created.`
+          : 'None of the selected items have a valid action assigned. Run Assign Actions first.',
+        variant: onlyNoAction ? undefined : 'destructive',
       })
       return
     }
 
+    const skippedCount = noActionItems.length + missingActionItems.length
     if (skippedCount > 0) {
       toast({
-        title: `Skipped ${skippedCount} item${skippedCount === 1 ? '' : 's'} without an action`,
-        description: `Continuing with ${items.length} actionable item${items.length === 1 ? '' : 's'}.`,
+        title: `Skipped ${skippedCount} non-actionable item(s)`,
+        description: `Continuing with ${actionableItems.length} actionable item(s).`,
       })
     }
 
     // Everything downstream (alternate check, duplicate analysis, template
-    // picker) must operate ONLY on the actionable subset — otherwise the
-    // skipped items would sneak back in via selectedItems.
-    const actionableIds = items.map((it: any) => it.id)
+    // picker) operates only on actionable rows.
+    const actionableIds = actionableItems.map((it: any) => it.id)
 
     // Order matches the project page exactly:
     //   1. Alternate-without-parent warning (uses lineItems data we already have).
@@ -4706,6 +4754,14 @@ export default function ProcurementDashboard() {
     const localAction = currentSettings.actions?.criteriaAction || 'Quote'
     const hasLocalCriteria = localCriteria.length > 0
 
+    // Admin rules can be scoped to project templates. An explicitly scoped
+    // rule must never run if this project's template is missing or different.
+    const templateId = projectData.template_id
+    const applicableAdminActionRules = adminActionRules.filter((rule) =>
+      rule.template_filter.length === 0 ||
+      (!!templateId && rule.template_filter.includes(templateId))
+    )
+
     // Pricing-availability dependency check.
     // If any rule (local or admin) references the 'Pricing Available' field AND
     // Load Pricing hasn't been run, we cannot fairly evaluate it. Bail explicitly
@@ -4713,7 +4769,7 @@ export default function ProcurementDashboard() {
     // would mis-assign every item to whatever the fallback action is.
     const allCriteriaFlat = [
       ...localCriteria,
-      ...adminActionRules.flatMap(r => r.criteria || []),
+      ...applicableAdminActionRules.flatMap(r => r.criteria || []),
     ]
     const usesPricingAvailable = allCriteriaFlat.some((c: any) => c.field === 'Pricing Available')
     const requiresPricingRepoSource = allCriteriaFlat.some((c: any) =>
@@ -4745,7 +4801,7 @@ export default function ProcurementDashboard() {
 
       // Priority 2: Admin action rules (from backend)
       if (!newAction) {
-        for (const rule of adminActionRules) {
+        for (const rule of applicableAdminActionRules) {
           if (evaluateCriteria(rule.criteria, item)) {
             newAction = rule.action
             break
@@ -5572,6 +5628,7 @@ export default function ProcurementDashboard() {
   const actionIcon = (action?: string) => {
     if (!action || !action.trim()) return null
     const a = action.trim().toLowerCase()
+    if (a === 'no action') return <X className="h-3 w-3 text-gray-500" />
     if (a === 'direct po') return <DollarSign className="h-3 w-3 text-green-600" />
     if (a === 'contract') return <FileSignature className="h-3 w-3 text-emerald-600" />
     if (a === 'quote') return <FileText className="h-3 w-3 text-indigo-600" />
@@ -7476,6 +7533,8 @@ export default function ProcurementDashboard() {
                               className={`text-xs px-1 py-0 ${
                                 item.action === "RFQ"
                                   ? "bg-blue-100 text-blue-800 border-blue-200"
+                                  : item.action === "No Action"
+                                    ? "bg-gray-100 text-gray-700 border-gray-200"
                                   : item.action === "Direct PO"
                                     ? "bg-green-100 text-green-800 border-green-200"
                                     : "bg-orange-100 text-orange-800 border-orange-200"

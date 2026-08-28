@@ -72,7 +72,7 @@ export type ActionsSettings = {
   sources: PriceSource[]
   maxAgeDays: number
   criteria?: ActionCriterion[]
-  criteriaAction?: 'Event' | 'Quote' | 'PO' | 'Contract'
+  criteriaAction?: 'Event' | 'Quote' | 'PO' | 'Contract' | 'No Action'
   // Execute Action behaviour. When undefined → fall back to the admin setting
   // (STRATEGY_EXECUTE_ACTION_SPLIT_BY_ITEM) loaded from BE entity-settings.
   // 'split'    = one event per selected item
@@ -164,7 +164,7 @@ type ActionFormula = {
 }
 
 // Criteria builder types
-type CriteriaField = 'Purpose' | 'Item ID Type' | 'Source' | 'Date' | 'Price' | 'Quantity' | 'Vendor' | 'Tag' | 'Pricing Available'
+type CriteriaField = 'Purpose' | 'Item ID Type' | 'Source' | 'Date' | 'Price' | 'Per BOM Unit Amount' | 'Quantity' | 'Vendor' | 'Tag' | 'Pricing Available'
 type CriteriaOperator = 'is' | 'is not' | 'before' | 'after' | '=' | '>' | '<' | '>=' | '<='
 
 // Source identifiers for the "Pricing Available" criterion. These match the
@@ -1475,10 +1475,17 @@ export function SettingsPanel({
                         {/* Field */}
                         <Select
                           value={row.field}
-                          onValueChange={(v) => setLocal(prev => ({
-                            ...prev,
-                            actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, field: v as any, operator: 'is', value: '' } : r) }
-                          }))}
+                          onValueChange={(v) => {
+                            const operator = ['Price', 'Per BOM Unit Amount', 'Quantity'].includes(v)
+                              ? '>='
+                              : v === 'Date'
+                                ? 'before'
+                                : 'is'
+                            setLocal(prev => ({
+                              ...prev,
+                              actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, field: v as any, operator, value: '' } : r) }
+                            }))
+                          }}
                         >
                           <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
                           <SelectContent>
@@ -1488,6 +1495,7 @@ export function SettingsPanel({
                             <SelectItem value="Tag">Tag</SelectItem>
                             <SelectItem value="Date">Date</SelectItem>
                             <SelectItem value="Price">Price</SelectItem>
+                            <SelectItem value="Per BOM Unit Amount">Per BOM Unit Amount</SelectItem>
                             <SelectItem value="Quantity">Quantity</SelectItem>
                             <SelectItem value="Vendor">Vendor</SelectItem>
                             <SelectItem value="Pricing Available">Pricing Available</SelectItem>
@@ -1615,7 +1623,7 @@ export function SettingsPanel({
                             </div>
                           </>
                         )}
-                        {(row.field === 'Price' || row.field === 'Quantity' || row.field === 'Vendor') && (
+                        {(row.field === 'Price' || row.field === 'Per BOM Unit Amount' || row.field === 'Quantity' || row.field === 'Vendor') && (
                           <>
                             <Input
                               className="w-36"
@@ -1623,7 +1631,7 @@ export function SettingsPanel({
                               value={row.value}
                               onChange={(e) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, value: e.target.value } : r) } }))}
                             />
-                            {row.field === 'Price' && (
+                            {(row.field === 'Price' || row.field === 'Per BOM Unit Amount') && (
                               <Select value={row.unit || 'USD'} onValueChange={(v) => setLocal(prev => ({ ...prev, actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, unit: v } : r) } }))}>
                                 <SelectTrigger className="w-20"><SelectValue /></SelectTrigger>
                                 <SelectContent>
@@ -1691,6 +1699,7 @@ export function SettingsPanel({
                         <SelectItem value="Quote">Quote</SelectItem>
                         <SelectItem value="PO">PO</SelectItem>
                         <SelectItem value="Contract">Contract</SelectItem>
+                        <SelectItem value="No Action">No Action</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
