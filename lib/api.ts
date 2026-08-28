@@ -1311,10 +1311,11 @@ export async function getRuleFieldOptions(
 // Action Rules Engine — Types & API Functions
 // ============================================================================
 
-export type ActionRuleActionType = 'Event' | 'Quote' | 'PO' | 'Contract'
+export type ActionRuleActionType = 'Event' | 'Quote' | 'PO' | 'Contract' | 'No Action'
 
 export type ActionRuleCriteriaField =
   | 'Price'
+  | 'Per BOM Unit Amount'
   | 'Quantity'
   | 'Vendor'
   | 'Source'
