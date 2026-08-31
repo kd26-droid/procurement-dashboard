@@ -84,7 +84,7 @@ export function StrategyAlternateWarning({
                 {w.parentName ? ` — ${w.parentName}` : ''}
                 {w.parentRowId === null && (
                   <span className="ml-2 text-amber-700">
-                    (parent not in your project — cannot auto-add)
+                    (parent unavailable for selection — cannot auto-add)
                   </span>
                 )}
               </div>

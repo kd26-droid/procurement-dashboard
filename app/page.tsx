@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useMemo, useEffect, useRef } from "react"
+import { useState, useMemo, useEffect, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -1214,6 +1214,7 @@ export default function ProcurementDashboard() {
       original_custom_tags: item.custom_tags || [],
       assignedTo: item.assigned_users.map(u => u.name).join(', '),
       assigned_user_ids: item.assigned_users.map(u => u.user_id),
+      can_select: item.can_select === true,
       _debug_assigned_users: item.assigned_users, // TEMP DEBUG — remove later
       unitPrice: item.rate || 0,
       totalPrice: item.amount || 0,
@@ -3026,11 +3027,34 @@ export default function ProcurementDashboard() {
     })
   }
 
-  // Items with no remaining pending quantity can't be selected — same gate
-  // the per-row checkbox uses. Header "select all" skips them.
-  const isItemSelectable = (item: any): boolean => {
-    return !(typeof item.pendingQuantity === 'number' && item.pendingQuantity <= 0)
-  }
+  const getItemSelectionBlockReason = useCallback((item: any): string | null => {
+    if (typeof item.pendingQuantity === 'number' && item.pendingQuantity <= 0) {
+      return 'No pending quantity left to source for this item'
+    }
+    if (item.can_select !== true) {
+      return 'You can only select items assigned to you'
+    }
+    return null
+  }, [])
+
+  // Header "select all" and every action operate only on rows the backend has
+  // authorized for the current user.
+  const isItemSelectable = useCallback((item: any): boolean => {
+    return getItemSelectionBlockReason(item) === null
+  }, [getItemSelectionBlockReason])
+
+  // Assignment/pending state can change after a refresh or auto-assignment.
+  // Remove stale selections so downstream actions never retain an item that
+  // the current user is no longer allowed to act on.
+  useEffect(() => {
+    setSelectedItems((previous) => {
+      const selectableIds = new Set(
+        lineItems.filter(isItemSelectable).map((item: any) => item.id)
+      )
+      const next = previous.filter((id) => selectableIds.has(id))
+      return next.length === previous.length ? previous : next
+    })
+  }, [lineItems, isItemSelectable])
 
   const handleSelectAll = () => {
     const selectableItems = filteredAndSortedItems.filter(isItemSelectable)
@@ -3045,8 +3069,13 @@ export default function ProcurementDashboard() {
     }
   }
 
-  const handleSelectItem = (id: number) => {
-    setSelectedItems((prev) => (prev.includes(id) ? prev.filter((itemId) => itemId !== id) : [...prev, id]))
+  const handleSelectItem = (item: any) => {
+    if (!isItemSelectable(item)) return
+    setSelectedItems((prev) => (
+      prev.includes(item.id)
+        ? prev.filter((itemId) => itemId !== item.id)
+        : [...prev, item.id]
+    ))
   }
 
   const handleSort = (field: string) => {
@@ -4397,7 +4426,9 @@ export default function ProcurementDashboard() {
         parentName:
           alt.alternate_parent_name || parentLi?.item_name || '',
         parentRowId:
-          parentLi && !selectedRowsSet.has(parentLi.id)
+          parentLi &&
+          !selectedRowsSet.has(parentLi.id) &&
+          isItemSelectable(parentLi)
             ? parentLi.id
             : null,
         bomCode: li?.bom_info?.bom_code || 'Unknown',
@@ -4414,7 +4445,26 @@ export default function ProcurementDashboard() {
       .filter((x: any) => !!x)
     getDuplicateItemsAnalysis(projectId)
       .then((res) => {
-        const dups = res?.duplicate_items || []
+        // The duplicate API returns every occurrence in the project. Only
+        // expose occurrences the current user is allowed to select, otherwise
+        // the review dialog could silently expand the action to assigned-away
+        // items even though their table checkboxes are disabled.
+        const selectableProjectItemIds = new Set(
+          lineItems
+            .filter(isItemSelectable)
+            .map((it: any) => it.project_item_id)
+            .filter((id: any) => !!id),
+        )
+        const dups = (res?.duplicate_items || []).map((dupItem) => {
+          const occurrences = dupItem.occurrences.filter((occ) =>
+            selectableProjectItemIds.has(occ.project_item_id),
+          )
+          return {
+            ...dupItem,
+            occurrences,
+            occurrence_count: occurrences.length,
+          }
+        })
         const hasUnselectedSiblings = dups.some((dupItem) => {
           const selected = dupItem.occurrences.filter((occ) =>
             selectedProjectItemIds.includes(occ.project_item_id),
@@ -4465,6 +4515,18 @@ export default function ProcurementDashboard() {
   // dialog can call into it on confirm/skip without duplicating logic.
   const startPickerQueueForItems = (projectId: string, itemIds: number[]) => {
     const items = lineItems.filter((it: any) => itemIds.includes(it.id))
+    const selectableItemIds = new Set(
+      items.filter(isItemSelectable).map((item: any) => item.id),
+    )
+    if (itemIds.some((id) => !selectableItemIds.has(id))) {
+      setSelectedItems((current) => current.filter((id) => selectableItemIds.has(id)))
+      toast({
+        title: 'Selection changed',
+        description: 'One or more items are no longer assigned to you or have no pending quantity.',
+        variant: 'destructive',
+      })
+      return
+    }
     const NORMALIZED_ACTIONS: Record<string, 'Event' | 'Quote' | 'PO' | 'Contract'> = {
       RFQ: 'Event',
       Event: 'Event',
@@ -4591,6 +4653,19 @@ export default function ProcurementDashboard() {
     // intentional terminal assignment. Neither No Action nor an item without
     // a valid action should enter a creation flow.
     const items = lineItems.filter((it: any) => selectedItems.includes(it.id))
+    const blockedItems = items.filter((item: any) => !isItemSelectable(item))
+    if (blockedItems.length > 0) {
+      setSelectedItems((current) => current.filter((id) => {
+        const item = lineItems.find((candidate: any) => candidate.id === id)
+        return item && isItemSelectable(item)
+      }))
+      toast({
+        title: 'Selection changed',
+        description: 'One or more selected items are no longer assigned to you or have no pending quantity.',
+        variant: 'destructive',
+      })
+      return
+    }
     const NORMALIZED_ACTIONS: Record<string, 'Event' | 'Quote' | 'PO' | 'Contract'> = {
       RFQ: 'Event',
       Event: 'Event',
@@ -7213,11 +7288,7 @@ export default function ProcurementDashboard() {
       </thead>
       <tbody className="bg-white divide-y divide-gray-100">
         {paginatedItems.map((item: any) => {
-          // Disable selection when nothing is left to source. Matches the
-          // project page's tab-visibility gate (project_pending ≤ 0). null
-          // means BE didn't report a value — don't gate in that case.
-          const noPendingQty =
-            typeof item.pendingQuantity === 'number' && item.pendingQuantity <= 0
+          const selectionBlockReason = getItemSelectionBlockReason(item)
           return (
           <tr
             key={item.id}
@@ -7227,7 +7298,7 @@ export default function ProcurementDashboard() {
             className="group/row transition-colors hover:bg-gray-50 bg-white"
           >
                     <td className="pin p-2 z-10 group-hover/row:bg-gray-50 bg-white" style={{ width: 40, minWidth: 40, maxWidth: 40, left: 0 }}>
-                      {noPendingQty ? (
+                      {selectionBlockReason ? (
                         // Disabled checkboxes don't fire hover events on the
                         // input itself, so wrap in a span the Tooltip can
                         // anchor to. Shows immediately on hover (no 700ms
@@ -7244,14 +7315,14 @@ export default function ProcurementDashboard() {
                             </span>
                           </UiTooltipTrigger>
                           <UiTooltipContent side="right" className="text-xs">
-                            No pending quantity left to source for this item
+                            {selectionBlockReason}
                           </UiTooltipContent>
                         </UiTooltip>
                       ) : (
                         <input
                           type="checkbox"
                           checked={selectedItems.includes(item.id)}
-                          onChange={() => handleSelectItem(item.id)}
+                          onChange={() => handleSelectItem(item)}
                           className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                         />
                       )}

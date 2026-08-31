@@ -255,6 +255,9 @@ export interface ProjectItem {
   assigned_users_count: number;
   rfq_responsible_users?: Array<{ user_id: string; email: string; name: string }>;
   quote_responsible_users?: Array<{ user_id: string; email: string; name: string }>;
+  // Computed by the backend for the authenticated user. Project-level RFQ
+  // assignees can select every item; otherwise an item assignment is required.
+  can_select: boolean;
   delivery_schedules: Array<{
     delivery_schedule_id: string;
     quantity: number;
