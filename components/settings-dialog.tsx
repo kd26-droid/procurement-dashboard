@@ -1420,7 +1420,7 @@ export function SettingsPanel({
                                 {i === 0 ? 'WHERE' : c.conjunction}
                               </span>
                               <span className="text-slate-600">
-                                {c.field} {c.operator} <strong>{c.value}</strong>{c.unit ? ` ${c.unit}` : ''}
+                                {c.field === 'Per BOM Unit Amount' ? 'Unit Price' : c.field} {c.operator} <strong>{c.value}</strong>{c.unit ? ` ${c.unit}` : ''}
                               </span>
                             </React.Fragment>
                           ))}
@@ -1495,7 +1495,7 @@ export function SettingsPanel({
                             <SelectItem value="Tag">Tag</SelectItem>
                             <SelectItem value="Date">Date</SelectItem>
                             <SelectItem value="Price">Price</SelectItem>
-                            <SelectItem value="Per BOM Unit Amount">Per BOM Unit Amount</SelectItem>
+                            <SelectItem value="Per BOM Unit Amount">Unit Price</SelectItem>
                             <SelectItem value="Quantity">Quantity</SelectItem>
                             <SelectItem value="Vendor">Vendor</SelectItem>
                             <SelectItem value="Pricing Available">Pricing Available</SelectItem>
