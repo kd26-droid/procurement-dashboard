@@ -4874,14 +4874,16 @@ export default function ProcurementDashboard() {
         newAction = localAction
       }
 
-      // Priority 2: Admin action rules (from backend)
+      // Priority 2: Admin action rules (from backend). An override rule wins
+      // over every matching normal rule. Within the same conflict mode, the
+      // backend-provided priority order decides the winner.
       if (!newAction) {
-        for (const rule of applicableAdminActionRules) {
-          if (evaluateCriteria(rule.criteria, item)) {
-            newAction = rule.action
-            break
-          }
-        }
+        const matchingRules = applicableAdminActionRules.filter((rule) =>
+          evaluateCriteria(rule.criteria, item)
+        )
+        const winningRule = matchingRules.find((rule) => rule.conflict_mode === 'override')
+          || matchingRules[0]
+        newAction = winningRule?.action || null
       }
 
       if (!newAction) return item // No rule matched
