@@ -1315,6 +1315,7 @@ export async function getRuleFieldOptions(
 // ============================================================================
 
 export type ActionRuleActionType = 'Event' | 'Quote' | 'PO' | 'Contract' | 'No Action'
+export type ActionRuleConflictMode = 'priority' | 'override'
 
 export type ActionRuleCriteriaField =
   | 'Price'
@@ -1353,7 +1354,9 @@ export interface ActionRule {
   template_filter: string[]
   criteria: ActionRuleCriterion[]
   action: ActionRuleActionType
+  conflict_mode: ActionRuleConflictMode
   is_active: boolean
+  priority?: number
   created_by?: string | null
   created_at?: string | null
 }

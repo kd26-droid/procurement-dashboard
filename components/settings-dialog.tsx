@@ -19,6 +19,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   Search,
   Trash2,
@@ -30,6 +31,7 @@ import {
   Building2,
   Globe,
   Filter,
+  Info,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -165,6 +167,12 @@ type ActionFormula = {
 
 // Criteria builder types
 type CriteriaField = 'Purpose' | 'Item ID Type' | 'Source' | 'Date' | 'Price' | 'Per BOM Unit Amount' | 'Quantity' | 'Vendor' | 'Tag' | 'Pricing Available'
+const ITEM_COST_PER_BOM_UNIT_TOOLTIP =
+  'The cost contribution of this item for one completed BOM unit, accounting for the BOM slab quantity.'
+const RULE_PRIORITY_TOOLTIP =
+  'Treat this as a normal rule. If several normal rules match, the highest rule in the admin rule list wins. A matching override rule takes precedence.'
+const RULE_OVERRIDE_TOOLTIP =
+  'When this rule matches, its action takes precedence over every matching normal rule. If multiple override rules match, the highest one in the admin rule list wins.'
 type CriteriaOperator = 'is' | 'is not' | 'before' | 'after' | '=' | '>' | '<' | '>=' | '<='
 
 // Source identifiers for the "Pricing Available" criterion. These match the
@@ -1403,7 +1411,7 @@ export function SettingsPanel({
                       <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 mb-2">
                         <span className="font-semibold">ℹ️</span>
                         <span>
-                          Evaluated <strong>top to bottom</strong>. First match wins — later rules are skipped. Order is set in <strong>Factwise Admin → Settings → Action Rules</strong>.
+                          Matching override rules take precedence over normal rules. Within the same conflict mode, the first matching rule wins. Order is set in <strong>Factwise Admin → Settings → Action Rules</strong>.
                         </span>
                       </div>
                     )}
@@ -1419,7 +1427,10 @@ export function SettingsPanel({
                               <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-xs font-semibold">
                                 {i === 0 ? 'WHERE' : c.conjunction}
                               </span>
-                              <span className="text-slate-600">
+                              <span
+                                className="text-slate-600"
+                                title={c.field === 'Per BOM Unit Amount' ? ITEM_COST_PER_BOM_UNIT_TOOLTIP : undefined}
+                              >
                                 {c.field === 'Per BOM Unit Amount' ? 'Item cost/BOM unit' : c.field} {c.operator} <strong>{c.value}</strong>{c.unit ? ` ${c.unit}` : ''}
                               </span>
                             </React.Fragment>
@@ -1429,6 +1440,24 @@ export function SettingsPanel({
                           )}
                           <span className="bg-orange-100 text-orange-800 px-2 py-0.5 rounded text-xs font-semibold">THEN</span>
                           <span className="font-semibold text-orange-800">{rule.action}</span>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                tabIndex={0}
+                                className={cn(
+                                  'cursor-help rounded px-2 py-0.5 text-xs font-semibold',
+                                  rule.conflict_mode === 'override'
+                                    ? 'bg-red-50 text-red-700'
+                                    : 'bg-slate-100 text-slate-600'
+                                )}
+                              >
+                                {rule.conflict_mode === 'override' ? 'Override normal rules' : 'Use rule priority'}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="max-w-xs">
+                              {rule.conflict_mode === 'override' ? RULE_OVERRIDE_TOOLTIP : RULE_PRIORITY_TOOLTIP}
+                            </TooltipContent>
+                          </Tooltip>
                         </div>
                       </div>
                     ))}
@@ -1473,34 +1502,52 @@ export function SettingsPanel({
                         )}
 
                         {/* Field */}
-                        <Select
-                          value={row.field}
-                          onValueChange={(v) => {
-                            const operator = ['Price', 'Per BOM Unit Amount', 'Quantity'].includes(v)
-                              ? '>='
-                              : v === 'Date'
-                                ? 'before'
-                                : 'is'
-                            setLocal(prev => ({
-                              ...prev,
-                              actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, field: v as any, operator, value: '' } : r) }
-                            }))
-                          }}
-                        >
-                          <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="Purpose">Purpose</SelectItem>
-                            <SelectItem value="Item ID Type">Item ID Type</SelectItem>
-                            <SelectItem value="Source">Source</SelectItem>
-                            <SelectItem value="Tag">Tag</SelectItem>
-                            <SelectItem value="Date">Date</SelectItem>
-                            <SelectItem value="Price">Price</SelectItem>
-                            <SelectItem value="Per BOM Unit Amount">Item cost/BOM unit</SelectItem>
-                            <SelectItem value="Quantity">Quantity</SelectItem>
-                            <SelectItem value="Vendor">Vendor</SelectItem>
-                            <SelectItem value="Pricing Available">Pricing Available</SelectItem>
-                          </SelectContent>
-                        </Select>
+                        <div className="flex items-center gap-1">
+                          <Select
+                            value={row.field}
+                            onValueChange={(v) => {
+                              const operator = ['Price', 'Per BOM Unit Amount', 'Quantity'].includes(v)
+                                ? '>='
+                                : v === 'Date'
+                                  ? 'before'
+                                  : 'is'
+                              setLocal(prev => ({
+                                ...prev,
+                                actions: { ...prev.actions, criteria: (prev.actions.criteria || []).map(r => r.id === row.id ? { ...r, field: v as any, operator, value: '' } : r) }
+                              }))
+                            }}
+                          >
+                            <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Purpose">Purpose</SelectItem>
+                              <SelectItem value="Item ID Type">Item ID Type</SelectItem>
+                              <SelectItem value="Source">Source</SelectItem>
+                              <SelectItem value="Tag">Tag</SelectItem>
+                              <SelectItem value="Date">Date</SelectItem>
+                              <SelectItem value="Price">Price</SelectItem>
+                              <SelectItem value="Per BOM Unit Amount" title={ITEM_COST_PER_BOM_UNIT_TOOLTIP}>Item cost/BOM unit</SelectItem>
+                              <SelectItem value="Quantity">Quantity</SelectItem>
+                              <SelectItem value="Vendor">Vendor</SelectItem>
+                              <SelectItem value="Pricing Available">Pricing Available</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          {row.field === 'Per BOM Unit Amount' && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  aria-label="Explain Item cost per BOM unit"
+                                  className="text-slate-500 hover:text-slate-700"
+                                >
+                                  <Info className="h-4 w-4" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="max-w-xs">
+                                {ITEM_COST_PER_BOM_UNIT_TOOLTIP}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                        </div>
 
                         {/* Operator */}
                         <Select
