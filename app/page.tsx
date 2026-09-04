@@ -630,7 +630,6 @@ export default function ProcurementDashboard() {
     "rfqResponsible",
     "quoteResponsible",
     "action",
-    "linkedQuote",
     "assignedTo",
     "dueDate",
     "vendor",
@@ -702,7 +701,6 @@ export default function ProcurementDashboard() {
     rfqResponsible: 160,
     quoteResponsible: 160,
     action: 80,
-    linkedQuote: 150,
     assignedTo: 144,
     dueDate: 100,
     vendor: 200,
@@ -1281,13 +1279,6 @@ export default function ProcurementDashboard() {
       },
       bom_usages: item.bom_usages || [],
       event_usages: item.event_usages || [],
-      quote_usages: item.quote_usages || [],
-      quote_count:
-        typeof item.quote_count === 'number'
-          ? item.quote_count
-          : Array.isArray(item.quote_usages)
-            ? item.quote_usages.length
-            : 0,
       delivery_slabs: item.delivery_slabs || [],
       alternate_info: item.alternate_info || {
         is_alternate: false,
@@ -2768,7 +2759,6 @@ export default function ProcurementDashboard() {
       'RFQ Item Responsible',
       'Quote Item Responsible',
       'Action',
-      'Quote',
       'Assigned To',
       'Due Date',
       'Vendor',
@@ -2890,17 +2880,8 @@ export default function ProcurementDashboard() {
       )
 
       // Add remaining columns
-      const quoteUsages = Array.isArray(item.quote_usages) ? item.quote_usages : []
-      const quoteDisplay =
-        quoteUsages.length === 1
-          ? (quoteUsages[0]?.quote_name || quoteUsages[0]?.custom_costing_sheet_id || '')
-          : quoteUsages.length > 1
-            ? String(quoteUsages.length)
-            : ''
-
       row.push(
         escapeCSV(item.action),
-        escapeCSV(quoteDisplay),
         escapeCSV(item.assignedTo),
         escapeCSV(item.dueDate),
         escapeCSV(
@@ -4761,7 +4742,6 @@ export default function ProcurementDashboard() {
       entityId: selection.entityId,
       templateId: selection.templateId,
       splitByItem: selection.splitByItem,
-      eventDefaults: selection.eventDefaults,
       // Two arrays so Factwise can route BOM items through `boms[]` and
       // regular items through `items[]` — same as the project page does
       // for saveEventDetailsApi. Without this BOM linkage is lost and the
@@ -4823,20 +4803,9 @@ export default function ProcurementDashboard() {
           })
         }
       } else {
-        const errorMessage =
-          typeof data.error === 'string' ? data.error : 'Unknown error from Factwise.'
-        const isDefaultTermsError =
-          errorMessage.includes('default_custom_sections') ||
-          errorMessage.includes('default item terms') ||
-          errorMessage.includes('text_value') ||
-          errorMessage.includes('date_value')
         toast({
-          title: isDefaultTermsError
-            ? 'Complete default item terms'
-            : `${pending.action} create failed`,
-          description: isDefaultTermsError
-            ? 'Please fill the required default item term fields and use YYYY-MM-DD for date fields, then create the event again.'
-            : errorMessage,
+          title: `${pending.action} create failed`,
+          description: typeof data.error === 'string' ? data.error : 'Unknown error from Factwise.',
           variant: 'destructive',
         })
       }
@@ -5685,14 +5654,13 @@ export default function ProcurementDashboard() {
     rfqResponsible: "RFQ Item Responsible",
     quoteResponsible: "Quote Item Responsible",
     action: "Action",
-    linkedQuote: "Quote(s)",
     assignedTo: "Assigned",
     dueDate: "Due Date",
     vendor: "Vendor",
     shippingAddress: "Shipping Address",
     pricePO: "PO Price",
     priceContract: "Contract",
-    priceQuote: "Quote Price",
+    priceQuote: "Quote",
     priceRFQ: "RFQ",
     priceDigikey: "Digi-Key",
     priceMouser: "Mouser",
@@ -8548,52 +8516,6 @@ export default function ProcurementDashboard() {
                         )
                       }
 
-                      if (columnKey === "linkedQuote") {
-                        const quoteUsages = Array.isArray((item as any).quote_usages)
-                          ? (item as any).quote_usages
-                          : []
-                        const quoteCount =
-                          typeof (item as any).quote_count === 'number'
-                            ? (item as any).quote_count
-                            : quoteUsages.length
-                        const firstQuote = quoteUsages[0]
-                        const displayText =
-                          quoteCount === 1 && firstQuote
-                            ? (firstQuote.quote_name || firstQuote.custom_costing_sheet_id || 'Quote')
-                            : quoteCount > 1
-                              ? String(quoteCount)
-                              : '-'
-                        const tooltip =
-                          quoteCount > 1
-                            ? quoteUsages
-                                .map((quote: any, idx: number) =>
-                                  `${idx + 1}. ${quote.quote_name || quote.custom_costing_sheet_id || quote.costing_sheet_id}`
-                                )
-                                .join('\n')
-                            : displayText
-
-                        return (
-                          <td key={columnKey} className="p-2 text-left" style={stickyStyle}>
-                            {quoteCount > 0 ? (
-                              <button
-                                type="button"
-                                className="max-w-full truncate text-xs font-medium text-blue-700 underline-offset-2 hover:underline focus:outline-none"
-                                title={tooltip}
-                                onClick={() => {
-                                  if (quoteCount === 1 && firstQuote?.costing_sheet_id) {
-                                    window.open(`/seller/costing/${firstQuote.costing_sheet_id}`, '_blank')
-                                  }
-                                }}
-                              >
-                                {displayText}
-                              </button>
-                            ) : (
-                              <span className="text-xs text-gray-400">-</span>
-                            )}
-                          </td>
-                        )
-                      }
-
                       if (columnKey === "unitPrice") {
                         const hasPrice = item.unitPrice && item.unitPrice > 0
                         const currencySymbol = (item as any).currency?.symbol || ''
@@ -9724,10 +9646,6 @@ export default function ProcurementDashboard() {
           (pickerQueue[0]?.boms.reduce((n, b) => n + b.bom_items.length, 0) ?? 0)
         }
         defaultSplit={pickerQueue[0]?.splitByItem ?? false}
-        projectId={projectData.id}
-        projectName={projectData.name}
-        customerEntityId={projectData.customer_entity_id}
-        customerName={projectData.customer}
         onConfirm={handlePickerConfirm}
         onCancel={handlePickerCancel}
       />
