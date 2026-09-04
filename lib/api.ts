@@ -183,6 +183,7 @@ export interface ProjectOverview {
     project_code: string;
     project_name: string;
     customer_name: string;
+    customer_entity_id?: string | null;
     buyer_entity_id: string;
     buyer_entity_name: string;
     deadline: string | null;
@@ -267,6 +268,7 @@ export interface ProjectItem {
   // 0 (or negative) = nothing left to source → strategy FE disables the row.
   pending_quantity?: number;
   rfq_events_count: number;
+  quote_count?: number;
   item_valid: boolean;
   created_datetime: string;
   modified_datetime: string;
@@ -346,6 +348,13 @@ export interface ProjectItem {
     bom_item_ratio?: number;
     bom_slab_quantity?: number;
     bom_module_linkage_id?: string;
+  }>;
+  quote_usages?: Array<{
+    costing_sheet_id: string;
+    custom_costing_sheet_id?: string | null;
+    quote_name?: string | null;
+    quantity?: number;
+    status?: string | null;
   }>;
   // Delivery slabs
   delivery_slabs?: Array<{
@@ -1589,6 +1598,60 @@ export interface TemplateListItem {
   is_default?: boolean;
 }
 
+export interface ModuleTemplateSectionItem {
+  section_item_id?: string;
+  name: string;
+  alternate_name?: string;
+  sequence?: number;
+  field_level?: string;
+  parent_section_item?: string | null;
+  is_builtin_field?: boolean;
+  item_type?: string;
+  section_item_type?: string;
+  is_required?: boolean;
+  is_mandatory?: boolean;
+  description?: string;
+  constraints?: Record<string, any> | null;
+  additional_information?: Record<string, any> | null;
+  options?: any[];
+}
+
+export interface ModuleTemplateSection {
+  section_id?: string;
+  name: string;
+  sequence?: number;
+  section_type: string;
+  section_items?: ModuleTemplateSectionItem[];
+}
+
+export interface ModuleTemplateDetail {
+  template_id: string;
+  name: string;
+  status: string;
+  entity_id: string;
+  section_list?: ModuleTemplateSection[];
+}
+
+export interface IncotermListItem {
+  incoterm_id: string;
+  incoterm_abbreviation: string;
+  incoterm_full_name: string;
+}
+
+export interface CostCenterListItem {
+  costCenterUid: string;
+  costCenterId: string;
+  costCenterName: string;
+  status: string;
+}
+
+export interface GeneralLedgerListItem {
+  glUid: string;
+  glCode: string;
+  glAccountName: string;
+  status: string;
+}
+
 /**
  * Fetch ONGOING templates of a given type, filtered to one entity.
  * `RFQ` for Event-action items, `QUOTE_CALCULATOR` for Quote-action items.
@@ -1670,4 +1733,82 @@ export async function listTemplates(
       entity_id: t.entity_id,
       is_default: !!t.is_default,
     }));
+}
+
+export async function getModuleTemplateById(
+  entityId: string,
+  templateId: string
+): Promise<ModuleTemplateDetail> {
+  const res = await apiRequest<any>(
+    `/module_templates/${entityId}/${templateId}/`,
+    { skipSuccessCheck: true }
+  );
+  return (res?.data || res) as ModuleTemplateDetail;
+}
+
+export async function listIncoterms(): Promise<IncotermListItem[]> {
+  const res = await apiRequest<any>(`/backbone/incoterms/`, {
+    skipSuccessCheck: true,
+  });
+  const raw: any[] = Array.isArray(res) ? res : (res?.data || []);
+  return raw
+    .map((item) => ({
+      incoterm_id: item.entry_id || item.incoterm_id || item.id || '',
+      incoterm_abbreviation:
+        item.incoterm_abbreviation || item.abbreviation || item.name || '',
+      incoterm_full_name:
+        item.incoterm_full_name || item.full_name || item.description || '',
+    }))
+    .filter((item) => item.incoterm_id && item.incoterm_abbreviation)
+    .sort((a, b) => {
+      if (a.incoterm_abbreviation === 'NA') return 1;
+      if (b.incoterm_abbreviation === 'NA') return -1;
+      return a.incoterm_abbreviation.localeCompare(b.incoterm_abbreviation);
+    });
+}
+
+export async function listCostCenters(
+  entityId: string
+): Promise<CostCenterListItem[]> {
+  const res = await apiRequest<any>(`/organization/cost_centre/`, {
+    skipSuccessCheck: true,
+  });
+  const raw: any[] = Array.isArray(res) ? res : (res?.data || []);
+  return raw
+    .filter((cc) => {
+      const linkedEntities = Array.isArray(cc.buyer_entities)
+        ? cc.buyer_entities.map((entity: any) => entity.buyer_entity)
+        : [];
+      return cc.status === 'ACTIVE' && linkedEntities.includes(entityId);
+    })
+    .map((cc) => ({
+      costCenterUid: cc.cost_centre_entry_id || cc.cost_centre_id || '',
+      costCenterId: cc.cost_centre_id || '',
+      costCenterName: cc.cost_centre_name || '',
+      status: cc.status || '',
+    }))
+    .filter((cc) => cc.costCenterUid);
+}
+
+export async function listGeneralLedgers(
+  entityId: string
+): Promise<GeneralLedgerListItem[]> {
+  const res = await apiRequest<any>(`/organization/general_ledger/`, {
+    skipSuccessCheck: true,
+  });
+  const raw: any[] = Array.isArray(res) ? res : (res?.data || []);
+  return raw
+    .filter((gl) => {
+      const linkedEntities = Array.isArray(gl.buyer_entities)
+        ? gl.buyer_entities.map((entity: any) => entity.buyer_entity)
+        : [];
+      return gl.status === 'ACTIVE' && linkedEntities.includes(entityId);
+    })
+    .map((gl) => ({
+      glUid: gl.general_ledger_id || '',
+      glCode: gl.general_ledger_code || '',
+      glAccountName: gl.general_ledger_account_name || '',
+      status: gl.status || '',
+    }))
+    .filter((gl) => gl.glUid);
 }
