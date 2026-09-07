@@ -889,9 +889,25 @@ export default function ProcurementDashboard() {
 
         // Collect user assignment data from this chunk
         chunkResponse.items.forEach((item: any) => {
+          const legacyCanSelect = item.can_select === true
           userUpdates.set(item.project_item_id, {
             assigned_user_ids: item.assigned_users.map((u: any) => u.user_id),
-            assignedTo: item.assigned_users.map((u: any) => u.name).join(', ')
+            assignedTo: item.assigned_users.map((u: any) => u.name).join(', '),
+            rfqResponsibleName: (item.rfq_responsible_users || [])
+              .map((u: any) => u.name || u.user_id || u)
+              .join('; '),
+            quoteResponsibleName: (item.quote_responsible_users || [])
+              .map((u: any) => u.name || u.user_id || u)
+              .join('; '),
+            can_select: legacyCanSelect,
+            can_select_rfq:
+              typeof item.can_select_rfq === 'boolean'
+                ? item.can_select_rfq
+                : legacyCanSelect,
+            can_select_quote:
+              typeof item.can_select_quote === 'boolean'
+                ? item.can_select_quote
+                : legacyCanSelect,
           })
         })
 
@@ -920,7 +936,12 @@ export default function ProcurementDashboard() {
       return {
         ...item,
         assigned_user_ids: update.assigned_user_ids,
-        assignedTo: update.assignedTo
+        assignedTo: update.assignedTo,
+        rfqResponsibleName: update.rfqResponsibleName,
+        quoteResponsibleName: update.quoteResponsibleName,
+        can_select: update.can_select,
+        can_select_rfq: update.can_select_rfq,
+        can_select_quote: update.can_select_quote,
       }
     }))
 
@@ -1217,6 +1238,16 @@ export default function ProcurementDashboard() {
       assignedTo: item.assigned_users.map(u => u.name).join(', '),
       assigned_user_ids: item.assigned_users.map(u => u.user_id),
       can_select: item.can_select === true,
+      // Newer backends return action-specific selection permissions. Fall
+      // back to the legacy aggregate flag during a staggered FE/BE rollout.
+      can_select_rfq:
+        typeof item.can_select_rfq === 'boolean'
+          ? item.can_select_rfq
+          : item.can_select === true,
+      can_select_quote:
+        typeof item.can_select_quote === 'boolean'
+          ? item.can_select_quote
+          : item.can_select === true,
       _debug_assigned_users: item.assigned_users, // TEMP DEBUG — remove later
       unitPrice: item.rate || 0,
       totalPrice: item.amount || 0,
@@ -3050,7 +3081,20 @@ export default function ProcurementDashboard() {
     if (typeof item.pendingQuantity === 'number' && item.pendingQuantity <= 0) {
       return 'No pending quantity left to source for this item'
     }
-    if (item.can_select !== true) {
+
+    const action = String(item.action || '').trim().toLowerCase()
+    if ((action === 'event' || action === 'rfq') && item.can_select_rfq !== true) {
+      return 'You are not assigned to handle RFQ/Event for this item'
+    }
+    if (action === 'quote' && item.can_select_quote !== true) {
+      return 'You are not assigned to handle Quote for this item'
+    }
+    if (
+      action !== 'event' &&
+      action !== 'rfq' &&
+      action !== 'quote' &&
+      item.can_select !== true
+    ) {
       return 'You can only select items assigned to you'
     }
     return null
@@ -3357,6 +3401,17 @@ export default function ProcurementDashboard() {
         return
       }
 
+      // Rules for "all" and "unassigned" must run against the complete
+      // project, not only the first page that has loaded so far.
+      if (scope !== 'selected' && !allItemsLoaded) {
+        toast({
+          title: "Items are still loading",
+          description: "Wait until all project items are loaded, then run Auto Assign Users again.",
+          variant: "destructive",
+        })
+        return
+      }
+
       // ── Phase 1: Fetching ──
       setAutoAssignProgress({ current: 0, total: 0, isRunning: true, phase: 'fetching', rulesCount: 0, matchedItems: 0, assignmentsCount: 0, log: ['Fetching rules and project details...'] })
 
@@ -3577,11 +3632,13 @@ export default function ProcurementDashboard() {
         description: `Applied ${applicableRules.length} rule(s), assigned users to ${matchedItems} item(s). Refreshing...`,
       })
 
-      // Re-fetch users (for project-level assignees) + items (for per-item responsible) from API
+      // Re-fetch project-level assignees and merge paginated item assignment
+      // data into the existing rows. A plain getProjectItems() call returns
+      // only the first 100 items and previously truncated larger projects.
       try {
-        const [freshUsers, freshItems] = await Promise.all([
+        const [freshUsers] = await Promise.all([
           getProjectUsers(projectId),
-          getProjectItems(projectId),
+          refreshUserAssignmentsInChunks(projectId),
         ])
 
         // Update project-level assignees
@@ -3592,16 +3649,6 @@ export default function ProcurementDashboard() {
           if (freshUsers.section_assigned_users) setSectionAssignedUsers(freshUsers.section_assigned_users)
         }
 
-        // Update items (per-item responsible names come from API)
-        if (freshItems?.items) {
-          const exchangeRates: Record<string, number> = {}
-          const uniqueSpecNames: string[] = []
-          const uniqueCustomIdNames: string[] = []
-          const transformed = freshItems.items.map((item: ProjectItem, index: number) =>
-            transformApiItem(item, index, exchangeRates, uniqueSpecNames, uniqueCustomIdNames)
-          )
-          setLineItems(transformed)
-        }
       } catch (refreshErr) {
         console.error('[Auto-Assign] Failed to refresh after assign:', refreshErr)
       }
@@ -4846,6 +4893,18 @@ export default function ProcurementDashboard() {
   }, [pendingCreates, toast])
 
   const handleAssignActions = async (scope: 'all' | 'unassigned' | 'selected') => {
+    // Action rules also depend on the complete in-memory project. Running an
+    // all/unassigned scope while background pagination is active would apply
+    // rules to only the rows loaded so far.
+    if (scope !== 'selected' && !allItemsLoaded) {
+      toast({
+        title: 'Items are still loading',
+        description: 'Wait until all project items are loaded, then run Assign Actions again.',
+        variant: 'destructive',
+      })
+      return
+    }
+
     let idsToUpdate: Set<number>
     if (scope === 'unassigned') {
       idsToUpdate = new Set(lineItems.filter((item: any) => !item.action || item.action.trim() === '').map((i: any) => i.id))
