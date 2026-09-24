@@ -2603,6 +2603,17 @@ export default function ProcurementDashboard() {
     specColumns,
   ])
 
+  // Selection persists when filters change. Keep the visible count separate
+  // from the global count so the UI never displays impossible text such as
+  // "253 of 4 items selected".
+  const selectedFilteredItemsCount = useMemo(() => {
+    const selectedIds = new Set(selectedItems)
+    return filteredAndSortedItems.reduce(
+      (count: number, item: any) => count + (selectedIds.has(item.id) ? 1 : 0),
+      0,
+    )
+  }, [filteredAndSortedItems, selectedItems])
+
   const paginatedItems = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage
     const endIndex = startIndex + itemsPerPage
@@ -8839,8 +8850,10 @@ export default function ProcurementDashboard() {
               <div className="text-sm text-gray-700">
                 {selectedItems.length > 0 ? (
                   <span className="text-blue-600 font-medium">
-                    {selectedItems.length} of {filteredAndSortedItems.length} item
-                    {selectedItems.length !== 1 ? "s" : ""} selected
+                    {selectedFilteredItemsCount} of {filteredAndSortedItems.length} shown selected
+                    {selectedFilteredItemsCount !== selectedItems.length
+                      ? ` (${selectedItems.length} total selected)`
+                      : ''}
                   </span>
                 ) : (
                   <span>{/* Empty space when no selection */}</span>
