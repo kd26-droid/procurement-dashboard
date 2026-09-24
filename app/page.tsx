@@ -525,6 +525,15 @@ function processItemPricing(item: any, exchangeRates: Record<string, number>) {
   };
 }
 
+// Item-master identifier codes shown as table columns and exported to CSV.
+// Keys match the fields populated in transformApiItem from /strategy/items/.
+const IDENTIFIER_COLUMNS: { key: string; label: string }[] = [
+  { key: 'erp_item_code', label: 'ERP Code' },
+  { key: 'mpn_item_code', label: 'MPN Code' },
+  { key: 'cpn_item_code', label: 'CPN Code' },
+  { key: 'hsn_item_code', label: 'HSN Code' },
+]
+
 export default function ProcurementDashboard() {
   const { toast } = useToast()
   const [lineItems, setLineItems] = useState<any[]>([])
@@ -2504,6 +2513,8 @@ export default function ProcurementDashboard() {
         item.description.toLowerCase().includes(term) ||
         item.itemId.toLowerCase().includes(term) ||
         item.vendor.toLowerCase().includes(term) ||
+        // Search item-master identifier codes (ERP/MPN/CPN/HSN)
+        IDENTIFIER_COLUMNS.some(({ key }) => (item[key] || '').toLowerCase().includes(term)) ||
         // Search custom identifications (MPN, CPN, etc.)
         customIdColumns.some(idName => {
           const key = `customId_${idName.replace(/\s+/g, '_')}`
@@ -2771,6 +2782,7 @@ export default function ProcurementDashboard() {
     // Build CSV headers - start with base columns
     const headers: string[] = [
       'Item ID',
+      ...IDENTIFIER_COLUMNS.map(c => c.label),
       'Description',
       internalNotesLabel,
       'Is Alternate',
@@ -2891,6 +2903,7 @@ export default function ProcurementDashboard() {
 
       const row: string[] = [
         escapeCSV(item.itemId),
+        ...IDENTIFIER_COLUMNS.map(({ key }) => escapeCSV(item[key] || '')),
         escapeCSV(item.description),
         escapeCSV(item.internalNotes || ''),
         altInfo.is_alternate ? 'Yes' : 'No',
@@ -5695,6 +5708,8 @@ export default function ProcurementDashboard() {
   const handleColumnDrag = (draggedCol: string, targetCol: string) => {
     const draggedIndex = columnOrder.indexOf(draggedCol)
     const targetIndex = columnOrder.indexOf(targetCol)
+    // Dynamic columns (identifiers, custom IDs, specs) aren't in columnOrder
+    if (draggedIndex === -1 || targetIndex === -1) return
 
     const newOrder = [...columnOrder]
     newOrder.splice(draggedIndex, 1)
@@ -5703,7 +5718,11 @@ export default function ProcurementDashboard() {
     setColumnOrder(newOrder)
   }
 
-  // Add spec columns to column order dynamically (after "bom" column)
+  // Add identifier, custom ID and spec columns dynamically after itemId, description, mpn
+  // (kept after description so the first two sticky columns stay Item ID + Description).
+  // MPN already has its own "mpn" column, so it's excluded here to avoid a duplicate.
+  const identifierColumnKeys = IDENTIFIER_COLUMNS.map(c => c.key).filter(key => key !== 'mpn_item_code')
+  const customIdColumnKeys = customIdColumns.map(idName => `customId_${idName.replace(/\s+/g, '_')}`)
   const specColumnKeys = specColumns.map(specName => `spec_${specName.replace(/\s+/g, '_')}`)
 
   // One column per tag position — Tag 1, Tag 2, … Tag N. Replaces the old
@@ -5722,8 +5741,13 @@ export default function ProcurementDashboard() {
   }, [filteredAndSortedItems])
   const tagColumnKeys = Array.from({ length: maxTagCount }, (_, i) => `tag_${i + 1}`)
 
-  const allColumns = [...columnOrder.slice(0, 3), ...specColumnKeys, ...columnOrder.slice(3)]
-    .flatMap((col) => (col === 'category' ? tagColumnKeys : [col])) // fan out category → tag_1..tag_N
+  const allColumns = [
+    ...columnOrder.slice(0, 3),
+    ...identifierColumnKeys,
+    ...customIdColumnKeys,
+    ...specColumnKeys,
+    ...columnOrder.slice(3),
+  ].flatMap((col) => (col === 'category' ? tagColumnKeys : [col])) // fan out category → tag_1..tag_N
 
   // Always show Digikey/Mouser columns regardless of API key configuration
   const distributorHiddenCols: string[] = []
@@ -5776,9 +5800,17 @@ export default function ProcurementDashboard() {
     if (!columnWidths[key]) columnWidths[key] = 130
   })
 
-  // Add dynamic custom ID column default widths
+  // Add identifier column labels + default widths (MPN uses the existing "mpn" column)
+  IDENTIFIER_COLUMNS.forEach(({ key, label }) => {
+    if (key === 'mpn_item_code') return
+    columnLabels[key] = label
+    if (!columnWidths[key]) columnWidths[key] = 130
+  })
+
+  // Add dynamic custom ID column labels + default widths
   customIdColumns.forEach(idName => {
     const key = `customId_${idName.replace(/\s+/g, '_')}`
+    columnLabels[key] = idName
     if (!columnWidths[key]) columnWidths[key] = 120
   })
 
