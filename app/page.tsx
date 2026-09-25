@@ -155,18 +155,34 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
       ? pricing.preferred_variant_index
       : 0;
 
-  const stock = pricing?.stock;
-  const stockText =
-    stock !== null && stock !== undefined && stock > 0
-      ? `${stock.toLocaleString()} in stock`
-      : 'Out of stock';
+  // Stock badge: green when it covers the item qty, amber when short, red when
+  // none. null/undefined means the distributor didn't report stock (unknown),
+  // which is not the same as out of stock.
+  const stockBadge = (stock: number | null | undefined, size: 'sm' | 'xs') => {
+    const base = `shrink-0 rounded border font-semibold ${size === 'sm' ? 'text-xs px-2 py-0.5' : 'text-[10px] px-1.5 py-0.5'}`;
+    if (stock === null || stock === undefined) {
+      return <span className={`${base} text-gray-500 bg-gray-50 border-gray-200`}>Stock unknown</span>;
+    }
+    if (stock <= 0) {
+      return <span className={`${base} text-red-700 bg-red-50 border-red-200`}>Out of stock</span>;
+    }
+    const covers = stock >= itemQty;
+    return (
+      <span
+        className={`${base} ${covers ? 'text-green-700 bg-green-50 border-green-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}
+        title={covers ? undefined : `Less than required qty (${itemQty.toLocaleString()})`}
+      >
+        {stock.toLocaleString()} in stock{covers ? '' : ` · need ${itemQty.toLocaleString()}`}
+      </span>
+    );
+  };
 
   return (
     <div className="bg-white max-w-[440px] p-3">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-gray-200 pb-2 mb-2">
+      <div className="flex items-center justify-between gap-2 border-b border-gray-200 pb-2 mb-2">
         <div className="font-semibold text-sm text-gray-900">{distributorLabel} Pricing</div>
-        <div className="text-xs text-gray-500 font-medium">{stockText}</div>
+        {stockBadge(pricing?.stock, 'sm')}
       </div>
 
       {pricing?.cached_at && (
@@ -244,17 +260,22 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
                     </div>
                   )}
                 </div>
-                {moq !== null && moq !== undefined && (
-                  <span
-                    className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border font-semibold ${
-                      moq > 1
-                        ? 'text-amber-700 bg-amber-50 border-amber-200'
-                        : 'text-gray-600 bg-white border-gray-200'
-                    }`}
-                  >
-                    MOQ {moq.toLocaleString()}
-                  </span>
-                )}
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  {moq !== null && moq !== undefined && (
+                    <span
+                      className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border font-semibold ${
+                        moq > 1
+                          ? 'text-amber-700 bg-amber-50 border-amber-200'
+                          : 'text-gray-600 bg-white border-gray-200'
+                      }`}
+                    >
+                      MOQ {moq.toLocaleString()}
+                    </span>
+                  )}
+                  {/* Per-packaging stock — only when the variant carries its own figure
+                      (synthesized legacy variants don't; header shows the overall number). */}
+                  {hasRealVariants && variant?.stock !== undefined && stockBadge(variant.stock, 'xs')}
+                </div>
               </div>
 
               {/* Marketplace badge */}
