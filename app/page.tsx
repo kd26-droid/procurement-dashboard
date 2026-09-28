@@ -150,10 +150,35 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
         },
       ];
 
-  const preferredIdx =
-    hasRealVariants && typeof pricing?.preferred_variant_index === 'number'
+  // BE sends preferred_variant_index. If it's missing (older cached rows),
+  // skip 3rd-party marketplace listings rather than taking the first variant —
+  // mirrors the BE's Digi-Key rule so the badge matches the price shown.
+  const fallbackPreferredIdx = Math.max(0, rawVariants.findIndex((v: any) => v?.marketplace !== true));
+  const preferredIdx = !hasRealVariants
+    ? 0
+    : typeof pricing?.preferred_variant_index === 'number'
       ? pricing.preferred_variant_index
-      : 0;
+      : fallbackPreferredIdx;
+
+  // Digi-Key's top-level stock includes 3rd-party marketplace listings. When
+  // any exist, the header shows the distributor's own stock and marketplace
+  // stock is called out separately. Own stock uses max (not sum) across
+  // packagings because Cut Tape / Digi-Reel are cut from the same reel pool.
+  const hasMarketplace = hasRealVariants && rawVariants.some((v: any) => v?.marketplace === true);
+  const ownVariants = rawVariants.filter((v: any) => v?.marketplace !== true);
+  const ownStocks: number[] = ownVariants
+    .map((v: any) => v?.stock)
+    .filter((s: any): s is number => typeof s === 'number');
+  const marketplaceStock: number = rawVariants
+    .filter((v: any) => v?.marketplace === true && typeof v?.stock === 'number')
+    .reduce((sum: number, v: any) => sum + Math.max(0, v.stock), 0);
+  const headerStock: number | null | undefined = !hasMarketplace
+    ? pricing?.stock
+    : ownVariants.length === 0
+      ? 0 // listed only by marketplace sellers
+      : ownStocks.length > 0
+        ? Math.max(...ownStocks)
+        : null;
 
   // Stock badge: green when it covers the item qty, amber when short, red when
   // none. null/undefined means the distributor didn't report stock (unknown),
@@ -182,8 +207,14 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
       {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b border-gray-200 pb-2 mb-2">
         <div className="font-semibold text-sm text-gray-900">{distributorLabel} Pricing</div>
-        {stockBadge(pricing?.stock, 'sm')}
+        {stockBadge(headerStock, 'sm')}
       </div>
+
+      {marketplaceStock > 0 && (
+        <div className="text-[11px] text-gray-700 bg-gray-50 border border-gray-200 rounded px-2 py-1 mb-2">
+          + {marketplaceStock.toLocaleString()} more from 3rd-party marketplace sellers
+        </div>
+      )}
 
       {pricing?.cached_at && (
         <div className="text-[11px] text-gray-400 italic mb-2">
