@@ -117,6 +117,41 @@ function getDistributorCurrencySymbol(code: string | null | undefined): string {
 }
 
 /**
+ * Index of the distributor's preferred variant (the one whose price is shown).
+ * BE sends preferred_variant_index. If it's missing (older cached rows), skip
+ * 3rd-party marketplace listings rather than taking the first variant —
+ * mirrors the BE's Digi-Key rule so the badge matches the price shown.
+ */
+function getPreferredVariantIndex(pricing: any): number {
+  const variants: any[] = Array.isArray(pricing?.variants) ? pricing.variants : [];
+  if (variants.length === 0) return 0;
+  if (typeof pricing?.preferred_variant_index === 'number') return pricing.preferred_variant_index;
+  return Math.max(0, variants.findIndex((v: any) => v?.marketplace !== true));
+}
+
+/**
+ * Split a distributor's stock into its own stock and 3rd-party marketplace
+ * stock. Digi-Key's top-level stock can include marketplace listings, so when
+ * any exist, own stock is taken from the non-marketplace variants instead.
+ * Own stock uses max (not sum) across packagings because Cut Tape / Digi-Reel
+ * are cut from the same reel pool. ownStock null/undefined = not reported.
+ */
+function getDistributorStockSplit(pricing: any): { ownStock: number | null | undefined; marketplaceStock: number } {
+  const variants: any[] = Array.isArray(pricing?.variants) ? pricing.variants : [];
+  const hasMarketplace = variants.some((v: any) => v?.marketplace === true);
+  const marketplaceStock = variants
+    .filter((v: any) => v?.marketplace === true && typeof v?.stock === 'number')
+    .reduce((sum: number, v: any) => sum + Math.max(0, v.stock), 0);
+  if (!hasMarketplace) return { ownStock: pricing?.stock, marketplaceStock };
+  const ownVariants = variants.filter((v: any) => v?.marketplace !== true);
+  if (ownVariants.length === 0) return { ownStock: 0, marketplaceStock }; // listed only by marketplace sellers
+  const ownStocks: number[] = ownVariants
+    .map((v: any) => v?.stock)
+    .filter((s: any): s is number => typeof s === 'number');
+  return { ownStock: ownStocks.length > 0 ? Math.max(...ownStocks) : null, marketplaceStock };
+}
+
+/**
  * Build the tooltip JSX for a distributor pricing column.
  * Shows every variant with its full price-break table, MOQ, reeling fee, and part number.
  * Falls back gracefully to legacy fields if `variants` is missing.
@@ -149,35 +184,8 @@ function renderDistributorTooltip(pricing: any, distributorLabel: string, itemQt
         },
       ];
 
-  // BE sends preferred_variant_index. If it's missing (older cached rows),
-  // skip 3rd-party marketplace listings rather than taking the first variant —
-  // mirrors the BE's Digi-Key rule so the badge matches the price shown.
-  const fallbackPreferredIdx = Math.max(0, rawVariants.findIndex((v: any) => v?.marketplace !== true));
-  const preferredIdx = !hasRealVariants
-    ? 0
-    : typeof pricing?.preferred_variant_index === 'number'
-      ? pricing.preferred_variant_index
-      : fallbackPreferredIdx;
-
-  // Digi-Key's top-level stock includes 3rd-party marketplace listings. When
-  // any exist, the header shows the distributor's own stock and marketplace
-  // stock is called out separately. Own stock uses max (not sum) across
-  // packagings because Cut Tape / Digi-Reel are cut from the same reel pool.
-  const hasMarketplace = hasRealVariants && rawVariants.some((v: any) => v?.marketplace === true);
-  const ownVariants = rawVariants.filter((v: any) => v?.marketplace !== true);
-  const ownStocks: number[] = ownVariants
-    .map((v: any) => v?.stock)
-    .filter((s: any): s is number => typeof s === 'number');
-  const marketplaceStock: number = rawVariants
-    .filter((v: any) => v?.marketplace === true && typeof v?.stock === 'number')
-    .reduce((sum: number, v: any) => sum + Math.max(0, v.stock), 0);
-  const headerStock: number | null | undefined = !hasMarketplace
-    ? pricing?.stock
-    : ownVariants.length === 0
-      ? 0 // listed only by marketplace sellers
-      : ownStocks.length > 0
-        ? Math.max(...ownStocks)
-        : null;
+  const preferredIdx = getPreferredVariantIndex(pricing);
+  const { ownStock: headerStock, marketplaceStock } = getDistributorStockSplit(pricing);
 
   // Stock badge: green when it covers the item qty, amber when short, red when
   // none. null/undefined means the distributor didn't report stock (unknown),
@@ -2731,21 +2739,33 @@ export default function ProcurementDashboard() {
     ): {
       status: string
       partNumber: string
+      mfr: string
+      mpn: string
       packaging: string
+      spq: string
       moq: string
+      leadTimeWeeks: string
+      coo: string
       unitPrice: string
       reelingFee: string
       stock: string
+      marketplaceStock: string
       allVariants: string
     } => {
       const empty = {
         status: 'N/A',
         partNumber: '',
+        mfr: '',
+        mpn: '',
         packaging: '',
+        spq: '',
         moq: '',
+        leadTimeWeeks: '',
+        coo: '',
         unitPrice: '',
         reelingFee: '',
         stock: '',
+        marketplaceStock: '',
         allVariants: '',
       }
       if (!pricing) return empty
@@ -2774,8 +2794,15 @@ export default function ProcurementDashboard() {
         (variants[0]?.element14_sku) ||
         ''
 
-      const preferredIdx = typeof pricing.preferred_variant_index === 'number' ? pricing.preferred_variant_index : 0
+      const preferredIdx = getPreferredVariantIndex(pricing)
       const preferred = variants.length > 0 ? (variants[preferredIdx] || variants[0]) : null
+      // Product details live on each variant (so they survive the BE cache);
+      // fall back to top-level fields for rows fetched before that change.
+      const fromPreferred = (key: string) => {
+        const v = preferred?.[key] ?? pricing[key]
+        return v !== null && v !== undefined && v !== '' ? String(v) : ''
+      }
+      const { ownStock, marketplaceStock } = getDistributorStockSplit(pricing)
 
       // Cell price — top-level price_breaks; native uses .price, project uses .price_in_project_currency
       let cellUnitPrice: number | null = null
@@ -2824,11 +2851,17 @@ export default function ProcurementDashboard() {
       return {
         status: 'Available',
         partNumber: String(partNumber || ''),
+        mfr: fromPreferred('manufacturer'),
+        mpn: fromPreferred('manufacturer_part_number'),
         packaging: preferred?.packaging || 'Standard',
+        spq: fromPreferred('spq'),
         moq: preferred?.moq != null ? String(preferred.moq) : '',
+        leadTimeWeeks: fromPreferred('lead_time_weeks'),
+        coo: fromPreferred('country_of_origin'),
         unitPrice: cellUnitPrice != null && !isNaN(cellUnitPrice) ? `${sym}${cellUnitPrice.toFixed(5)}` : '',
         reelingFee: reelingFeeStr,
-        stock: pricing.stock !== null && pricing.stock !== undefined ? String(pricing.stock) : '',
+        stock: ownStock !== null && ownStock !== undefined ? String(ownStock) : '',
+        marketplaceStock: marketplaceStock > 0 ? String(marketplaceStock) : '',
         allVariants: variantSummary,
       }
     }
@@ -2844,6 +2877,7 @@ export default function ProcurementDashboard() {
 
     // Build CSV headers - start with base columns
     const headers: string[] = [
+      'Sr No',
       'Item ID',
       ...IDENTIFIER_COLUMNS.map(c => c.label),
       'Description',
@@ -2890,36 +2924,45 @@ export default function ProcurementDashboard() {
       'RFQ Price', 'RFQ Vendor', 'RFQ Date',
     )
 
-    // Digikey + Mouser — rich export: part number, packaging, MOQ, unit price, reeling fee, stock, status, and all variant options
+    // Online sources (Digi-Key / Mouser / Element14) — per source: part number, MFR, MPN,
+    // packaging, SPQ, MOQ, lead time, COO, stock, unit price, reeling fee, status, all variants.
+    // Only Digi-Key has 3rd-party marketplace listings, so only it gets a marketplace stock column.
+    const distributorHeaders = (label: string, partNumberLabel: string, withMarketplace: boolean) => [
+      `${label} ${partNumberLabel}`,
+      `${label} MFR`,
+      `${label} MPN`,
+      `${label} Packaging`,
+      `${label} SPQ`,
+      `${label} MOQ`,
+      `${label} Lead Time (Weeks)`,
+      `${label} COO`,
+      `${label} Stock`,
+      ...(withMarketplace ? [`${label} Marketplace Stock`] : []),
+      `${label} Unit Price`,
+      `${label} Reeling Fee`,
+      `${label} Status`,
+      `${label} All Variants`,
+    ]
+    const distributorCells = (d: ReturnType<typeof getDistributorPrice>, withMarketplace: boolean) => [
+      escapeCSV(d.partNumber),
+      escapeCSV(d.mfr),
+      escapeCSV(d.mpn),
+      escapeCSV(d.packaging),
+      d.spq,
+      d.moq,
+      d.leadTimeWeeks,
+      escapeCSV(d.coo),
+      d.stock,
+      ...(withMarketplace ? [d.marketplaceStock] : []),
+      d.unitPrice,
+      d.reelingFee,
+      escapeCSV(d.status),
+      escapeCSV(d.allVariants),
+    ]
     headers.push(
-      'Digi-Key Part Number',
-      'Digi-Key Packaging',
-      'Digi-Key MOQ',
-      'Digi-Key Unit Price',
-      'Digi-Key Reeling Fee',
-      'Digi-Key Stock',
-      'Digi-Key Status',
-      'Digi-Key All Variants',
-    )
-    headers.push(
-      'Mouser Part Number',
-      'Mouser Packaging',
-      'Mouser MOQ',
-      'Mouser Unit Price',
-      'Mouser Reeling Fee',
-      'Mouser Stock',
-      'Mouser Status',
-      'Mouser All Variants',
-    )
-    headers.push(
-      'Element14 SKU',
-      'Element14 Packaging',
-      'Element14 MOQ',
-      'Element14 Unit Price',
-      'Element14 Reeling Fee',
-      'Element14 Stock',
-      'Element14 Status',
-      'Element14 All Variants',
+      ...distributorHeaders('Digi-Key', 'Part Number', true),
+      ...distributorHeaders('Mouser', 'Part Number', false),
+      ...distributorHeaders('Element14', 'SKU', false),
     )
 
     // Add dynamic spec columns
@@ -2932,10 +2975,54 @@ export default function ProcurementDashboard() {
       headers.push(idName)
     })
 
+    // Sr No: items are numbered 1, 2, 3…; each alternate is moved right after
+    // its parent as 1.1, 1.2…. An alternate links to its parent via
+    // alternate_parent_id === parent's bom_item_module_linkage_id. If the parent
+    // isn't in the export (e.g. filtered out), the alternate gets its own number.
+    const exportItems = filteredAndSortedItems as any[]
+    const linkageIdsInExport = new Set(
+      exportItems.map((it) => it?.bom_info?.bom_item_module_linkage_id).filter(Boolean)
+    )
+    const parentIdIfNested = (it: any): string | null => {
+      const alt = it?.alternate_info
+      return alt?.is_alternate && alt?.alternate_parent_id && linkageIdsInExport.has(alt.alternate_parent_id)
+        ? alt.alternate_parent_id
+        : null
+    }
+    const alternatesByParent = new Map<string, any[]>()
+    for (const it of exportItems) {
+      const parentId = parentIdIfNested(it)
+      if (!parentId) continue
+      if (!alternatesByParent.has(parentId)) alternatesByParent.set(parentId, [])
+      alternatesByParent.get(parentId)!.push(it)
+    }
+    const orderedExport: { item: any; srNo: string }[] = []
+    const exported = new Set<any>()
+    let srCounter = 0
+    for (const it of exportItems) {
+      if (parentIdIfNested(it)) continue
+      srCounter++
+      orderedExport.push({ item: it, srNo: String(srCounter) })
+      exported.add(it)
+      const linkageId = it?.bom_info?.bom_item_module_linkage_id
+      const alts: any[] = (linkageId && alternatesByParent.get(linkageId)) || []
+      alternatesByParent.delete(linkageId) // attach each alternate group once
+      alts.forEach((alt, i) => {
+        orderedExport.push({ item: alt, srNo: `${srCounter}.${i + 1}` })
+        exported.add(alt)
+      })
+    }
+    // Safety net: never drop a row (e.g. an alternate whose parent is itself an alternate)
+    for (const it of exportItems) {
+      if (exported.has(it)) continue
+      srCounter++
+      orderedExport.push({ item: it, srNo: String(srCounter) })
+    }
+
     // Build CSV rows - one row per API item (no fanning over bom_usages/event_usages)
     const rows: string[][] = []
 
-    filteredAndSortedItems.forEach((item: any) => {
+    orderedExport.forEach(({ item, srNo }) => {
       const itemCurrencySymbol = item.currency?.symbol || (item.currency?.code ? getCurrencySymbolForExport(item.currency.code) : '') || ''
       const _exportItemQty = parseFloat(String(item.quantity)) || 1
       const _exportUseNative = displayCurrency === 'native'
@@ -2965,6 +3052,9 @@ export default function ProcurementDashboard() {
       const eventQty = item.event_quantity ?? ''
 
       const row: string[] = [
+        // Alternate numbers are written as ="1.10" so Excel keeps them as text
+        // (otherwise 1.10 becomes 1.1, and some locales read 1.2 as a date).
+        srNo.includes('.') ? escapeCSV(`="${srNo}"`) : srNo,
         escapeCSV(item.itemId),
         ...IDENTIFIER_COLUMNS.map(({ key }) => escapeCSV(item[key] || '')),
         escapeCSV(item.description),
@@ -3075,38 +3165,11 @@ export default function ProcurementDashboard() {
         )
       }
 
-      // Always add rich Digikey values
+      // Online-source values (must stay in step with distributorHeaders above)
       row.push(
-        escapeCSV(digikeyDetails.partNumber),
-        escapeCSV(digikeyDetails.packaging),
-        digikeyDetails.moq,
-        digikeyDetails.unitPrice,
-        digikeyDetails.reelingFee,
-        digikeyDetails.stock,
-        escapeCSV(digikeyDetails.status),
-        escapeCSV(digikeyDetails.allVariants),
-      )
-      // Always add rich Mouser values
-      row.push(
-        escapeCSV(mouserDetails.partNumber),
-        escapeCSV(mouserDetails.packaging),
-        mouserDetails.moq,
-        mouserDetails.unitPrice,
-        mouserDetails.reelingFee,
-        mouserDetails.stock,
-        escapeCSV(mouserDetails.status),
-        escapeCSV(mouserDetails.allVariants),
-      )
-      // Always add rich Element14 values
-      row.push(
-        escapeCSV(element14Details.partNumber),
-        escapeCSV(element14Details.packaging),
-        element14Details.moq,
-        element14Details.unitPrice,
-        element14Details.reelingFee,
-        element14Details.stock,
-        escapeCSV(element14Details.status),
-        escapeCSV(element14Details.allVariants),
+        ...distributorCells(digikeyDetails, true),
+        ...distributorCells(mouserDetails, false),
+        ...distributorCells(element14Details, false),
       )
 
       // Add dynamic spec values
