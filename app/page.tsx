@@ -2909,7 +2909,8 @@ export default function ProcurementDashboard() {
         status: 'Available',
         partNumber: String(partNumber || ''),
         mfr: fromPreferred('manufacturer'),
-        mpn: fromPreferred('manufacturer_part_number'),
+        // Distributor's own MPN; for rows cached before it was stored, the MPN we searched by
+        mpn: fromPreferred('manufacturer_part_number') || (pricing.searched_mpn ? String(pricing.searched_mpn) : ''),
         packaging: preferred?.packaging || 'Standard',
         spq: fromPreferred('spq'),
         moq: preferred?.moq != null ? String(preferred.moq) : '',
