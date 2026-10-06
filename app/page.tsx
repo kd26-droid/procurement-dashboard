@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { LineChart, Line, BarChart, Bar, ComposedChart, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Label as RechartsLabel, LabelList } from 'recharts'
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger } from "@/components/ui/tooltip"
@@ -595,6 +596,61 @@ const IDENTIFIER_COLUMNS: { key: string; label: string }[] = [
   { key: 'hsn_item_code', label: 'HSN Code' },
 ]
 
+type ExportColumnOption = {
+  key: string
+  label: string
+  group: string
+}
+
+const EXPORT_COLUMN_STORAGE_KEY = 'PROCUREMENT_STRATEGY_EXPORT_COLUMNS'
+const EXPORT_PRIMARY_BUTTON_CLASS = 'border-blue-600 bg-blue-600 text-white hover:border-blue-700 hover:bg-blue-700 hover:text-white'
+const EXPORT_CHECKBOX_CLASS = 'data-[state=checked]:border-blue-600 data-[state=checked]:bg-blue-600 data-[state=checked]:text-white'
+
+function buildExportColumnOptions(headers: string[]): ExportColumnOption[] {
+  const seenByLabel = new Map<string, number>()
+
+  return headers.map((label) => {
+    const seenCount = seenByLabel.get(label) ?? 0
+    seenByLabel.set(label, seenCount + 1)
+
+    const key = seenCount === 0 ? label : `${label}__${seenCount + 1}`
+    let group = 'Item Fields'
+    if (
+      [
+        'Project Manager',
+        'RFQ Assignee',
+        'Quote Assignee',
+        'RFQ Item Responsible',
+        'Quote Item Responsible',
+        'Action',
+        'Assigned To',
+        'Due Date',
+      ].includes(label)
+    ) {
+      group = 'Assignment'
+    } else if (
+      label.startsWith('Digi-Key') ||
+      label.startsWith('Mouser') ||
+      label.startsWith('Element14')
+    ) {
+      group = 'Online Sources'
+    } else if (
+      label.includes('Price') ||
+      label.includes('Vendor') ||
+      label.includes('Date') ||
+      label.includes('Source')
+    ) {
+      group = 'Pricing / Vendor'
+    } else if (label.startsWith('Tag ')) {
+      group = 'Tags'
+    } else if (label.startsWith('Custom ') || label.includes('Identification')) {
+      group = 'Custom Identifications'
+    }
+
+    return { key, label, group }
+  })
+}
+
 export default function ProcurementDashboard() {
   const { toast } = useToast()
   const [lineItems, setLineItems] = useState<any[]>([])
@@ -718,6 +774,12 @@ export default function ProcurementDashboard() {
   const [savedViews, setSavedViews] = useState<{ [key: string]: { order: string[]; hidden: string[] } }>({})
   const [currentView, setCurrentView] = useState("default")
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null)
+  const [showExportDialog, setShowExportDialog] = useState(false)
+  const [exportColumnSearch, setExportColumnSearch] = useState("")
+  const [selectedExportColumnKeys, setSelectedExportColumnKeys] = useState<string[]>([])
+  const [draggedExportColumnKey, setDraggedExportColumnKey] = useState<string | null>(null)
+  const exportColumnsInitializedRef = useRef(false)
+  const previousExportColumnKeysRef = useRef<string[]>([])
 
   // Dynamic specification columns
   const [specColumns, setSpecColumns] = useState<string[]>([])
@@ -2744,8 +2806,217 @@ export default function ProcurementDashboard() {
     setCurrentPage(1)
   }, [searchTerm, activeFilter, reverseFilter, vendorFilter, actionFilter, assignedFilter, categoryFilter])
 
+  const getExportHeaders = useCallback((): string[] => {
+    let maxTags = 0
+    filteredAndSortedItems.forEach((item: any) => {
+      const tags = item.category && item.category !== 'Uncategorized'
+        ? String(item.category).split(',').map((t: string) => t.trim()).filter(Boolean)
+        : []
+      if (tags.length > maxTags) maxTags = tags.length
+    })
+
+    const headers: string[] = [
+      'Sr No',
+      'Item ID',
+      ...IDENTIFIER_COLUMNS.map(c => c.label),
+      'Description',
+      internalNotesLabel,
+      'Is Alternate',
+      'Alternate Parent Name',
+      'Has Alternates',
+      'Alternate Names',
+      'BOM Name',
+      'BOM Slab Qty',
+      'Item Qty',
+      'Per Unit Qty',
+      'Unit',
+      'Event Code',
+      'Event Qty',
+    ]
+
+    for (let i = 1; i <= maxTags; i++) {
+      headers.push(`Tag ${i}`)
+    }
+
+    headers.push(
+      'Project Manager',
+      'RFQ Assignee',
+      'Quote Assignee',
+      'RFQ Item Responsible',
+      'Quote Item Responsible',
+      'Action',
+      'Quote',
+      'Assigned To',
+      'Due Date',
+      'Vendor',
+      'Shipping Address',
+      'Currency',
+      'Unit Price',
+      'Total Price',
+      'Source (Cheapest)',
+      'PO Price', 'PO Vendor', 'PO Date',
+      'Contract Price', 'Contract Vendor', 'Contract Date',
+      'Quote Price', 'Quote Vendor', 'Quote Date',
+      'RFQ Price', 'RFQ Vendor', 'RFQ Date',
+    )
+
+    const distributorHeaders = (label: string, partNumberLabel: string, withMarketplace: boolean) => [
+      `${label} ${partNumberLabel}`,
+      `${label} MFR`,
+      `${label} MPN`,
+      `${label} Packaging`,
+      `${label} SPQ`,
+      `${label} MOQ`,
+      `${label} Lead Time (Weeks)`,
+      `${label} COO`,
+      `${label} Stock`,
+      ...(withMarketplace ? [`${label} Marketplace Stock`] : []),
+      `${label} Unit Price`,
+      `${label} Reeling Fee`,
+      `${label} Status`,
+      `${label} All Variants`,
+    ]
+
+    headers.push(
+      ...distributorHeaders('Digi-Key', 'Part Number', true),
+      ...distributorHeaders('Mouser', 'Part Number', false),
+      ...distributorHeaders('Element14', 'SKU', false),
+    )
+
+    specColumns.forEach(specName => {
+      headers.push(specName)
+    })
+
+    customIdColumns.forEach(idName => {
+      headers.push(idName)
+    })
+
+    return headers
+  }, [customIdColumns, filteredAndSortedItems, internalNotesLabel, specColumns])
+
+  const exportColumnOptions = useMemo(
+    () => buildExportColumnOptions(getExportHeaders()),
+    [getExportHeaders],
+  )
+
+  useEffect(() => {
+    const nextAvailableKeys = exportColumnOptions.map((column) => column.key)
+    const availableKeySet = new Set(nextAvailableKeys)
+    setSelectedExportColumnKeys((prev) => {
+      let next: string[]
+
+      if (!exportColumnsInitializedRef.current) {
+        const savedColumns = (() => {
+          if (typeof window === 'undefined') return null
+          try {
+            const storedValue = localStorage.getItem(EXPORT_COLUMN_STORAGE_KEY)
+            if (storedValue === null) return null
+            const parsed = JSON.parse(storedValue)
+            const savedKeys = Array.isArray(parsed) ? parsed.filter((key) => typeof key === 'string') : []
+            return savedKeys.length > 0 ? savedKeys : null
+          } catch {
+            return null
+          }
+        })()
+
+        next = savedColumns === null
+          ? nextAvailableKeys
+          : savedColumns.filter((key) => availableKeySet.has(key))
+        exportColumnsInitializedRef.current = true
+      } else {
+        const previousKeys = previousExportColumnKeysRef.current
+        const previouslyAllSelected =
+          previousKeys.length > 0 &&
+          previousKeys.every((key) => prev.includes(key)) &&
+          prev.length === previousKeys.length
+
+        next = previouslyAllSelected
+          ? nextAvailableKeys
+          : prev.filter((key) => availableKeySet.has(key))
+      }
+
+      previousExportColumnKeysRef.current = nextAvailableKeys
+      return next
+    })
+  }, [exportColumnOptions])
+
+  const persistSelectedExportColumns = useCallback((keys: string[]) => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(EXPORT_COLUMN_STORAGE_KEY, JSON.stringify(keys))
+    }
+  }, [])
+
+  const updateSelectedExportColumns = useCallback((updater: (current: string[]) => string[]) => {
+    setSelectedExportColumnKeys((current) => {
+      const availableKeys = new Set(exportColumnOptions.map((column) => column.key))
+      const next = updater(current).filter((key) => availableKeys.has(key))
+      persistSelectedExportColumns(next)
+      return next
+    })
+  }, [exportColumnOptions, persistSelectedExportColumns])
+
+  const filteredSelectedExportColumns = useMemo(() => {
+    const normalizedSearch = exportColumnSearch.trim().toLowerCase()
+    const columnByKey = new Map(exportColumnOptions.map((column) => [column.key, column]))
+    return selectedExportColumnKeys
+      .map((key) => columnByKey.get(key))
+      .filter((column): column is ExportColumnOption => Boolean(column))
+      .filter((column) => {
+        if (!normalizedSearch) return true
+        return column.label.toLowerCase().includes(normalizedSearch) || column.group.toLowerCase().includes(normalizedSearch)
+      })
+  }, [exportColumnOptions, exportColumnSearch, selectedExportColumnKeys])
+
+  const filteredAvailableExportColumns = useMemo(() => {
+    const normalizedSearch = exportColumnSearch.trim().toLowerCase()
+    const selectedKeys = new Set(selectedExportColumnKeys)
+    return exportColumnOptions
+      .filter((column) => !selectedKeys.has(column.key))
+      .filter((column) => {
+        if (!normalizedSearch) return true
+        return column.label.toLowerCase().includes(normalizedSearch) || column.group.toLowerCase().includes(normalizedSearch)
+      })
+  }, [exportColumnOptions, exportColumnSearch, selectedExportColumnKeys])
+
+  const allExportColumnsSelected =
+    exportColumnOptions.length > 0 &&
+    selectedExportColumnKeys.length === exportColumnOptions.length
+  const exportSelectAllState = allExportColumnsSelected
+    ? true
+    : selectedExportColumnKeys.length > 0
+      ? 'indeterminate'
+      : false
+
+  const toggleExportColumn = useCallback((columnKey: string) => {
+    updateSelectedExportColumns((current) => {
+      if (current.includes(columnKey)) {
+        return current.filter((key) => key !== columnKey)
+      }
+      return [...current, columnKey]
+    })
+  }, [updateSelectedExportColumns])
+
+  const toggleAllExportColumns = useCallback(() => {
+    updateSelectedExportColumns(() =>
+      allExportColumnsSelected ? [] : exportColumnOptions.map((column) => column.key)
+    )
+  }, [allExportColumnsSelected, exportColumnOptions, updateSelectedExportColumns])
+
+  const moveExportColumn = useCallback((sourceKey: string, targetKey: string) => {
+    if (sourceKey === targetKey) return
+    updateSelectedExportColumns((current) => {
+      const next = [...current]
+      const sourceIndex = next.indexOf(sourceKey)
+      const targetIndex = next.indexOf(targetKey)
+      if (sourceIndex === -1 || targetIndex === -1) return current
+      const [moved] = next.splice(sourceIndex, 1)
+      next.splice(targetIndex, 0, moved)
+      return next
+    })
+  }, [updateSelectedExportColumns])
+
   // Export to CSV function
-  const handleExportCSV = () => {
+  const handleExportCSV = (selectedColumnKeys?: string[]) => {
     if (filteredAndSortedItems.length === 0) {
       toast({
         title: "Nothing to export",
@@ -3245,10 +3516,31 @@ export default function ProcurementDashboard() {
       rows.push(row)
     })
 
+    const exportColumns = buildExportColumnOptions(headers)
+    const exportIndexByKey = new Map(exportColumns.map((column, index) => [column.key, index]))
+    const selectedIndexes =
+      selectedColumnKeys && selectedColumnKeys.length > 0
+        ? selectedColumnKeys
+            .map((key) => exportIndexByKey.get(key))
+            .filter((index): index is number => typeof index === 'number')
+        : headers.map((_, index) => index)
+
+    if (selectedIndexes.length === 0) {
+      toast({
+        title: "Nothing to export",
+        description: "Select at least one column to export",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const orderedHeaders = selectedIndexes.map((index) => headers[index])
+    const orderedRows = rows.map((row) => selectedIndexes.map((index) => row[index] ?? ''))
+
     // Build CSV content
     const csvContent = [
-      headers.map(h => escapeCSV(h)).join(','),
-      ...rows.map(row => row.join(','))
+      orderedHeaders.map(h => escapeCSV(h)).join(','),
+      ...orderedRows.map(row => row.join(','))
     ].join('\n')
 
     // Create and download file
@@ -3270,7 +3562,7 @@ export default function ProcurementDashboard() {
 
     toast({
       title: "Export successful",
-      description: `Exported ${filteredAndSortedItems.length} items (${rows.length} rows) to CSV`,
+      description: `Exported ${filteredAndSortedItems.length} items (${orderedRows.length} rows) to CSV`,
     })
   }
 
@@ -7192,8 +7484,8 @@ export default function ProcurementDashboard() {
               {/* Export CSV Button */}
               <Button
                 variant="outline"
-                className="flex items-center gap-2 bg-transparent"
-                onClick={handleExportCSV}
+                className={`flex items-center gap-2 ${EXPORT_PRIMARY_BUTTON_CLASS}`}
+                onClick={() => setShowExportDialog(true)}
                 title={`Export ${filteredAndSortedItems.length} items to CSV`}
               >
                 <Download className="h-4 w-4" />
@@ -8987,6 +9279,127 @@ export default function ProcurementDashboard() {
           </div>
         </div>
       </div>
+
+      <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Export CSV</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <Label className="text-xs text-gray-600">Columns to export</Label>
+              <span className="text-xs text-gray-500">
+                {selectedExportColumnKeys.length}/{exportColumnOptions.length} selected
+              </span>
+            </div>
+
+            <Input
+              value={exportColumnSearch}
+              onChange={(event) => setExportColumnSearch(event.target.value)}
+              placeholder="Search columns"
+              className="h-9"
+            />
+
+            <div className="max-h-80 overflow-y-auto rounded-md border border-gray-200 bg-white px-2 py-1">
+              <label className="sticky top-0 z-10 flex min-h-9 items-center gap-3 border-b border-gray-100 bg-white px-1 py-1.5 text-sm">
+                <Checkbox
+                  checked={exportSelectAllState}
+                  onCheckedChange={toggleAllExportColumns}
+                  disabled={exportColumnOptions.length === 0}
+                  className={EXPORT_CHECKBOX_CLASS}
+                />
+                <span>Select all</span>
+              </label>
+
+              {filteredSelectedExportColumns.length === 0 && filteredAvailableExportColumns.length === 0 ? (
+                <div className="px-1 py-6 text-center text-sm text-gray-500">
+                  No columns found
+                </div>
+              ) : (
+                <>
+                  {filteredSelectedExportColumns.length > 0 && (
+                    <div className="pt-2">
+                      <div className="px-1 pb-1 text-xs font-medium text-gray-500">
+                        Export order
+                      </div>
+                      {filteredSelectedExportColumns.map((column) => (
+                        <div
+                          key={column.key}
+                          draggable
+                          onDragStart={() => setDraggedExportColumnKey(column.key)}
+                          onDragOver={(event) => event.preventDefault()}
+                          onDrop={() => {
+                            if (draggedExportColumnKey) {
+                              moveExportColumn(draggedExportColumnKey, column.key)
+                            }
+                            setDraggedExportColumnKey(null)
+                          }}
+                          onDragEnd={() => setDraggedExportColumnKey(null)}
+                          className="flex min-h-10 cursor-grab items-center gap-3 rounded px-1 py-1.5 hover:bg-gray-50 active:cursor-grabbing"
+                        >
+                          <GripVertical className="h-4 w-4 shrink-0 text-gray-400" />
+                          <Checkbox
+                            checked
+                            onCheckedChange={() => toggleExportColumn(column.key)}
+                            className={EXPORT_CHECKBOX_CLASS}
+                          />
+                          <div className="min-w-0">
+                            <div className="truncate text-sm text-gray-900">{column.label}</div>
+                            <div className="truncate text-xs text-gray-500">{column.group}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {filteredAvailableExportColumns.length > 0 && (
+                    <div className={filteredSelectedExportColumns.length > 0 ? 'pt-3' : 'pt-2'}>
+                      <div className="px-1 pb-1 text-xs font-medium text-gray-500">
+                        Available columns
+                      </div>
+                      {filteredAvailableExportColumns.map((column) => (
+                        <label
+                          key={column.key}
+                          className="flex min-h-10 items-center gap-3 rounded px-1 py-1.5 hover:bg-gray-50"
+                        >
+                          <span className="w-4 shrink-0" />
+                          <Checkbox
+                            checked={false}
+                            onCheckedChange={() => toggleExportColumn(column.key)}
+                            className={EXPORT_CHECKBOX_CLASS}
+                          />
+                          <div className="min-w-0">
+                            <div className="truncate text-sm text-gray-900">{column.label}</div>
+                            <div className="truncate text-xs text-gray-500">{column.group}</div>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowExportDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                handleExportCSV(selectedExportColumnKeys)
+                setShowExportDialog(false)
+              }}
+              disabled={selectedExportColumnKeys.length === 0 || filteredAndSortedItems.length === 0}
+              className={`gap-2 ${EXPORT_PRIMARY_BUTTON_CLASS}`}
+            >
+              <Download className="h-4 w-4" />
+              Export CSV
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Improved Autoassign Popovers */}
       <AutoAssignUsersPopover
