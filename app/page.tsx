@@ -780,6 +780,9 @@ export default function ProcurementDashboard() {
   const [draggedExportColumnKey, setDraggedExportColumnKey] = useState<string | null>(null)
   const exportColumnsInitializedRef = useRef(false)
   const previousExportColumnKeysRef = useRef<string[]>([])
+  const exportColumnListRef = useRef<HTMLDivElement | null>(null)
+  const exportAutoScrollFrameRef = useRef<number | null>(null)
+  const exportDragClientYRef = useRef<number | null>(null)
 
   // Dynamic specification columns
   const [specColumns, setSpecColumns] = useState<string[]>([])
@@ -3014,6 +3017,61 @@ export default function ProcurementDashboard() {
       return next
     })
   }, [updateSelectedExportColumns])
+
+  const stopExportColumnAutoScroll = useCallback(() => {
+    if (exportAutoScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(exportAutoScrollFrameRef.current)
+      exportAutoScrollFrameRef.current = null
+    }
+    exportDragClientYRef.current = null
+  }, [])
+
+  const runExportColumnAutoScroll = useCallback(() => {
+    const container = exportColumnListRef.current
+    const clientY = exportDragClientYRef.current
+
+    if (!container || clientY === null) {
+      exportAutoScrollFrameRef.current = null
+      return
+    }
+
+    const rect = container.getBoundingClientRect()
+    const edgeSize = 56
+    const maxStep = 18
+    let scrollStep = 0
+
+    if (clientY < rect.top + edgeSize) {
+      scrollStep = -Math.ceil(((rect.top + edgeSize - clientY) / edgeSize) * maxStep)
+    } else if (clientY > rect.bottom - edgeSize) {
+      scrollStep = Math.ceil(((clientY - (rect.bottom - edgeSize)) / edgeSize) * maxStep)
+    }
+
+    if (scrollStep !== 0) {
+      container.scrollTop += scrollStep
+      exportAutoScrollFrameRef.current = window.requestAnimationFrame(runExportColumnAutoScroll)
+      return
+    }
+
+    exportAutoScrollFrameRef.current = null
+  }, [])
+
+  const handleExportColumnDragOver = useCallback((event: React.DragEvent<HTMLElement>) => {
+    event.preventDefault()
+    exportDragClientYRef.current = event.clientY
+    if (exportAutoScrollFrameRef.current === null) {
+      exportAutoScrollFrameRef.current = window.requestAnimationFrame(runExportColumnAutoScroll)
+    }
+  }, [runExportColumnAutoScroll])
+
+  useEffect(() => {
+    if (!showExportDialog) {
+      stopExportColumnAutoScroll()
+    }
+  }, [showExportDialog, stopExportColumnAutoScroll])
+
+  useEffect(() => {
+    return () => stopExportColumnAutoScroll()
+  }, [stopExportColumnAutoScroll])
 
   // Export to CSV function
   const handleExportCSV = (selectedColumnKeys?: string[]) => {
@@ -9301,7 +9359,17 @@ export default function ProcurementDashboard() {
               className="h-9"
             />
 
-            <div className="max-h-80 overflow-y-auto rounded-md border border-gray-200 bg-white px-2 py-1">
+            <div
+              ref={exportColumnListRef}
+              onDragOver={handleExportColumnDragOver}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  stopExportColumnAutoScroll()
+                }
+              }}
+              onDrop={stopExportColumnAutoScroll}
+              className="max-h-80 overflow-y-auto rounded-md border border-gray-200 bg-white px-2 py-1"
+            >
               <label className="sticky top-0 z-10 flex min-h-9 items-center gap-3 border-b border-gray-100 bg-white px-1 py-1.5 text-sm">
                 <Checkbox
                   checked={exportSelectAllState}
@@ -9328,14 +9396,18 @@ export default function ProcurementDashboard() {
                           key={column.key}
                           draggable
                           onDragStart={() => setDraggedExportColumnKey(column.key)}
-                          onDragOver={(event) => event.preventDefault()}
+                          onDragOver={handleExportColumnDragOver}
                           onDrop={() => {
                             if (draggedExportColumnKey) {
                               moveExportColumn(draggedExportColumnKey, column.key)
                             }
                             setDraggedExportColumnKey(null)
+                            stopExportColumnAutoScroll()
                           }}
-                          onDragEnd={() => setDraggedExportColumnKey(null)}
+                          onDragEnd={() => {
+                            setDraggedExportColumnKey(null)
+                            stopExportColumnAutoScroll()
+                          }}
                           className="flex min-h-10 cursor-grab items-center gap-3 rounded px-1 py-1.5 hover:bg-gray-50 active:cursor-grabbing"
                         >
                           <GripVertical className="h-4 w-4 shrink-0 text-gray-400" />
